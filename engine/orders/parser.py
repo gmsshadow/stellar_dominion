@@ -1,0 +1,214 @@
+"""
+Stellar Dominion - Order Parser
+Parses player orders from YAML or text format.
+"""
+
+import yaml
+import re
+from pathlib import Path
+
+
+# Valid commands and their parameter types
+VALID_COMMANDS = {
+    'WAIT': {'params': 'integer', 'description': 'Wait for n TU'},
+    'MOVE': {'params': 'coordinate', 'description': 'Move to grid coordinate'},
+    'LOCATIONSCAN': {'params': 'none', 'description': 'Scan nearby cells'},
+    'SYSTEMSCAN': {'params': 'none', 'description': 'Produce system map'},
+    'ORBIT': {'params': 'body_id', 'description': 'Orbit a celestial body'},
+    'DOCK': {'params': 'base_id', 'description': 'Dock at a starbase'},
+    'UNDOCK': {'params': 'none', 'description': 'Leave docked starbase'},
+}
+
+# Grid coordinate pattern: A-Y followed by 01-25
+COORD_PATTERN = re.compile(r'^([A-Y])(\d{2})$', re.IGNORECASE)
+
+
+def validate_coordinate(coord):
+    """Validate a grid coordinate like 'M13' or 'D08'."""
+    match = COORD_PATTERN.match(coord.upper())
+    if not match:
+        return None, None
+    col = match.group(1).upper()
+    row = int(match.group(2))
+    if row < 1 or row > 25:
+        return None, None
+    if col < 'A' or col > 'Y':
+        return None, None
+    return col, row
+
+
+def parse_order(command_str, params):
+    """
+    Parse and validate a single order.
+    Returns (command, parsed_params, error) tuple.
+    """
+    command = command_str.upper().strip()
+
+    if command not in VALID_COMMANDS:
+        return command, params, f"Unknown command: {command}"
+
+    spec = VALID_COMMANDS[command]
+
+    if spec['params'] == 'none':
+        return command, None, None
+
+    elif spec['params'] == 'integer':
+        try:
+            value = int(params)
+            if value < 0:
+                return command, params, f"{command}: value must be >= 0"
+            return command, value, None
+        except (ValueError, TypeError):
+            return command, params, f"{command}: expected integer, got '{params}'"
+
+    elif spec['params'] == 'coordinate':
+        if isinstance(params, str):
+            col, row = validate_coordinate(params)
+            if col is None:
+                return command, params, f"{command}: invalid coordinate '{params}'"
+            return command, {'col': col, 'row': row}, None
+        return command, params, f"{command}: expected coordinate string"
+
+    elif spec['params'] in ('body_id', 'base_id'):
+        try:
+            value = int(params)
+            return command, value, None
+        except (ValueError, TypeError):
+            return command, params, f"{command}: expected numeric ID, got '{params}'"
+
+    return command, params, f"Unknown parameter type for {command}"
+
+
+def parse_yaml_orders(yaml_content):
+    """
+    Parse orders from YAML content.
+    
+    Expected format:
+    game: HANF231
+    ship: 2547876
+    orders:
+      - WAIT: 50
+      - MOVE: M13
+      - LOCATIONSCAN: {}
+      - DOCK: 45687590
+    
+    Returns dict with game, ship, and parsed orders list.
+    """
+    try:
+        data = yaml.safe_load(yaml_content)
+    except yaml.YAMLError as e:
+        return {'error': f"YAML parse error: {e}"}
+
+    if not isinstance(data, dict):
+        return {'error': "Orders must be a YAML mapping"}
+
+    result = {
+        'game': data.get('game', ''),
+        'ship': data.get('ship', ''),
+        'orders': [],
+        'errors': [],
+    }
+
+    raw_orders = data.get('orders', [])
+    if not isinstance(raw_orders, list):
+        result['errors'].append("'orders' must be a list")
+        return result
+
+    for i, order in enumerate(raw_orders):
+        if isinstance(order, dict):
+            for cmd, params in order.items():
+                # Handle empty params (YAML {} becomes empty dict or None)
+                if isinstance(params, dict) and not params:
+                    params = None
+                command, parsed_params, error = parse_order(str(cmd), params)
+                if error:
+                    result['errors'].append(f"Order {i + 1}: {error}")
+                else:
+                    result['orders'].append({
+                        'sequence': i + 1,
+                        'command': command,
+                        'params': parsed_params,
+                    })
+        elif isinstance(order, str):
+            # Simple command with no params like "UNDOCK"
+            command, parsed_params, error = parse_order(order, None)
+            if error:
+                result['errors'].append(f"Order {i + 1}: {error}")
+            else:
+                result['orders'].append({
+                    'sequence': i + 1,
+                    'command': command,
+                    'params': parsed_params,
+                })
+
+    return result
+
+
+def parse_text_orders(text_content):
+    """
+    Parse orders from plain text format.
+    
+    Expected format (one per line):
+    GAME HANF231
+    SHIP 2547876
+    WAIT 50
+    MOVE M13
+    LOCATIONSCAN
+    MOVE D08
+    ORBIT 247985
+    DOCK 45687590
+    
+    Returns same format as parse_yaml_orders.
+    """
+    result = {
+        'game': '',
+        'ship': '',
+        'orders': [],
+        'errors': [],
+    }
+
+    lines = [l.strip() for l in text_content.strip().splitlines() if l.strip() and not l.strip().startswith('#')]
+    sequence = 0
+
+    for line in lines:
+        parts = line.split(None, 1)
+        cmd = parts[0].upper()
+        params = parts[1] if len(parts) > 1 else None
+
+        if cmd == 'GAME':
+            result['game'] = params or ''
+            continue
+        elif cmd == 'SHIP':
+            result['ship'] = params or ''
+            continue
+
+        sequence += 1
+        command, parsed_params, error = parse_order(cmd, params)
+        if error:
+            result['errors'].append(f"Line '{line}': {error}")
+        else:
+            result['orders'].append({
+                'sequence': sequence,
+                'command': command,
+                'params': parsed_params,
+            })
+
+    return result
+
+
+def parse_orders_file(filepath):
+    """Parse orders from a file, auto-detecting format."""
+    path = Path(filepath)
+    content = path.read_text()
+
+    if path.suffix.lower() in ('.yaml', '.yml'):
+        return parse_yaml_orders(content)
+    else:
+        # Try YAML first, fall back to text
+        try:
+            result = parse_yaml_orders(content)
+            if result.get('orders') or not result.get('error'):
+                return result
+        except Exception:
+            pass
+        return parse_text_orders(content)
