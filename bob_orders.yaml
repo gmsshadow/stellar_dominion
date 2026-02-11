@@ -1,0 +1,6 @@
+game: HANF231
+ship: 17579149
+orders:
+  - MOVE: T20
+  - DOCK: 78901234
+  - WAIT: 50

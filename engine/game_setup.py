@@ -4,6 +4,7 @@ Creates initial game state with star systems, celestial bodies, bases, and playe
 """
 
 import random
+from pathlib import Path
 from db.database import init_db, get_connection
 
 
@@ -105,11 +106,23 @@ def create_game(db_path=None, game_id="HANF231", game_name="Stellar Dominion - H
 
     conn.commit()
     conn.close()
+
+    # Create turn folder skeleton
+    db_dir = db_path.parent if db_path else Path(__file__).parent.parent / "game_data"
+    turns_dir = db_dir / "turns"
+    incoming = turns_dir / "incoming"
+    processed = turns_dir / "processed"
+    incoming.mkdir(parents=True, exist_ok=True)
+    processed.mkdir(parents=True, exist_ok=True)
+
     print(f"Game '{game_name}' ({game_id}) created successfully.")
     print(f"  System: Hanf (231)")
     print(f"  Planets: Orion (H04), Tartarus (R08), Meridian (T20)")
     print(f"  Gas Giant: Leviathan (E18) with Moon Callyx (F19)")
     print(f"  Bases: Citadel Station (H04), Tartarus Depot (R08), Meridian Waystation (T20)")
+    print(f"  Turn folders: {turns_dir}/")
+    print(f"    incoming/   <- player orders arrive here (by email)")
+    print(f"    processed/  <- resolved reports go here (by political ID)")
     return True
 
 

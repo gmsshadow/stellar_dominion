@@ -9,19 +9,22 @@ Deterministic turn resolution, ASCII reports, persistent SQLite universe.
 # 1. Set up a demo game (Hanf system with 2 players)
 python pbem.py setup-game --demo
 
-# 2. List ships to find IDs
+# 2. List ships to find IDs and player emails
 python pbem.py list-ships --game HANF231
 
 # 3. View the system map
 python pbem.py show-map --game HANF231
 
-# 4. Submit orders (YAML file)
-python pbem.py submit-orders sample_orders.yaml
+# 4. Submit orders (--email identifies the submitting player)
+python pbem.py submit-orders orders.yaml --email alice@example.com
 
-# 5. Resolve the turn and generate reports
+# 5. Check who has submitted orders
+python pbem.py turn-status --game HANF231
+
+# 6. Resolve the turn and generate reports
 python pbem.py run-turn --game HANF231 -v
 
-# 6. Advance to the next turn (resets all TUs)
+# 7. Advance to the next turn (resets all TUs)
 python pbem.py advance-turn --game HANF231
 ```
 
@@ -36,11 +39,11 @@ python pbem.py advance-turn --game HANF231
 ```
 stellar_dominion/
 ├── pbem.py                          # Main CLI entry point
-├── sample_orders.yaml               # Example orders file
 ├── db/
 │   └── database.py                  # SQLite schema & connection
 ├── engine/
 │   ├── game_setup.py                # Game/player creation
+│   ├── turn_folders.py              # Turn folder manager (incoming/processed)
 │   ├── maps/
 │   │   └── system_map.py            # 25x25 ASCII grid renderer
 │   ├── orders/
@@ -49,10 +52,65 @@ stellar_dominion/
 │   │   └── resolver.py              # Turn resolution engine (TU system)
 │   └── reports/
 │       └── report_gen.py            # Phoenix-style ASCII report generator
-├── game_data/
-│   └── stellar_dominion.db          # Persistent game database (auto-created)
-└── reports/                         # Generated turn reports
+└── game_data/                       # Created by setup-game
+    ├── stellar_dominion.db          # Persistent game database
+    └── turns/
+        ├── incoming/                # Player orders filed by email
+        └── processed/               # Resolved reports filed by political ID
 ```
+
+## Turn Folder Structure
+
+Orders and reports are managed through a structured folder layout that separates
+incoming orders (keyed by email) from processed output (keyed by political ID).
+
+### Incoming — `turns/incoming/{turn}/{email}/`
+
+When a player submits orders, they are filed under the sender's email address.
+This is the natural key at the point of arrival (especially for future IMAP
+integration where the email address comes from the envelope).
+
+```
+incoming/
+  500.1/
+    alice@example.com/
+      orders_57131458.yaml          # Accepted orders for ship 57131458
+      orders_57131458.yaml.receipt  # Confirmation with timestamp & order count
+    bob@example.com/
+      orders_17579149.yaml          # Bob's valid orders
+      orders_17579149.yaml.receipt
+      rejected_57131458.yaml        # Bob tried to submit for Alice's ship
+      rejected_57131458.reason      # Explanation of why it was rejected
+```
+
+Validation at submission checks:
+- Is the email registered to a player in this game?
+- Does that player's political position own the ship?
+- Are there any valid orders after parsing?
+
+If validation fails, the orders are stored as `rejected_` with a `.reason` file.
+Resubmitting valid orders for the same ship replaces the previous submission.
+
+### Processed — `turns/processed/{turn}/{political_id}/`
+
+Resolved reports are filed under the political position ID — the permanent,
+stable identifier for the player. The email address is looked up from the
+database at send time, so if a player changes their email, the folder
+structure doesn't need to change.
+
+```
+processed/
+  500.1/
+    76106713/                       # Alice's political ID
+      ship_57131458.txt             # Ship turn report
+      political_76106713.txt        # Political summary (finances, fleet, contacts)
+    57142790/                       # Bob's political ID
+      ship_17579149.txt
+      political_57142790.txt
+```
+
+When SMTP integration is added, the send step simply iterates each political
+folder, looks up the email from the database, and sends everything in the folder.
 
 ## The Hanf System (231)
 
@@ -135,13 +193,39 @@ Turns follow `YEAR.WEEK` format: `500.1` through `500.52`, then `501.1`.
 |---------|-------------|
 | `setup-game [--demo]` | Create a new game (--demo adds 2 test players) |
 | `add-player --name --email` | Add a player with ship and political position |
-| `submit-orders <file>` | Submit orders from YAML/text file |
-| `run-turn --game ID [-v]` | Resolve turn, generate reports |
+| `submit-orders <file> --email <addr>` | Submit orders, validating ownership by email |
+| `run-turn --game ID [-v]` | Resolve turn, generate reports to processed folder |
+| `turn-status [--game ID] [--turn N]` | Show who has submitted and what's been processed |
 | `show-map --game ID` | Display system ASCII map |
 | `show-status --ship ID` | Show ship status |
-| `list-ships --game ID` | List all ships in a game |
+| `list-ships --game ID` | List all ships with owner emails |
 | `advance-turn --game ID` | Advance to next turn, reset TUs |
 | `edit-credits --political ID --amount N` | Set player credits |
+
+### submit-orders details
+
+```bash
+python pbem.py submit-orders <orders_file> --email <player_email> [--game HANF231] [--dry-run]
+```
+
+The `--email` flag identifies the submitting player. The engine validates that
+the email is registered and that the player owns the ship specified in the
+orders file. If validation fails, the orders are stored as rejected with an
+explanation. When IMAP integration is added, the email will be extracted from
+the message envelope automatically.
+
+Use `--dry-run` to file the orders and write a receipt without storing them in
+the database for resolution.
+
+### turn-status details
+
+```bash
+python pbem.py turn-status [--game HANF231] [--turn 500.1]
+```
+
+Shows a dashboard of all players, which ships have orders submitted, any
+rejections, and whether reports have been generated. Useful for the GM to
+check everyone is in before running the turn.
 
 ## Report Sections
 

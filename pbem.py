@@ -4,21 +4,23 @@ Stellar Dominion - PBEM Strategy Game Engine
 Main CLI entry point.
 
 Usage:
-    python pbem.py setup-game                  # Create the demo game
-    python pbem.py add-player --name "Alice" --email "alice@example.com" ...
-    python pbem.py submit-orders <orders_file> # Submit orders for a ship
-    python pbem.py run-turn --game HANF231     # Resolve all pending orders
-    python pbem.py show-map --game HANF231     # Display system map
-    python pbem.py show-status --ship <id>     # Show ship status
-    python pbem.py advance-turn --game HANF231 # Advance to next turn
-    python pbem.py list-ships --game HANF231   # List all ships
+    python pbem.py setup-game --demo                    # Create the demo game
+    python pbem.py add-player --name "Alice" --email ... # Add a player
+    python pbem.py submit-orders <file> --email ...     # Submit ship orders
+    python pbem.py run-turn --game HANF231              # Resolve all pending orders
+    python pbem.py show-map --game HANF231              # Display system map
+    python pbem.py show-status --ship <id>              # Show ship status
+    python pbem.py advance-turn --game HANF231          # Advance to next turn
+    python pbem.py list-ships --game HANF231            # List all ships
+    python pbem.py turn-status --game HANF231           # Show incoming/processed status
 """
 
 import argparse
 import sys
-import os
 import json
+import shutil
 from pathlib import Path
+from datetime import datetime
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent))
@@ -29,7 +31,12 @@ from engine.orders.parser import parse_orders_file, parse_yaml_orders, parse_tex
 from engine.resolution.resolver import TurnResolver
 from engine.reports.report_gen import generate_ship_report, generate_political_report
 from engine.maps.system_map import render_system_map
+from engine.turn_folders import TurnFolders
 
+
+# ======================================================================
+# SETUP COMMANDS
+# ======================================================================
 
 def cmd_setup_game(args):
     """Create the demo game with Hanf system."""
@@ -55,56 +62,102 @@ def cmd_add_player(args):
         print(f"\nShip ID: {result['ship_id']} (use this for orders)")
 
 
+# ======================================================================
+# ORDER SUBMISSION
+# ======================================================================
+
 def cmd_submit_orders(args):
-    """Parse and submit orders from a file."""
+    """
+    Parse, validate, and file incoming orders.
+    
+    Flow:
+    1. Parse the orders file (YAML or text)
+    2. Validate sender email owns the ship
+    3. Store valid orders in incoming/{turn}/{email}/
+    4. Write a receipt or rejection file
+    5. Store orders in database for resolution
+    """
     db_path = Path(args.db) if args.db else None
+    folders = TurnFolders(db_path=db_path, game_id=args.game)
+    turn_str = folders.get_current_turn_str()
 
-    orders = parse_orders_file(args.orders_file)
-
-    if orders.get('error'):
-        print(f"Error: {orders['error']}")
+    # Determine sender email
+    email = args.email
+    if not email:
+        print("Error: --email is required to identify the submitting player.")
+        print("  (In future, this will be extracted from the IMAP envelope.)")
         return
 
-    if orders.get('errors'):
-        print("Order validation errors:")
-        for e in orders['errors']:
-            print(f"  - {e}")
-        if not orders.get('orders'):
-            return
+    # Parse the orders file
+    filepath = Path(args.orders_file)
+    orders = parse_orders_file(filepath)
 
-    print(f"Game: {orders['game']}")
-    print(f"Ship: {orders['ship']}")
-    print(f"Valid orders: {len(orders['orders'])}")
+    if orders.get('error'):
+        print(f"Parse error: {orders['error']}")
+        return
 
-    if orders.get('errors'):
-        print(f"Errors: {len(orders['errors'])}")
+    ship_id = orders.get('ship', '')
+    if not ship_id:
+        print("Error: orders file must specify a ship ID.")
+        return
 
-    for o in orders['orders']:
-        params_str = f" {o['params']}" if o['params'] else ""
-        print(f"  {o['sequence']}. {o['command']}{params_str}")
+    raw_content = filepath.read_text()
 
-    # Store parsed orders
+    # Validate ownership: does this email own this ship?
+    valid, political_id, error_msg = folders.validate_ship_ownership(email, ship_id)
+
+    if not valid:
+        # Store as rejected
+        rejected_file, reason_file = folders.store_rejected(
+            turn_str, email, ship_id, raw_content,
+            reasons=[error_msg] + orders.get('errors', [])
+        )
+        print(f"REJECTED: {error_msg}")
+        print(f"  Rejection stored: {rejected_file}")
+        print(f"  Reason file:      {reason_file}")
+        return
+
+    # Check for parse errors on individual orders
+    warnings = orders.get('errors', [])
+
+    if not orders.get('orders'):
+        folders.store_rejected(
+            turn_str, email, ship_id, raw_content,
+            reasons=["No valid orders found"] + warnings
+        )
+        print(f"REJECTED: No valid orders in file.")
+        if warnings:
+            for w in warnings:
+                print(f"  - {w}")
+        return
+
+    # Store the incoming orders file
+    orders_file = folders.store_incoming_orders(turn_str, email, ship_id, raw_content)
+
+    # Write receipt
+    receipt_file = folders.store_receipt(turn_str, email, ship_id, {
+        'status': 'accepted',
+        'order_count': len(orders['orders']),
+        'warnings': warnings,
+    })
+
+    # Store orders in database for turn resolution
     if not args.dry_run:
         conn = get_connection(db_path)
-        game = conn.execute("SELECT * FROM games WHERE game_id = ?", (orders['game'],)).fetchone()
-        if not game:
-            print(f"Error: Game {orders['game']} not found.")
-            conn.close()
-            return
-
-        ship = conn.execute("SELECT * FROM ships WHERE ship_id = ?", (int(orders['ship']),)).fetchone()
-        if not ship:
-            print(f"Error: Ship {orders['ship']} not found.")
-            conn.close()
-            return
+        game = conn.execute("SELECT * FROM games WHERE game_id = ?", (args.game,)).fetchone()
 
         # Find player
-        political = conn.execute(
-            "SELECT pp.*, p.player_id FROM political_positions pp "
-            "JOIN players p ON pp.player_id = p.player_id "
-            "WHERE pp.position_id = ?",
-            (ship['owner_political_id'],)
+        player = conn.execute(
+            "SELECT player_id FROM players WHERE email = ? AND game_id = ?",
+            (email, args.game)
         ).fetchone()
+
+        # Clear any existing orders for this ship/turn (resubmission replaces)
+        conn.execute("""
+            DELETE FROM turn_orders
+            WHERE game_id = ? AND turn_year = ? AND turn_week = ?
+            AND subject_type = 'ship' AND subject_id = ? AND status = 'pending'
+        """, (args.game, game['current_year'], game['current_week'], int(ship_id)))
 
         for o in orders['orders']:
             params_json = json.dumps(o['params']) if o['params'] is not None else None
@@ -114,32 +167,72 @@ def cmd_submit_orders(args):
                  order_sequence, command, parameters, status)
                 VALUES (?, ?, ?, ?, 'ship', ?, ?, ?, ?, 'pending')
             """, (
-                orders['game'], game['current_year'], game['current_week'],
-                political['player_id'], int(orders['ship']),
+                args.game, game['current_year'], game['current_week'],
+                player['player_id'], int(ship_id),
                 o['sequence'], o['command'], params_json
             ))
 
         conn.commit()
         conn.close()
-        print(f"\nOrders submitted for turn {game['current_year']}.{game['current_week']}")
-    else:
-        print("\n(Dry run - orders not stored)")
 
+    # Summary
+    print(f"Orders ACCEPTED for turn {turn_str}")
+    print(f"  Game:     {args.game}")
+    print(f"  Email:    {email}")
+    print(f"  Ship:     {ship_id}")
+    print(f"  Orders:   {len(orders['orders'])} valid")
+    if warnings:
+        print(f"  Warnings: {len(warnings)}")
+        for w in warnings:
+            print(f"    - {w}")
+    print(f"  Filed:    {orders_file}")
+    print(f"  Receipt:  {receipt_file}")
+
+    # Print order list
+    for o in orders['orders']:
+        params_str = f" {o['params']}" if o['params'] else ""
+        print(f"    {o['sequence']:>2}. {o['command']}{params_str}")
+
+    if args.dry_run:
+        print("\n  (Dry run - orders filed but not stored in database)")
+
+
+# ======================================================================
+# TURN RESOLUTION
+# ======================================================================
 
 def cmd_run_turn(args):
-    """Resolve turn for a specific ship or all ships."""
+    """
+    Resolve turn for all ships (or a specific ship).
+    
+    Flow:
+    1. Gather stored orders from database
+    2. Resolve each ship's orders sequentially
+    3. Generate ship and political reports
+    4. Store reports in processed/{turn}/{political_id}/
+    """
     db_path = Path(args.db) if args.db else None
     resolver = TurnResolver(db_path, game_id=args.game)
+    folders = TurnFolders(db_path=db_path, game_id=args.game)
 
     conn = get_connection(db_path)
     game = conn.execute("SELECT * FROM games WHERE game_id = ?", (args.game,)).fetchone()
+    if not game:
+        print(f"Error: Game {args.game} not found.")
+        conn.close()
+        return
+
     turn_str = f"{game['current_year']}.{game['current_week']}"
 
+    # Determine which ships to resolve
     if args.ship:
-        ships = [conn.execute("SELECT * FROM ships WHERE ship_id = ? AND game_id = ?",
-                               (args.ship, args.game)).fetchone()]
+        ships = [conn.execute(
+            "SELECT * FROM ships WHERE ship_id = ? AND game_id = ?",
+            (args.ship, args.game)
+        ).fetchone()]
         if not ships[0]:
             print(f"Ship {args.ship} not found.")
+            conn.close()
             return
     else:
         ships = conn.execute(
@@ -150,6 +243,7 @@ def cmd_run_turn(args):
 
     for ship in ships:
         ship_id = ship['ship_id']
+        political_id = ship['owner_political_id']
 
         # Get stored orders for this ship/turn
         stored_orders = conn.execute("""
@@ -159,30 +253,25 @@ def cmd_run_turn(args):
             ORDER BY order_sequence
         """, (args.game, game['current_year'], game['current_week'], ship_id)).fetchall()
 
-        if not stored_orders and not args.orders_file:
-            print(f"Ship {ship['name']} ({ship_id}): No orders for this turn.")
+        if not stored_orders:
+            print(f"  {ship['name']} ({ship_id}): No orders this turn.")
             continue
 
-        # Build orders list
-        if args.orders_file:
-            # Direct orders from file
-            parsed = parse_orders_file(args.orders_file)
-            order_list = parsed.get('orders', [])
-        else:
-            order_list = []
-            for so in stored_orders:
-                params = json.loads(so['parameters']) if so['parameters'] else None
-                order_list.append({
-                    'sequence': so['order_sequence'],
-                    'command': so['command'],
-                    'params': params,
-                })
+        # Build orders list from stored orders
+        order_list = []
+        for so in stored_orders:
+            params = json.loads(so['parameters']) if so['parameters'] else None
+            order_list.append({
+                'sequence': so['order_sequence'],
+                'command': so['command'],
+                'params': params,
+            })
 
-        print(f"Resolving {ship['name']} ({ship_id}) - {len(order_list)} orders...")
+        print(f"  Resolving {ship['name']} ({ship_id}) - {len(order_list)} orders...")
         result = resolver.resolve_ship_turn(ship_id, order_list)
 
         if result.get('error'):
-            print(f"  Error: {result['error']}")
+            print(f"    Error: {result['error']}")
             continue
 
         # Mark stored orders as resolved
@@ -193,34 +282,123 @@ def cmd_run_turn(args):
         """, (args.game, game['current_year'], game['current_week'], ship_id))
         conn.commit()
 
-        # Generate report
+        # Generate ship report
         report = generate_ship_report(result, db_path, args.game)
 
-        # Save report to file
-        report_dir = Path(args.output or "reports")
-        report_dir.mkdir(parents=True, exist_ok=True)
-        report_file = report_dir / f"report_turn{turn_str}_{ship['name'].replace(' ', '_')}_{ship_id}.txt"
-        report_file.write_text(report)
-        print(f"  Report saved: {report_file}")
+        # Store in processed/{turn}/{political_id}/
+        report_file = folders.store_ship_report(turn_str, political_id, ship_id, report)
+        print(f"    Ship report:      {report_file}")
 
-        # Also print to console if verbose
+        # Print to console if verbose
         if args.verbose:
             print()
             print(report)
             print()
 
-        # Generate political report
-        political_report = generate_political_report(
-            ship['owner_political_id'], db_path, args.game
-        )
-        pol_file = report_dir / f"report_turn{turn_str}_political_{ship['owner_political_id']}.txt"
-        pol_file.write_text(political_report)
-        print(f"  Political report saved: {pol_file}")
+    # Generate one political report per political position
+    all_politicals = conn.execute("""
+        SELECT DISTINCT pp.position_id, p.email
+        FROM political_positions pp
+        JOIN players p ON pp.player_id = p.player_id
+        WHERE pp.game_id = ?
+    """, (args.game,)).fetchall()
+
+    print()
+    for pol in all_politicals:
+        political_id = pol['position_id']
+        political_report = generate_political_report(political_id, db_path, args.game)
+        pol_file = folders.store_political_report(turn_str, political_id, political_report)
+        email = pol['email']
+        print(f"  Political {political_id} -> {email}")
+        print(f"    Political report: {pol_file}")
+
+        # Show total files to send
+        player_reports = folders.get_player_reports(turn_str, political_id)
+        if len(player_reports) > 1:
+            print(f"    Total files to email: {len(player_reports)}")
 
     resolver.close()
     conn.close()
     print(f"\n=== Turn {turn_str} resolution complete ===")
 
+    # Show processed folder structure
+    processed = folders.list_processed(turn_str)
+    if processed:
+        print(f"\nProcessed folder: {folders.processed_dir / turn_str}/")
+        for pol_id, files in processed.items():
+            email = folders.get_email_for_political(int(pol_id))
+            email_str = f" -> {email}" if email else ""
+            print(f"  {pol_id}/{email_str}")
+            for f in files:
+                print(f"    {f.name}")
+
+
+# ======================================================================
+# TURN STATUS
+# ======================================================================
+
+def cmd_turn_status(args):
+    """
+    Show the status of incoming orders and processed reports for a turn.
+    """
+    db_path = Path(args.db) if args.db else None
+    folders = TurnFolders(db_path=db_path, game_id=args.game)
+
+    turn_str = args.turn or folders.get_current_turn_str()
+    summary = folders.get_turn_summary(turn_str)
+
+    print(f"\n=== Turn {turn_str} Status - Game {args.game} ===\n")
+
+    for player in summary['players']:
+        status_icon = "[done]" if player['processed'] else "[    ]"
+        print(f"{status_icon} {player['name']} ({player['email']})")
+        print(f"        Political: {player['political_name']} ({player['political_id']})")
+        print(f"        Reports generated: {'Yes' if player['processed'] else 'No'}")
+
+        for ship in player['ships']:
+            if ship['orders_rejected']:
+                icon = " [FAIL]"
+                status = "REJECTED"
+            elif ship['orders_received']:
+                icon = " [ ok ]"
+                status = "received"
+            else:
+                icon = " [    ]"
+                status = "awaiting orders"
+
+            print(f"       {icon} {ship['ship_name']} ({ship['ship_id']}): {status}")
+        print()
+
+    # Show folder structure
+    incoming = folders.list_incoming(turn_str)
+    if incoming:
+        print(f"Incoming: {folders.incoming_dir / turn_str}/")
+        current_email = None
+        for entry in incoming:
+            if entry['email'] != current_email:
+                current_email = entry['email']
+                print(f"  {current_email}/")
+            status_label = {
+                'received': '  [ok]  ',
+                'pending': '  [  ]  ',
+                'rejected': '  [FAIL]',
+            }.get(entry['status'], '  [??]  ')
+            print(f"   {status_label} {entry['filepath'].name}")
+
+    processed = folders.list_processed(turn_str)
+    if processed:
+        print(f"\nProcessed: {folders.processed_dir / turn_str}/")
+        for pol_id, files in processed.items():
+            email = folders.get_email_for_political(int(pol_id))
+            email_str = f" -> {email}" if email else ""
+            print(f"  {pol_id}/{email_str}")
+            for f in files:
+                print(f"    {f.name}")
+
+
+# ======================================================================
+# MAP & STATUS COMMANDS
+# ======================================================================
 
 def cmd_show_map(args):
     """Display the system map."""
@@ -238,22 +416,27 @@ def cmd_show_map(args):
         return
 
     system_id = system['system_id']
-
-    # Gather objects
     objects = []
-    bodies = conn.execute("SELECT * FROM celestial_bodies WHERE system_id = ?", (system_id,)).fetchall()
+
+    bodies = conn.execute(
+        "SELECT * FROM celestial_bodies WHERE system_id = ?", (system_id,)
+    ).fetchall()
     for b in bodies:
         objects.append({'type': b['body_type'], 'col': b['grid_col'], 'row': b['grid_row'],
                         'symbol': b['map_symbol'], 'name': b['name']})
 
-    bases = conn.execute("SELECT * FROM starbases WHERE system_id = ? AND game_id = ?",
-                          (system_id, args.game)).fetchall()
+    bases = conn.execute(
+        "SELECT * FROM starbases WHERE system_id = ? AND game_id = ?",
+        (system_id, args.game)
+    ).fetchall()
     for b in bases:
         objects.append({'type': 'base', 'col': b['grid_col'], 'row': b['grid_row'],
                         'symbol': 'B', 'name': b['name']})
 
-    ships = conn.execute("SELECT * FROM ships WHERE system_id = ? AND game_id = ?",
-                          (system_id, args.game)).fetchall()
+    ships = conn.execute(
+        "SELECT * FROM ships WHERE system_id = ? AND game_id = ?",
+        (system_id, args.game)
+    ).fetchall()
     for s in ships:
         objects.append({'type': 'ship', 'col': s['grid_col'], 'row': s['grid_row'],
                         'symbol': '@', 'name': s['name']})
@@ -268,7 +451,6 @@ def cmd_show_map(args):
     print("=" * len(title))
     print(render_system_map(system_data, objects))
 
-    # Legend
     print(f"\nLegend:")
     print(f"  *  Star ({system['star_name']})")
     for b in bodies:
@@ -286,14 +468,16 @@ def cmd_show_map(args):
 
 
 def cmd_show_status(args):
-    """Show status of a ship or political position."""
+    """Show status of a ship."""
     db_path = Path(args.db) if args.db else None
     conn = get_connection(db_path)
 
     if args.ship:
-        ship = conn.execute("SELECT s.*, ss.name as system_name FROM ships s "
-                             "JOIN star_systems ss ON s.system_id = ss.system_id "
-                             "WHERE s.ship_id = ?", (args.ship,)).fetchone()
+        ship = conn.execute(
+            "SELECT s.*, ss.name as system_name FROM ships s "
+            "JOIN star_systems ss ON s.system_id = ss.system_id "
+            "WHERE s.ship_id = ?", (args.ship,)
+        ).fetchone()
         if ship:
             loc = f"{ship['grid_col']}{ship['grid_row']:02d}"
             dock_info = f" [Docked at {ship['docked_at_base_id']}]" if ship['docked_at_base_id'] else ""
@@ -317,10 +501,11 @@ def cmd_list_ships(args):
     conn = get_connection(db_path)
 
     ships = conn.execute("""
-        SELECT s.*, ss.name as system_name, pp.name as owner_name
+        SELECT s.*, ss.name as system_name, pp.name as owner_name, p.email
         FROM ships s 
         JOIN star_systems ss ON s.system_id = ss.system_id
         JOIN political_positions pp ON s.owner_political_id = pp.position_id
+        JOIN players p ON pp.player_id = p.player_id
         WHERE s.game_id = ?
     """, (args.game,)).fetchall()
 
@@ -328,14 +513,19 @@ def cmd_list_ships(args):
         print(f"No ships in game {args.game}.")
     else:
         print(f"\nShips in game {args.game}:")
-        print(f"{'ID':<12} {'Name':<25} {'Owner':<20} {'Location':<15} {'TU':<10}")
-        print("-" * 82)
+        print(f"{'ID':<12} {'Name':<22} {'Owner':<18} {'Email':<25} {'Location':<10} {'TU':<10}")
+        print("-" * 97)
         for s in ships:
-            loc = f"{s['grid_col']}{s['grid_row']:02d} ({s['system_name']})"
-            print(f"{s['ship_id']:<12} {s['name']:<25} {s['owner_name']:<20} {loc:<15} {s['tu_remaining']}/{s['tu_per_turn']}")
+            loc = f"{s['grid_col']}{s['grid_row']:02d}"
+            print(f"{s['ship_id']:<12} {s['name']:<22} {s['owner_name']:<18} "
+                  f"{s['email']:<25} {loc:<10} {s['tu_remaining']}/{s['tu_per_turn']}")
 
     conn.close()
 
+
+# ======================================================================
+# TURN MANAGEMENT
+# ======================================================================
 
 def cmd_advance_turn(args):
     """Advance to the next game turn."""
@@ -350,13 +540,14 @@ def cmd_advance_turn(args):
 
     # Reset TU for all ships
     conn = get_connection(db_path)
-    conn.execute("""
-        UPDATE ships SET tu_remaining = tu_per_turn WHERE game_id = ?
-    """, (args.game,))
+    conn.execute(
+        "UPDATE ships SET tu_remaining = tu_per_turn WHERE game_id = ?",
+        (args.game,)
+    )
     conn.commit()
     conn.close()
 
-    print(f"Turn advanced: {old_turn} → {new_turn}")
+    print(f"Turn advanced: {old_turn} -> {new_turn}")
     print("All ship TUs reset.")
     resolver.close()
 
@@ -366,39 +557,52 @@ def cmd_edit_credits(args):
     db_path = Path(args.db) if args.db else None
     conn = get_connection(db_path)
 
-    if args.political:
-        political = conn.execute(
-            "SELECT * FROM political_positions WHERE position_id = ?",
-            (args.political,)
-        ).fetchone()
-        if political:
-            conn.execute(
-                "UPDATE political_positions SET credits = ? WHERE position_id = ?",
-                (args.amount, args.political)
-            )
-            conn.commit()
-            print(f"Credits for {political['name']} ({args.political}) set to {args.amount:,.0f}")
-        else:
-            print(f"Political position {args.political} not found.")
+    political = conn.execute(
+        "SELECT * FROM political_positions WHERE position_id = ?",
+        (args.political,)
+    ).fetchone()
+    if political:
+        conn.execute(
+            "UPDATE political_positions SET credits = ? WHERE position_id = ?",
+            (args.amount, args.political)
+        )
+        conn.commit()
+        print(f"Credits for {political['name']} ({args.political}) set to {args.amount:,.0f}")
+    else:
+        print(f"Political position {args.political} not found.")
 
     conn.close()
 
 
+# ======================================================================
+# MAIN
+# ======================================================================
+
 def main():
     parser = argparse.ArgumentParser(
-        description="Stellar Dominion - PBEM Strategy Game Engine"
+        description="Stellar Dominion - PBEM Strategy Game Engine",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Typical workflow:
+  1. setup-game --demo           Create game with sample players
+  2. list-ships --game HANF231   Find ship IDs and player emails
+  3. submit-orders <file> --email alice@example.com
+  4. turn-status                 Check who has submitted
+  5. run-turn --game HANF231     Resolve and generate reports
+  6. advance-turn                Move to next week
+        """
     )
     parser.add_argument('--db', help='Database file path', default=None)
 
     subparsers = parser.add_subparsers(dest='command', help='Available commands')
 
-    # setup-game
+    # --- setup-game ---
     sp = subparsers.add_parser('setup-game', help='Create a new game')
     sp.add_argument('--game', default='HANF231', help='Game ID')
     sp.add_argument('--name', help='Game name')
     sp.add_argument('--demo', action='store_true', help='Create demo game with 2 players')
 
-    # add-player
+    # --- add-player ---
     sp = subparsers.add_parser('add-player', help='Add a player')
     sp.add_argument('--game', default='HANF231', help='Game ID')
     sp.add_argument('--name', required=True, help='Player name')
@@ -408,38 +612,45 @@ def main():
     sp.add_argument('--start-col', default='I', help='Starting grid column')
     sp.add_argument('--start-row', type=int, default=6, help='Starting grid row')
 
-    # submit-orders
+    # --- submit-orders ---
     sp = subparsers.add_parser('submit-orders', help='Submit orders from file')
     sp.add_argument('orders_file', help='Path to orders file (YAML or text)')
-    sp.add_argument('--db', help='Database file path')
-    sp.add_argument('--dry-run', action='store_true', help='Parse only, do not store')
-
-    # run-turn
-    sp = subparsers.add_parser('run-turn', help='Resolve turn')
+    sp.add_argument('--email', required=True,
+                    help='Submitter email (validates ownership)')
     sp.add_argument('--game', default='HANF231', help='Game ID')
-    sp.add_argument('--ship', type=int, help='Specific ship ID (or all)')
-    sp.add_argument('--orders-file', help='Direct orders file (bypasses stored orders)')
-    sp.add_argument('--output', default='reports', help='Output directory for reports')
-    sp.add_argument('--verbose', '-v', action='store_true', help='Print reports to console')
+    sp.add_argument('--dry-run', action='store_true',
+                    help='File orders but do not store in database')
 
-    # show-map
+    # --- run-turn ---
+    sp = subparsers.add_parser('run-turn', help='Resolve turn and generate reports')
+    sp.add_argument('--game', default='HANF231', help='Game ID')
+    sp.add_argument('--ship', type=int, help='Specific ship ID (or resolve all)')
+    sp.add_argument('--verbose', '-v', action='store_true',
+                    help='Print reports to console')
+
+    # --- turn-status ---
+    sp = subparsers.add_parser('turn-status', help='Show incoming/processed status')
+    sp.add_argument('--game', default='HANF231', help='Game ID')
+    sp.add_argument('--turn', help='Turn string (default: current turn)')
+
+    # --- show-map ---
     sp = subparsers.add_parser('show-map', help='Display system map')
     sp.add_argument('--game', default='HANF231', help='Game ID')
     sp.add_argument('--system', type=int, default=231, help='System ID')
 
-    # show-status
+    # --- show-status ---
     sp = subparsers.add_parser('show-status', help='Show ship/position status')
     sp.add_argument('--ship', type=int, help='Ship ID')
 
-    # list-ships
+    # --- list-ships ---
     sp = subparsers.add_parser('list-ships', help='List all ships')
     sp.add_argument('--game', default='HANF231', help='Game ID')
 
-    # advance-turn
+    # --- advance-turn ---
     sp = subparsers.add_parser('advance-turn', help='Advance to next turn')
     sp.add_argument('--game', default='HANF231', help='Game ID')
 
-    # edit-credits
+    # --- edit-credits ---
     sp = subparsers.add_parser('edit-credits', help='Set credits for a political position')
     sp.add_argument('--political', type=int, required=True, help='Political position ID')
     sp.add_argument('--amount', type=float, required=True, help='Credit amount')
@@ -455,6 +666,7 @@ def main():
         'add-player': cmd_add_player,
         'submit-orders': cmd_submit_orders,
         'run-turn': cmd_run_turn,
+        'turn-status': cmd_turn_status,
         'show-map': cmd_show_map,
         'show-status': cmd_show_status,
         'list-ships': cmd_list_ships,
