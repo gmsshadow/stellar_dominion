@@ -34,7 +34,7 @@ def section_close(width=REPORT_WIDTH):
     return "|" + SECTION_CHAR * (width - 2) + "|"
 
 
-def generate_ship_report(turn_result, db_path=None, game_id="HANF231"):
+def generate_ship_report(turn_result, db_path=None, game_id="OMICRON101"):
     """
     Generate a full Phoenix-style turn report for a ship.
     
@@ -303,7 +303,7 @@ def generate_ship_report(turn_result, db_path=None, game_id="HANF231"):
     return "\n".join(lines)
 
 
-def generate_political_report(political_id, db_path=None, game_id="HANF231"):
+def generate_political_report(political_id, db_path=None, game_id="OMICRON101"):
     """Generate a political position turn report."""
     conn = get_connection(db_path)
 

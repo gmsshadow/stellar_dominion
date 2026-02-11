@@ -84,7 +84,7 @@ def parse_yaml_orders(yaml_content):
     Parse orders from YAML content.
     
     Expected format:
-    game: HANF231
+    game: OMICRON101
     ship: 2547876
     orders:
       - WAIT: 50
@@ -149,7 +149,7 @@ def parse_text_orders(text_content):
     Parse orders from plain text format.
     
     Expected format (one per line):
-    GAME HANF231
+    GAME OMICRON101
     SHIP 2547876
     WAIT 50
     MOVE M13

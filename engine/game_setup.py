@@ -30,8 +30,8 @@ def _generate_account_number(conn):
             return candidate
 
 
-def create_game(db_path=None, game_id="HANF231", game_name="Stellar Dominion - Hanf Campaign"):
-    """Create a new game with the Hanf system."""
+def create_game(db_path=None, game_id="OMICRON101", game_name="Stellar Dominion - Omicron Campaign"):
+    """Create a new game with the Omicron system."""
     conn = init_db(db_path)
     c = conn.cursor()
 
@@ -49,50 +49,50 @@ def create_game(db_path=None, game_id="HANF231", game_name="Stellar Dominion - H
     """, (game_id, game_name, f"012-{game_id}-{random.randint(100000, 999999)}"))
 
     # =============================================
-    # STAR SYSTEM: Hanf (231)
+    # STAR SYSTEM: Omicron (101)
     # =============================================
     c.execute("""
         INSERT INTO star_systems (system_id, game_id, name, star_name, star_spectral_type)
-        VALUES (231, ?, 'Hanf', 'Hanf Prime', 'G2V')
+        VALUES (101, ?, 'Omicron', 'Omicron Prime', 'G2V')
     """, (game_id,))
 
     # =============================================
-    # CELESTIAL BODIES in Hanf System
+    # CELESTIAL BODIES in Omicron System
     # =============================================
 
     # Planet: Orion at H04
     c.execute("""
         INSERT INTO celestial_bodies 
         (body_id, system_id, name, body_type, grid_col, grid_row, gravity, temperature, atmosphere, map_symbol)
-        VALUES (247985, 231, 'Orion', 'planet', 'H', 4, 0.9, 295, 'Standard', 'O')
+        VALUES (247985, 101, 'Orion', 'planet', 'H', 4, 0.9, 295, 'Standard', 'O')
     """)
 
     # Planet: Tartarus at R08
     c.execute("""
         INSERT INTO celestial_bodies 
         (body_id, system_id, name, body_type, grid_col, grid_row, gravity, temperature, atmosphere, map_symbol)
-        VALUES (301442, 231, 'Tartarus', 'planet', 'R', 8, 1.2, 340, 'Dense', 'O')
+        VALUES (301442, 101, 'Tartarus', 'planet', 'R', 8, 1.2, 340, 'Dense', 'O')
     """)
 
     # Gas Giant: Leviathan at E18
     c.execute("""
         INSERT INTO celestial_bodies 
         (body_id, system_id, name, body_type, grid_col, grid_row, gravity, temperature, atmosphere, map_symbol)
-        VALUES (155230, 231, 'Leviathan', 'gas_giant', 'E', 18, 2.5, 120, 'Hydrogen', 'G')
+        VALUES (155230, 101, 'Leviathan', 'gas_giant', 'E', 18, 2.5, 120, 'Hydrogen', 'G')
     """)
 
     # Moon: Callyx at F19 (moon of Leviathan)
     c.execute("""
         INSERT INTO celestial_bodies 
         (body_id, system_id, name, body_type, parent_body_id, grid_col, grid_row, gravity, temperature, atmosphere, map_symbol)
-        VALUES (88341, 231, 'Callyx', 'moon', 155230, 'F', 19, 0.3, 95, 'Thin', 'o')
+        VALUES (88341, 101, 'Callyx', 'moon', 155230, 'F', 19, 0.3, 95, 'Thin', 'o')
     """)
 
     # Planet: Meridian at T20
     c.execute("""
         INSERT INTO celestial_bodies 
         (body_id, system_id, name, body_type, grid_col, grid_row, gravity, temperature, atmosphere, map_symbol)
-        VALUES (412003, 231, 'Meridian', 'planet', 'T', 20, 0.7, 210, 'Thin', 'O')
+        VALUES (412003, 101, 'Meridian', 'planet', 'T', 20, 0.7, 210, 'Thin', 'O')
     """)
 
     # =============================================
@@ -104,7 +104,7 @@ def create_game(db_path=None, game_id="HANF231", game_name="Stellar Dominion - H
         INSERT INTO starbases 
         (base_id, game_id, name, base_type, system_id, grid_col, grid_row, orbiting_body_id,
          complexes, workers, troops, has_market, docking_capacity)
-        VALUES (45687590, ?, 'Citadel Station', 'Starbase', 231, 'H', 4, 247985,
+        VALUES (45687590, ?, 'Citadel Station', 'Starbase', 101, 'H', 4, 247985,
                 25, 500, 100, 1, 5)
     """, (game_id,))
 
@@ -113,7 +113,7 @@ def create_game(db_path=None, game_id="HANF231", game_name="Stellar Dominion - H
         INSERT INTO starbases 
         (base_id, game_id, name, base_type, system_id, grid_col, grid_row, orbiting_body_id,
          complexes, workers, troops, has_market, docking_capacity)
-        VALUES (12340001, ?, 'Tartarus Depot', 'Outpost', 231, 'R', 8, 301442,
+        VALUES (12340001, ?, 'Tartarus Depot', 'Outpost', 101, 'R', 8, 301442,
                 10, 200, 50, 1, 3)
     """, (game_id,))
 
@@ -122,7 +122,7 @@ def create_game(db_path=None, game_id="HANF231", game_name="Stellar Dominion - H
         INSERT INTO starbases 
         (base_id, game_id, name, base_type, system_id, grid_col, grid_row, orbiting_body_id,
          complexes, workers, troops, has_market, docking_capacity)
-        VALUES (78901234, ?, 'Meridian Waystation', 'Outpost', 231, 'T', 20, 412003,
+        VALUES (78901234, ?, 'Meridian Waystation', 'Outpost', 101, 'T', 20, 412003,
                 8, 150, 30, 1, 3)
     """, (game_id,))
 
@@ -138,7 +138,7 @@ def create_game(db_path=None, game_id="HANF231", game_name="Stellar Dominion - H
     processed.mkdir(parents=True, exist_ok=True)
 
     print(f"Game '{game_name}' ({game_id}) created successfully.")
-    print(f"  System: Hanf (231)")
+    print(f"  System: Omicron (101)")
     print(f"  Planets: Orion (H04), Tartarus (R08), Meridian (T20)")
     print(f"  Gas Giant: Leviathan (E18) with Moon Callyx (F19)")
     print(f"  Bases: Citadel Station (H04), Tartarus Depot (R08), Meridian Waystation (T20)")
@@ -148,7 +148,7 @@ def create_game(db_path=None, game_id="HANF231", game_name="Stellar Dominion - H
     return True
 
 
-def add_player(db_path=None, game_id="HANF231", player_name="Player 1",
+def add_player(db_path=None, game_id="OMICRON101", player_name="Player 1",
                email="player1@example.com", political_name="Commander Voss",
                ship_name="VFS Boethius", ship_start_col="I", ship_start_row=6,
                dock_at_base=None):
@@ -210,7 +210,7 @@ def add_player(db_path=None, game_id="HANF231", player_name="Player 1",
          hull_count, grid_col, grid_row, system_id, docked_at_base_id,
          tu_per_turn, tu_remaining, sensor_rating, cargo_capacity, crew_count, crew_required)
         VALUES (?, ?, ?, ?, 'Scout', 'Explorer Mk I', 'Light Hull', 50,
-                ?, ?, 231, ?, 300, 300, 20, 500, 15, 10)
+                ?, ?, 101, ?, 300, 300, 20, 500, 15, 10)
     """, (ship_id, game_id, political_id, ship_name,
           ship_start_col, ship_start_row, docked_at))
 
@@ -253,7 +253,7 @@ def add_player(db_path=None, game_id="HANF231", player_name="Player 1",
     }
 
 
-def join_game(db_path=None, game_id="HANF231"):
+def join_game(db_path=None, game_id="OMICRON101"):
     """
     Interactive player registration form.
     

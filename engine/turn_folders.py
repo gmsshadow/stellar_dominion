@@ -36,7 +36,7 @@ from db.database import get_connection
 class TurnFolders:
     """Manages the turn file system layout."""
 
-    def __init__(self, base_dir=None, db_path=None, game_id="HANF231"):
+    def __init__(self, base_dir=None, db_path=None, game_id="OMICRON101"):
         self.game_id = game_id
         self.db_path = db_path
         if base_dir:
