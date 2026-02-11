@@ -27,7 +27,7 @@ TU_COSTS = {
 class TurnResolver:
     """Resolves a turn for a single ship."""
 
-    def __init__(self, db_path=None, game_id="HANF231"):
+    def __init__(self, db_path=None, game_id="OMICRON101"):
         self.db_path = db_path
         self.game_id = game_id
         self.conn = get_connection(db_path)

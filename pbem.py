@@ -7,12 +7,12 @@ Usage:
     python pbem.py setup-game --demo                    # Create the demo game
     python pbem.py add-player --name "Alice" --email ... # Add a player
     python pbem.py submit-orders <file> --email ...     # Submit ship orders
-    python pbem.py run-turn --game HANF231              # Resolve all pending orders
-    python pbem.py show-map --game HANF231              # Display system map
+    python pbem.py run-turn --game OMICRON101              # Resolve all pending orders
+    python pbem.py show-map --game OMICRON101              # Display system map
     python pbem.py show-status --ship <id>              # Show ship status
-    python pbem.py advance-turn --game HANF231          # Advance to next turn
-    python pbem.py list-ships --game HANF231            # List all ships
-    python pbem.py turn-status --game HANF231           # Show incoming/processed status
+    python pbem.py advance-turn --game OMICRON101          # Advance to next turn
+    python pbem.py list-ships --game OMICRON101            # List all ships
+    python pbem.py turn-status --game OMICRON101           # Show incoming/processed status
 """
 
 import argparse
@@ -39,7 +39,7 @@ from engine.turn_folders import TurnFolders
 # ======================================================================
 
 def cmd_setup_game(args):
-    """Create the demo game with Hanf system."""
+    """Create the demo game with Omicron system."""
     db_path = Path(args.db) if args.db else None
     if args.demo:
         setup_demo_game(db_path)
@@ -418,7 +418,7 @@ def cmd_show_map(args):
 
     system = conn.execute(
         "SELECT * FROM star_systems WHERE game_id = ? AND system_id = ?",
-        (args.game, args.system or 231)
+        (args.game, args.system or 101)
     ).fetchone()
 
     if not system:
@@ -597,10 +597,10 @@ def main():
         epilog="""
 Typical workflow:
   1. setup-game --demo           Create game with sample players
-  2. list-ships --game HANF231   Find ship IDs and player emails
+  2. list-ships --game OMICRON101   Find ship IDs and player emails
   3. submit-orders <file> --email alice@example.com
   4. turn-status                 Check who has submitted
-  5. run-turn --game HANF231     Resolve and generate reports
+  5. run-turn --game OMICRON101     Resolve and generate reports
   6. advance-turn                Move to next week
         """
     )
@@ -610,13 +610,13 @@ Typical workflow:
 
     # --- setup-game ---
     sp = subparsers.add_parser('setup-game', help='Create a new game')
-    sp.add_argument('--game', default='HANF231', help='Game ID')
+    sp.add_argument('--game', default='OMICRON101', help='Game ID')
     sp.add_argument('--name', help='Game name')
     sp.add_argument('--demo', action='store_true', help='Create demo game with 2 players')
 
     # --- add-player ---
     sp = subparsers.add_parser('add-player', help='Add a player (GM command)')
-    sp.add_argument('--game', default='HANF231', help='Game ID')
+    sp.add_argument('--game', default='OMICRON101', help='Game ID')
     sp.add_argument('--name', required=True, help='Player name')
     sp.add_argument('--email', required=True, help='Player email')
     sp.add_argument('--political', help='Political position name')
@@ -626,33 +626,33 @@ Typical workflow:
 
     # --- join-game ---
     sp = subparsers.add_parser('join-game', help='Interactive new player registration')
-    sp.add_argument('--game', default='HANF231', help='Game ID')
+    sp.add_argument('--game', default='OMICRON101', help='Game ID')
 
     # --- submit-orders ---
     sp = subparsers.add_parser('submit-orders', help='Submit orders from file')
     sp.add_argument('orders_file', help='Path to orders file (YAML or text)')
     sp.add_argument('--email', required=True,
                     help='Submitter email (validates ownership)')
-    sp.add_argument('--game', default='HANF231', help='Game ID')
+    sp.add_argument('--game', default='OMICRON101', help='Game ID')
     sp.add_argument('--dry-run', action='store_true',
                     help='File orders but do not store in database')
 
     # --- run-turn ---
     sp = subparsers.add_parser('run-turn', help='Resolve turn and generate reports')
-    sp.add_argument('--game', default='HANF231', help='Game ID')
+    sp.add_argument('--game', default='OMICRON101', help='Game ID')
     sp.add_argument('--ship', type=int, help='Specific ship ID (or resolve all)')
     sp.add_argument('--verbose', '-v', action='store_true',
                     help='Print reports to console')
 
     # --- turn-status ---
     sp = subparsers.add_parser('turn-status', help='Show incoming/processed status')
-    sp.add_argument('--game', default='HANF231', help='Game ID')
+    sp.add_argument('--game', default='OMICRON101', help='Game ID')
     sp.add_argument('--turn', help='Turn string (default: current turn)')
 
     # --- show-map ---
     sp = subparsers.add_parser('show-map', help='Display system map')
-    sp.add_argument('--game', default='HANF231', help='Game ID')
-    sp.add_argument('--system', type=int, default=231, help='System ID')
+    sp.add_argument('--game', default='OMICRON101', help='Game ID')
+    sp.add_argument('--system', type=int, default=101, help='System ID')
 
     # --- show-status ---
     sp = subparsers.add_parser('show-status', help='Show ship/position status')
@@ -660,11 +660,11 @@ Typical workflow:
 
     # --- list-ships ---
     sp = subparsers.add_parser('list-ships', help='List all ships')
-    sp.add_argument('--game', default='HANF231', help='Game ID')
+    sp.add_argument('--game', default='OMICRON101', help='Game ID')
 
     # --- advance-turn ---
     sp = subparsers.add_parser('advance-turn', help='Advance to next turn')
-    sp.add_argument('--game', default='HANF231', help='Game ID')
+    sp.add_argument('--game', default='OMICRON101', help='Game ID')
 
     # --- edit-credits ---
     sp = subparsers.add_parser('edit-credits', help='Set credits for a political position')

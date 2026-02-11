@@ -6,29 +6,29 @@ Deterministic turn resolution, ASCII reports, persistent SQLite universe.
 ## Quick Start
 
 ```bash
-# 1. Set up a demo game (Hanf system with 2 players)
+# 1. Set up a demo game (Omicron system with 2 players)
 python pbem.py setup-game --demo
 
 # 2. List ships to find IDs, account numbers, and owners
-python pbem.py list-ships --game HANF231
+python pbem.py list-ships --game OMICRON101
 
 # 3. New players can join at any time
-python pbem.py join-game --game HANF231
+python pbem.py join-game --game OMICRON101
 
 # 4. View the system map
-python pbem.py show-map --game HANF231
+python pbem.py show-map --game OMICRON101
 
 # 5. Submit orders (--email identifies the submitting player)
 python pbem.py submit-orders orders.yaml --email alice@example.com
 
 # 6. Check who has submitted orders
-python pbem.py turn-status --game HANF231
+python pbem.py turn-status --game OMICRON101
 
 # 7. Resolve the turn and generate reports
-python pbem.py run-turn --game HANF231 -v
+python pbem.py run-turn --game OMICRON101 -v
 
 # 8. Advance to the next turn (resets all TUs)
-python pbem.py advance-turn --game HANF231
+python pbem.py advance-turn --game OMICRON101
 ```
 
 ## Requirements
@@ -83,7 +83,7 @@ New players can join at any point during the game using the interactive
 registration form:
 
 ```bash
-python pbem.py join-game --game HANF231
+python pbem.py join-game --game OMICRON101
 ```
 
 The form prompts for:
@@ -159,13 +159,13 @@ are stored on the file system.
 When SMTP integration is added, the send step simply iterates each account
 folder, looks up the email from the database, and sends everything in the folder.
 
-## The Hanf System (231)
+## The Omicron System (101)
 
-The demo game creates the **Hanf** star system — a 25×25 grid:
+The demo game creates the **Omicron** star system — a 25×25 grid:
 
 | Object              | Type       | Location | Notes                      |
 |---------------------|------------|----------|----------------------------|
-| Hanf Prime          | Star       | M13      | Central star               |
+| Omicron Prime       | Star       | M13      | Central star               |
 | Orion (247985)      | Planet     | H04      | 0.9g, Standard atmosphere  |
 | Tartarus (301442)   | Planet     | R08      | 1.2g, Dense atmosphere     |
 | Leviathan (155230)  | Gas Giant  | E18      | 2.5g, Hydrogen             |
@@ -186,7 +186,7 @@ O  Planet        o  Moon            G  Gas Giant
 
 ### YAML (preferred)
 ```yaml
-game: HANF231
+game: OMICRON101
 ship: 12345678
 orders:
   - WAIT: 50
@@ -199,7 +199,7 @@ orders:
 
 ### Plain Text
 ```
-GAME HANF231
+GAME OMICRON101
 SHIP 12345678
 WAIT 50
 MOVE M13
@@ -253,7 +253,7 @@ Turns follow `YEAR.WEEK` format: `500.1` through `500.52`, then `501.1`.
 ### join-game details
 
 ```bash
-python pbem.py join-game [--game HANF231]
+python pbem.py join-game [--game OMICRON101]
 ```
 
 Interactive text form for new player registration. Prompts for name, email,
@@ -266,7 +266,7 @@ keep private. Their political ID and ship ID are public identifiers.
 ### submit-orders details
 
 ```bash
-python pbem.py submit-orders <orders_file> --email <player_email> [--game HANF231] [--dry-run]
+python pbem.py submit-orders <orders_file> --email <player_email> [--game OMICRON101] [--dry-run]
 ```
 
 The `--email` flag identifies the submitting player. The engine validates that
@@ -281,7 +281,7 @@ the database for resolution.
 ### turn-status details
 
 ```bash
-python pbem.py turn-status [--game HANF231] [--turn 500.1]
+python pbem.py turn-status [--game OMICRON101] [--turn 500.1]
 ```
 
 Shows a dashboard of all players, their account numbers, which ships have
