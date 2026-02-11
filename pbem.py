@@ -26,7 +26,7 @@ from datetime import datetime
 sys.path.insert(0, str(Path(__file__).parent))
 
 from db.database import init_db, get_connection
-from engine.game_setup import create_game, add_player, setup_demo_game
+from engine.game_setup import create_game, add_player, setup_demo_game, join_game
 from engine.orders.parser import parse_orders_file, parse_yaml_orders, parse_text_orders
 from engine.resolution.resolver import TurnResolver
 from engine.reports.report_gen import generate_ship_report, generate_political_report
@@ -60,6 +60,12 @@ def cmd_add_player(args):
     )
     if result:
         print(f"\nShip ID: {result['ship_id']} (use this for orders)")
+
+
+def cmd_join_game(args):
+    """Interactive player registration form."""
+    db_path = Path(args.db) if args.db else None
+    join_game(db_path=db_path, game_id=args.game)
 
 
 # ======================================================================
@@ -104,7 +110,7 @@ def cmd_submit_orders(args):
     raw_content = filepath.read_text()
 
     # Validate ownership: does this email own this ship?
-    valid, political_id, error_msg = folders.validate_ship_ownership(email, ship_id)
+    valid, account_number, error_msg = folders.validate_ship_ownership(email, ship_id)
 
     if not valid:
         # Store as rejected
@@ -245,6 +251,9 @@ def cmd_run_turn(args):
         ship_id = ship['ship_id']
         political_id = ship['owner_political_id']
 
+        # Look up account number for this ship's owner
+        account_number = folders.get_account_for_political(political_id)
+
         # Get stored orders for this ship/turn
         stored_orders = conn.execute("""
             SELECT * FROM turn_orders 
@@ -285,8 +294,8 @@ def cmd_run_turn(args):
         # Generate ship report
         report = generate_ship_report(result, db_path, args.game)
 
-        # Store in processed/{turn}/{political_id}/
-        report_file = folders.store_ship_report(turn_str, political_id, ship_id, report)
+        # Store in processed/{turn}/{account_number}/
+        report_file = folders.store_ship_report(turn_str, account_number, ship_id, report)
         print(f"    Ship report:      {report_file}")
 
         # Print to console if verbose
@@ -297,7 +306,7 @@ def cmd_run_turn(args):
 
     # Generate one political report per political position
     all_politicals = conn.execute("""
-        SELECT DISTINCT pp.position_id, p.email
+        SELECT DISTINCT pp.position_id, p.email, p.account_number
         FROM political_positions pp
         JOIN players p ON pp.player_id = p.player_id
         WHERE pp.game_id = ?
@@ -306,14 +315,15 @@ def cmd_run_turn(args):
     print()
     for pol in all_politicals:
         political_id = pol['position_id']
+        account_number = pol['account_number']
         political_report = generate_political_report(political_id, db_path, args.game)
-        pol_file = folders.store_political_report(turn_str, political_id, political_report)
+        pol_file = folders.store_political_report(turn_str, account_number, political_id, political_report)
         email = pol['email']
-        print(f"  Political {political_id} -> {email}")
+        print(f"  Account {account_number} -> {email}")
         print(f"    Political report: {pol_file}")
 
         # Show total files to send
-        player_reports = folders.get_player_reports(turn_str, political_id)
+        player_reports = folders.get_player_reports(turn_str, account_number)
         if len(player_reports) > 1:
             print(f"    Total files to email: {len(player_reports)}")
 
@@ -325,10 +335,10 @@ def cmd_run_turn(args):
     processed = folders.list_processed(turn_str)
     if processed:
         print(f"\nProcessed folder: {folders.processed_dir / turn_str}/")
-        for pol_id, files in processed.items():
-            email = folders.get_email_for_political(int(pol_id))
+        for acct_num, files in processed.items():
+            email = folders.get_email_for_account(acct_num)
             email_str = f" -> {email}" if email else ""
-            print(f"  {pol_id}/{email_str}")
+            print(f"  {acct_num}/{email_str}")
             for f in files:
                 print(f"    {f.name}")
 
@@ -352,6 +362,7 @@ def cmd_turn_status(args):
     for player in summary['players']:
         status_icon = "[done]" if player['processed'] else "[    ]"
         print(f"{status_icon} {player['name']} ({player['email']})")
+        print(f"        Account:   {player['account_number']}")
         print(f"        Political: {player['political_name']} ({player['political_id']})")
         print(f"        Reports generated: {'Yes' if player['processed'] else 'No'}")
 
@@ -388,10 +399,10 @@ def cmd_turn_status(args):
     processed = folders.list_processed(turn_str)
     if processed:
         print(f"\nProcessed: {folders.processed_dir / turn_str}/")
-        for pol_id, files in processed.items():
-            email = folders.get_email_for_political(int(pol_id))
+        for acct_num, files in processed.items():
+            email = folders.get_email_for_account(acct_num)
             email_str = f" -> {email}" if email else ""
-            print(f"  {pol_id}/{email_str}")
+            print(f"  {acct_num}/{email_str}")
             for f in files:
                 print(f"    {f.name}")
 
@@ -501,7 +512,7 @@ def cmd_list_ships(args):
     conn = get_connection(db_path)
 
     ships = conn.execute("""
-        SELECT s.*, ss.name as system_name, pp.name as owner_name, p.email
+        SELECT s.*, ss.name as system_name, pp.name as owner_name, p.email, p.account_number
         FROM ships s 
         JOIN star_systems ss ON s.system_id = ss.system_id
         JOIN political_positions pp ON s.owner_political_id = pp.position_id
@@ -513,12 +524,13 @@ def cmd_list_ships(args):
         print(f"No ships in game {args.game}.")
     else:
         print(f"\nShips in game {args.game}:")
-        print(f"{'ID':<12} {'Name':<22} {'Owner':<18} {'Email':<25} {'Location':<10} {'TU':<10}")
-        print("-" * 97)
+        print(f"{'ID':<12} {'Name':<20} {'Owner':<18} {'Account':<12} {'Location':<10} {'TU':<10}")
+        print("-" * 82)
         for s in ships:
             loc = f"{s['grid_col']}{s['grid_row']:02d}"
-            print(f"{s['ship_id']:<12} {s['name']:<22} {s['owner_name']:<18} "
-                  f"{s['email']:<25} {loc:<10} {s['tu_remaining']}/{s['tu_per_turn']}")
+            dock = f" [D]" if s['docked_at_base_id'] else ""
+            print(f"{s['ship_id']:<12} {s['name']:<20} {s['owner_name']:<18} "
+                  f"{s['account_number']:<12} {loc}{dock:<10} {s['tu_remaining']}/{s['tu_per_turn']}")
 
     conn.close()
 
@@ -603,7 +615,7 @@ Typical workflow:
     sp.add_argument('--demo', action='store_true', help='Create demo game with 2 players')
 
     # --- add-player ---
-    sp = subparsers.add_parser('add-player', help='Add a player')
+    sp = subparsers.add_parser('add-player', help='Add a player (GM command)')
     sp.add_argument('--game', default='HANF231', help='Game ID')
     sp.add_argument('--name', required=True, help='Player name')
     sp.add_argument('--email', required=True, help='Player email')
@@ -611,6 +623,10 @@ Typical workflow:
     sp.add_argument('--ship-name', help='Starting ship name')
     sp.add_argument('--start-col', default='I', help='Starting grid column')
     sp.add_argument('--start-row', type=int, default=6, help='Starting grid row')
+
+    # --- join-game ---
+    sp = subparsers.add_parser('join-game', help='Interactive new player registration')
+    sp.add_argument('--game', default='HANF231', help='Game ID')
 
     # --- submit-orders ---
     sp = subparsers.add_parser('submit-orders', help='Submit orders from file')
@@ -664,6 +680,7 @@ Typical workflow:
     commands = {
         'setup-game': cmd_setup_game,
         'add-player': cmd_add_player,
+        'join-game': cmd_join_game,
         'submit-orders': cmd_submit_orders,
         'run-turn': cmd_run_turn,
         'turn-status': cmd_turn_status,

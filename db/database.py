@@ -81,6 +81,7 @@ def init_db(db_path=None):
         game_id TEXT NOT NULL,
         player_name TEXT NOT NULL,
         email TEXT NOT NULL,
+        account_number TEXT NOT NULL UNIQUE,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (game_id) REFERENCES games(game_id)
     );

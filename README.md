@@ -9,22 +9,25 @@ Deterministic turn resolution, ASCII reports, persistent SQLite universe.
 # 1. Set up a demo game (Hanf system with 2 players)
 python pbem.py setup-game --demo
 
-# 2. List ships to find IDs and player emails
+# 2. List ships to find IDs, account numbers, and owners
 python pbem.py list-ships --game HANF231
 
-# 3. View the system map
+# 3. New players can join at any time
+python pbem.py join-game --game HANF231
+
+# 4. View the system map
 python pbem.py show-map --game HANF231
 
-# 4. Submit orders (--email identifies the submitting player)
+# 5. Submit orders (--email identifies the submitting player)
 python pbem.py submit-orders orders.yaml --email alice@example.com
 
-# 5. Check who has submitted orders
+# 6. Check who has submitted orders
 python pbem.py turn-status --game HANF231
 
-# 6. Resolve the turn and generate reports
+# 7. Resolve the turn and generate reports
 python pbem.py run-turn --game HANF231 -v
 
-# 7. Advance to the next turn (resets all TUs)
+# 8. Advance to the next turn (resets all TUs)
 python pbem.py advance-turn --game HANF231
 ```
 
@@ -42,7 +45,7 @@ stellar_dominion/
 ├── db/
 │   └── database.py                  # SQLite schema & connection
 ├── engine/
-│   ├── game_setup.py                # Game/player creation
+│   ├── game_setup.py                # Game/player creation & join-game registration
 │   ├── turn_folders.py              # Turn folder manager (incoming/processed)
 │   ├── maps/
 │   │   └── system_map.py            # 25x25 ASCII grid renderer
@@ -55,14 +58,53 @@ stellar_dominion/
 └── game_data/                       # Created by setup-game
     ├── stellar_dominion.db          # Persistent game database
     └── turns/
-        ├── incoming/                # Player orders filed by email
-        └── processed/               # Resolved reports filed by political ID
+        ├── incoming/                # Player orders filed by email address
+        └── processed/               # Resolved reports filed by account number
 ```
+
+## Player Identity
+
+Each player has three types of identifier:
+
+| Identifier | Visibility | Purpose |
+|------------|-----------|---------|
+| **Account Number** | Secret — known only to the player and the GM | Used for order validation and report folder routing. Never appears in reports or scans. |
+| **Political ID** | Public — discoverable by other players via scanning | In-game identity for diplomacy, contacts, and ownership. |
+| **Ship/Base IDs** | Public — discoverable via scanning | Identify assets on the map. |
+
+The account number is generated when a player joins the game and must be kept
+secret. It is used alongside the player's email address to validate order
+submissions. Political IDs and ship IDs are the public-facing identifiers that
+other players encounter through the game's scanning and contact systems.
+
+## Joining a Game
+
+New players can join at any point during the game using the interactive
+registration form:
+
+```bash
+python pbem.py join-game --game HANF231
+```
+
+The form prompts for:
+- **Real name** — the player's name (for GM reference)
+- **Email address** — must be unique, used for order submission and report delivery
+- **Political character name** — in-game identity (e.g. "Admiral Chen", "Warlord Zax")
+- **Ship name** — the player's starting vessel (e.g. "VFS Boethius", "SS Vengeance")
+
+The engine then:
+1. Generates a unique account number, political ID, and ship ID
+2. Picks a random starbase and docks the new ship there
+3. Creates the political position with 10,000 starting credits
+4. Displays the account number with a reminder to keep it secret
+
+Players can also be added directly by the GM using `add-player` with explicit
+parameters.
 
 ## Turn Folder Structure
 
 Orders and reports are managed through a structured folder layout that separates
-incoming orders (keyed by email) from processed output (keyed by political ID).
+incoming orders (keyed by email) from processed output (keyed by account number).
 
 ### Incoming — `turns/incoming/{turn}/{email}/`
 
@@ -91,25 +133,30 @@ Validation at submission checks:
 If validation fails, the orders are stored as `rejected_` with a `.reason` file.
 Resubmitting valid orders for the same ship replaces the previous submission.
 
-### Processed — `turns/processed/{turn}/{political_id}/`
+### Processed — `turns/processed/{turn}/{account_number}/`
 
-Resolved reports are filed under the political position ID — the permanent,
-stable identifier for the player. The email address is looked up from the
-database at send time, so if a player changes their email, the folder
-structure doesn't need to change.
+Resolved reports are filed under the player's account number — a secret,
+permanent identifier that never changes. The email address is looked up from
+the database at send time, keeping the folder structure stable even if a
+player updates their email.
 
 ```
 processed/
   500.1/
-    76106713/                       # Alice's political ID
+    25384359/                       # Alice's account number (secret)
       ship_57131458.txt             # Ship turn report
       political_76106713.txt        # Political summary (finances, fleet, contacts)
-    57142790/                       # Bob's political ID
+    13475868/                       # Bob's account number (secret)
       ship_17579149.txt
       political_57142790.txt
 ```
 
-When SMTP integration is added, the send step simply iterates each political
+Using account numbers rather than political IDs for the folder structure means
+that even if a player shares their political ID with another player (through
+diplomacy, contacts, or scanning), it doesn't expose where their turn reports
+are stored on the file system.
+
+When SMTP integration is added, the send step simply iterates each account
 folder, looks up the email from the database, and sends everything in the folder.
 
 ## The Hanf System (231)
@@ -192,15 +239,29 @@ Turns follow `YEAR.WEEK` format: `500.1` through `500.52`, then `501.1`.
 | Command | Description |
 |---------|-------------|
 | `setup-game [--demo]` | Create a new game (--demo adds 2 test players) |
-| `add-player --name --email` | Add a player with ship and political position |
+| `join-game [--game ID]` | Interactive new player registration |
+| `add-player --name --email` | Add a player directly (GM command) |
 | `submit-orders <file> --email <addr>` | Submit orders, validating ownership by email |
 | `run-turn --game ID [-v]` | Resolve turn, generate reports to processed folder |
 | `turn-status [--game ID] [--turn N]` | Show who has submitted and what's been processed |
 | `show-map --game ID` | Display system ASCII map |
 | `show-status --ship ID` | Show ship status |
-| `list-ships --game ID` | List all ships with owner emails |
+| `list-ships --game ID` | List all ships with owner and account info |
 | `advance-turn --game ID` | Advance to next turn, reset TUs |
 | `edit-credits --political ID --amount N` | Set player credits |
+
+### join-game details
+
+```bash
+python pbem.py join-game [--game HANF231]
+```
+
+Interactive text form for new player registration. Prompts for name, email,
+political character name, and ship name. The new ship starts docked at a
+random starbase. Players can join at any point during the game.
+
+On completion, the player receives their secret account number which they must
+keep private. Their political ID and ship ID are public identifiers.
 
 ### submit-orders details
 
@@ -223,9 +284,9 @@ the database for resolution.
 python pbem.py turn-status [--game HANF231] [--turn 500.1]
 ```
 
-Shows a dashboard of all players, which ships have orders submitted, any
-rejections, and whether reports have been generated. Useful for the GM to
-check everyone is in before running the turn.
+Shows a dashboard of all players, their account numbers, which ships have
+orders submitted, any rejections, and whether reports have been generated.
+Useful for the GM to check everyone is in before running the turn.
 
 ## Report Sections
 
@@ -245,12 +306,20 @@ Political reports include financial summaries, ship fleet overview, and known co
 
 ## Game Concepts
 
+### Account Number
+Every player receives a unique 8-digit account number when they join. This is
+their secret out-of-game identifier used for order validation and report
+delivery. It should never be shared with other players. If a future feature
+requires sharing political IDs (diplomacy, faction membership, etc.), the
+account number remains private.
+
 ### Political Position
 Every player has one political position that:
 - Owns all their ships and bases
 - Tracks credits (in-game currency)
 - Stores known contacts and intelligence
 - Has rank, affiliation, and influence
+- Has a public ID that other players can discover through scanning
 
 ### Credits
 - Starting amount: 10,000

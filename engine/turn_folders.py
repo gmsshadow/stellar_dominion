@@ -17,10 +17,10 @@ Folder layout:
 
         processed/                        ← resolved turn output
           500.1/
-            42268153/                     ← Alice's political ID
+            38291047/                     ← Alice's account number (secret)
               ship_57131458.txt           ← ship report
               political_42268153.txt      ← political summary
-            85545143/                     ← Bob's political ID
+            71503928/                     ← Bob's account number (secret)
               ship_88234561.txt
               political_85545143.txt
 """
@@ -174,33 +174,33 @@ class TurnFolders:
         return results
 
     # ------------------------------------------------------------------
-    # Processed output
+    # Processed output (keyed by account number)
     # ------------------------------------------------------------------
 
-    def get_processed_dir(self, turn_str, political_id):
-        """Get (and create) the processed folder for a political position."""
-        folder = self.processed_dir / turn_str / str(political_id)
+    def get_processed_dir(self, turn_str, account_number):
+        """Get (and create) the processed folder for a player's account."""
+        folder = self.processed_dir / turn_str / str(account_number)
         folder.mkdir(parents=True, exist_ok=True)
         return folder
 
-    def store_ship_report(self, turn_str, political_id, ship_id, report_text):
+    def store_ship_report(self, turn_str, account_number, ship_id, report_text):
         """Store a ship turn report in the correct processed folder."""
-        folder = self.get_processed_dir(turn_str, political_id)
+        folder = self.get_processed_dir(turn_str, account_number)
         report_file = folder / f"ship_{ship_id}.txt"
         report_file.write_text(report_text)
         return report_file
 
-    def store_political_report(self, turn_str, political_id, report_text):
+    def store_political_report(self, turn_str, account_number, political_id, report_text):
         """Store a political turn report in the correct processed folder."""
-        folder = self.get_processed_dir(turn_str, political_id)
+        folder = self.get_processed_dir(turn_str, account_number)
         report_file = folder / f"political_{political_id}.txt"
         report_file.write_text(report_text)
         return report_file
 
     def list_processed(self, turn_str=None):
         """
-        List all processed reports for a turn, grouped by political ID.
-        Returns dict of political_id -> list of report file paths.
+        List all processed reports for a turn, grouped by account number.
+        Returns dict of account_number -> list of report file paths.
         """
         if turn_str is None:
             turn_str = self.get_current_turn_str()
@@ -210,66 +210,77 @@ class TurnFolders:
             return {}
 
         results = {}
-        for pol_dir in sorted(turn_dir.iterdir()):
-            if not pol_dir.is_dir():
+        for acct_dir in sorted(turn_dir.iterdir()):
+            if not acct_dir.is_dir():
                 continue
-            political_id = pol_dir.name
+            account_number = acct_dir.name
             reports = []
-            for f in sorted(pol_dir.iterdir()):
+            for f in sorted(acct_dir.iterdir()):
                 if f.suffix == ".txt":
                     reports.append(f)
             if reports:
-                results[political_id] = reports
+                results[account_number] = reports
         return results
 
-    def get_player_reports(self, turn_str, political_id):
+    def get_player_reports(self, turn_str, account_number):
         """Get all report files for a specific player/turn."""
-        folder = self.processed_dir / turn_str / str(political_id)
+        folder = self.processed_dir / turn_str / str(account_number)
         if not folder.exists():
             return []
         return sorted(folder.glob("*.txt"))
 
     # ------------------------------------------------------------------
-    # Email routing lookup
+    # Routing lookups
     # ------------------------------------------------------------------
 
-    def get_email_for_political(self, political_id):
-        """Look up the email address for a political position."""
+    def get_email_for_account(self, account_number):
+        """Look up the email address for an account number."""
+        conn = get_connection(self.db_path)
+        result = conn.execute(
+            "SELECT email FROM players WHERE account_number = ?",
+            (str(account_number),)
+        ).fetchone()
+        conn.close()
+        return result['email'] if result else None
+
+    def get_account_for_email(self, email):
+        """Look up the account number for an email address."""
+        conn = get_connection(self.db_path)
+        result = conn.execute(
+            "SELECT account_number FROM players WHERE email = ? AND game_id = ?",
+            (email, self.game_id)
+        ).fetchone()
+        conn.close()
+        return result['account_number'] if result else None
+
+    def get_account_for_political(self, political_id):
+        """Look up the account number for a political position."""
         conn = get_connection(self.db_path)
         result = conn.execute("""
-            SELECT p.email FROM players p
+            SELECT p.account_number FROM players p
             JOIN political_positions pp ON p.player_id = pp.player_id
             WHERE pp.position_id = ?
         """, (political_id,)).fetchone()
         conn.close()
-        return result['email'] if result else None
-
-    def get_political_for_email(self, email):
-        """Look up the political position ID for an email address."""
-        conn = get_connection(self.db_path)
-        result = conn.execute("""
-            SELECT pp.position_id FROM political_positions pp
-            JOIN players p ON pp.player_id = p.player_id
-            WHERE p.email = ? AND pp.game_id = ?
-        """, (email, self.game_id)).fetchone()
-        conn.close()
-        return result['position_id'] if result else None
+        return result['account_number'] if result else None
 
     def validate_ship_ownership(self, email, ship_id):
         """
         Validate that the given email owns the given ship.
-        Returns (valid, political_id, error_message).
+        Returns (valid, account_number, error_message).
         """
         conn = get_connection(self.db_path)
 
         # Find player by email
         player = conn.execute(
-            "SELECT player_id FROM players WHERE email = ? AND game_id = ?",
+            "SELECT player_id, account_number FROM players WHERE email = ? AND game_id = ?",
             (email, self.game_id)
         ).fetchone()
         if not player:
             conn.close()
             return False, None, f"No player registered with email '{email}' in game {self.game_id}"
+
+        account_number = player['account_number']
 
         # Find political position for player
         political = conn.execute(
@@ -278,7 +289,7 @@ class TurnFolders:
         ).fetchone()
         if not political:
             conn.close()
-            return False, None, f"No political position found for player"
+            return False, account_number, f"No political position found for player"
 
         # Check ship ownership
         ship = conn.execute(
@@ -287,17 +298,17 @@ class TurnFolders:
         ).fetchone()
         if not ship:
             conn.close()
-            return False, political['position_id'], f"Ship {ship_id} not found in game {self.game_id}"
+            return False, account_number, f"Ship {ship_id} not found in game {self.game_id}"
 
         if ship['owner_political_id'] != political['position_id']:
             conn.close()
-            return False, political['position_id'], (
+            return False, account_number, (
                 f"Ship {ship['name']} ({ship_id}) is not owned by your political position. "
                 f"It belongs to political {ship['owner_political_id']}"
             )
 
         conn.close()
-        return True, political['position_id'], None
+        return True, account_number, None
 
     # ------------------------------------------------------------------
     # Summary / status
@@ -313,9 +324,10 @@ class TurnFolders:
 
         conn = get_connection(self.db_path)
 
-        # Get all players in the game
+        # Get all players in the game (now including account_number)
         players = conn.execute("""
-            SELECT p.email, p.player_name, pp.position_id, pp.name as political_name
+            SELECT p.email, p.player_name, p.account_number,
+                   pp.position_id, pp.name as political_name
             FROM players p
             JOIN political_positions pp ON p.player_id = pp.player_id
             WHERE p.game_id = ?
@@ -350,14 +362,16 @@ class TurnFolders:
 
         for player in players:
             email = player['email']
+            account_number = player['account_number']
             player_ships = [s for s in ships if s['owner_political_id'] == player['position_id']]
-            has_processed = str(player['position_id']) in processed
+            has_processed = account_number in processed
             player_orders = orders_by_email.get(email, set())
             player_rejected = rejected_by_email.get(email, set())
 
             player_info = {
                 'email': email,
                 'name': player['player_name'],
+                'account_number': account_number,
                 'political_id': player['position_id'],
                 'political_name': player['political_name'],
                 'processed': has_processed,
