@@ -1,0 +1,15 @@
+# Orders for VFS Boethius - tests success and failure paths
+game: HANF231
+ship: 57131458
+orders:
+  - WAIT: 50
+  - MOVE: M13
+  - LOCATIONSCAN: {}
+  - MOVE: H04
+  - ORBIT: 247985
+  - DOCK: 12340001
+  - DOCK: 45687590
+  - UNDOCK: {}
+  - MOVE: R08
+  - SYSTEMSCAN: {}
+  - WAIT: 10

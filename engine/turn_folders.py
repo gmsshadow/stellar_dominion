@@ -273,12 +273,19 @@ class TurnFolders:
 
         # Find player by email
         player = conn.execute(
-            "SELECT player_id, account_number FROM players WHERE email = ? AND game_id = ?",
+            "SELECT player_id, account_number, status FROM players WHERE email = ? AND game_id = ?",
             (email, self.game_id)
         ).fetchone()
         if not player:
             conn.close()
             return False, None, f"No player registered with email '{email}' in game {self.game_id}"
+
+        if player['status'] == 'suspended':
+            conn.close()
+            return False, player['account_number'], (
+                f"Account for '{email}' is currently suspended. "
+                f"Orders cannot be submitted while suspended."
+            )
 
         account_number = player['account_number']
 
@@ -324,19 +331,22 @@ class TurnFolders:
 
         conn = get_connection(self.db_path)
 
-        # Get all players in the game (now including account_number)
+        # Get all active players in the game (now including account_number)
         players = conn.execute("""
             SELECT p.email, p.player_name, p.account_number,
                    pp.position_id, pp.name as political_name
             FROM players p
             JOIN political_positions pp ON p.player_id = pp.player_id
-            WHERE p.game_id = ?
+            WHERE p.game_id = ? AND p.status = 'active'
         """, (self.game_id,)).fetchall()
 
-        # Get all ships
+        # Get all ships (only active players)
         ships = conn.execute("""
             SELECT s.ship_id, s.name, s.owner_political_id
-            FROM ships s WHERE s.game_id = ?
+            FROM ships s
+            JOIN political_positions pp ON s.owner_political_id = pp.position_id
+            JOIN players p ON pp.player_id = p.player_id
+            WHERE s.game_id = ? AND p.status = 'active'
         """, (self.game_id,)).fetchall()
 
         conn.close()

@@ -249,6 +249,10 @@ Turns follow `YEAR.WEEK` format: `500.1` through `500.52`, then `501.1`.
 | `list-ships --game ID` | List all ships with owner and account info |
 | `advance-turn --game ID` | Advance to next turn, reset TUs |
 | `edit-credits --political ID --amount N` | Set player credits |
+| `suspend-player --email/--account` | Suspend a player (hide all assets) |
+| `reinstate-player --email/--account` | Reinstate a suspended player |
+| `list-players [--all]` | List players (--all includes suspended) |
+| `process-inbox --inbox <dir>` | Batch process orders from inbox directory |
 
 ### join-game details
 
@@ -287,6 +291,41 @@ python pbem.py turn-status [--game OMICRON101] [--turn 500.1]
 Shows a dashboard of all players, their account numbers, which ships have
 orders submitted, any rejections, and whether reports have been generated.
 Useful for the GM to check everyone is in before running the turn.
+
+### Player Suspension
+
+```bash
+python pbem.py suspend-player --email alice@example.com [--game OMICRON101]
+python pbem.py suspend-player --account 12345678 [--game OMICRON101]
+python pbem.py reinstate-player --email alice@example.com
+```
+
+Suspended players' ships and positions are preserved but invisible to other
+players. They won't appear on maps, in scans, or in turn status. Suspended
+players cannot submit orders. Use `list-ships --all` or `list-players --all`
+to see suspended accounts. All assets are fully restored on reinstatement.
+
+### Batch Inbox Processing
+
+```bash
+python pbem.py process-inbox --inbox /path/to/inbox [--game OMICRON101] [--keep]
+```
+
+Processes all order files from a directory. The inbox should contain
+subdirectories named by player email, each containing order files:
+
+```
+inbox/
+  alice@example.com/
+    orders_12345678.yaml
+  bob@example.com/
+    orders_87654321.yaml
+```
+
+Each file is validated, filed, and a receipt or rejection is generated — the
+same as calling `submit-orders` for each one. By default, processed files
+are moved to `inbox/_processed/` to avoid re-processing. Use `--keep` to
+leave them in place.
 
 ## Report Sections
 

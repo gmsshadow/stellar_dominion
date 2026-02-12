@@ -25,8 +25,8 @@ from datetime import datetime
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent))
 
-from db.database import init_db, get_connection
-from engine.game_setup import create_game, add_player, setup_demo_game, join_game
+from db.database import init_db, get_connection, migrate_db
+from engine.game_setup import create_game, add_player, setup_demo_game, join_game, suspend_player, reinstate_player, list_players
 from engine.orders.parser import parse_orders_file, parse_yaml_orders, parse_text_orders
 from engine.resolution.resolver import TurnResolver
 from engine.reports.report_gen import generate_ship_report, generate_political_report
@@ -242,7 +242,11 @@ def cmd_run_turn(args):
             return
     else:
         ships = conn.execute(
-            "SELECT * FROM ships WHERE game_id = ?", (args.game,)
+            """SELECT s.* FROM ships s
+               JOIN political_positions pp ON s.owner_political_id = pp.position_id
+               JOIN players p ON pp.player_id = p.player_id
+               WHERE s.game_id = ? AND p.status = 'active'""",
+            (args.game,)
         ).fetchall()
 
     print(f"=== Resolving Turn {turn_str} for game {args.game} ===\n")
@@ -304,12 +308,12 @@ def cmd_run_turn(args):
             print(report)
             print()
 
-    # Generate one political report per political position
+    # Generate one political report per active political position
     all_politicals = conn.execute("""
         SELECT DISTINCT pp.position_id, p.email, p.account_number
         FROM political_positions pp
         JOIN players p ON pp.player_id = p.player_id
-        WHERE pp.game_id = ?
+        WHERE pp.game_id = ? AND p.status = 'active'
     """, (args.game,)).fetchall()
 
     print()
@@ -445,7 +449,10 @@ def cmd_show_map(args):
                         'symbol': 'B', 'name': b['name']})
 
     ships = conn.execute(
-        "SELECT * FROM ships WHERE system_id = ? AND game_id = ?",
+        """SELECT s.* FROM ships s
+           JOIN political_positions pp ON s.owner_political_id = pp.position_id
+           JOIN players p ON pp.player_id = p.player_id
+           WHERE s.system_id = ? AND s.game_id = ? AND p.status = 'active'""",
         (system_id, args.game)
     ).fetchall()
     for s in ships:
@@ -511,26 +518,34 @@ def cmd_list_ships(args):
     db_path = Path(args.db) if args.db else None
     conn = get_connection(db_path)
 
-    ships = conn.execute("""
-        SELECT s.*, ss.name as system_name, pp.name as owner_name, p.email, p.account_number
+    query = """
+        SELECT s.*, ss.name as system_name, pp.name as owner_name,
+               p.email, p.account_number, p.status as player_status
         FROM ships s 
         JOIN star_systems ss ON s.system_id = ss.system_id
         JOIN political_positions pp ON s.owner_political_id = pp.position_id
         JOIN players p ON pp.player_id = p.player_id
         WHERE s.game_id = ?
-    """, (args.game,)).fetchall()
+    """
+    params = [args.game]
+    if not getattr(args, 'all', False):
+        query += " AND p.status = 'active'"
+    query += " ORDER BY p.player_name, s.name"
+
+    ships = conn.execute(query, params).fetchall()
 
     if not ships:
         print(f"No ships in game {args.game}.")
     else:
         print(f"\nShips in game {args.game}:")
-        print(f"{'ID':<12} {'Name':<20} {'Owner':<18} {'Account':<12} {'Location':<10} {'TU':<10}")
-        print("-" * 82)
+        print(f"{'ID':<12} {'Name':<20} {'Owner':<18} {'Account':<12} {'Location':<10} {'TU':<10} {'Status':<10}")
+        print("-" * 92)
         for s in ships:
             loc = f"{s['grid_col']}{s['grid_row']:02d}"
             dock = f" [D]" if s['docked_at_base_id'] else ""
+            status = "SUSPENDED" if s['player_status'] == 'suspended' else ""
             print(f"{s['ship_id']:<12} {s['name']:<20} {s['owner_name']:<18} "
-                  f"{s['account_number']:<12} {loc}{dock:<10} {s['tu_remaining']}/{s['tu_per_turn']}")
+                  f"{s['account_number']:<12} {loc}{dock:<10} {s['tu_remaining']}/{s['tu_per_turn']:<4} {status}")
 
     conn.close()
 
@@ -590,6 +605,208 @@ def cmd_edit_credits(args):
 # MAIN
 # ======================================================================
 
+def cmd_suspend_player(args):
+    """Suspend a player account."""
+    db_path = Path(args.db) if args.db else None
+    suspend_player(
+        db_path=db_path,
+        game_id=args.game,
+        account_number=getattr(args, 'account', None),
+        email=getattr(args, 'email', None)
+    )
+
+
+def cmd_reinstate_player(args):
+    """Reinstate a suspended player account."""
+    db_path = Path(args.db) if args.db else None
+    reinstate_player(
+        db_path=db_path,
+        game_id=args.game,
+        account_number=getattr(args, 'account', None),
+        email=getattr(args, 'email', None)
+    )
+
+
+def cmd_list_players(args):
+    """List all players in the game."""
+    db_path = Path(args.db) if args.db else None
+    list_players(
+        db_path=db_path,
+        game_id=args.game,
+        include_suspended=getattr(args, 'all', False)
+    )
+
+
+def cmd_process_inbox(args):
+    """
+    Process all order files from an inbox directory.
+
+    Scans a directory (simulating an email inbox) for order files.
+    Each file should be in a subdirectory named by the sender's email:
+        inbox/
+          alice@example.com/
+            orders_12345678.yaml
+          bob@example.com/
+            orders_87654321.yaml
+
+    Or flat with email embedded in filename:
+        inbox/
+          alice@example.com_orders_12345678.yaml
+
+    For each file found, runs the same validation and filing as submit-orders.
+    """
+    db_path = Path(args.db) if args.db else None
+    inbox_dir = Path(args.inbox)
+    folders = TurnFolders(db_path=db_path, game_id=args.game)
+
+    if not inbox_dir.exists():
+        print(f"Error: inbox directory '{inbox_dir}' not found.")
+        return
+
+    turn_str = folders.get_current_turn_str()
+    conn = get_connection(db_path)
+
+    print(f"\n=== Processing Inbox - Game {args.game}, Turn {turn_str} ===\n")
+
+    # Collect order files to process
+    order_files = []
+
+    # Pattern 1: subdirectories named by email
+    for item in sorted(inbox_dir.iterdir()):
+        if item.is_dir() and '@' in item.name:
+            email = item.name
+            for f in sorted(item.iterdir()):
+                if f.suffix in ('.yaml', '.yml', '.txt') and f.name.startswith('orders'):
+                    order_files.append((email, f))
+        # Pattern 2: flat files with email prefix
+        elif item.is_file() and '@' in item.name and item.name.startswith(('orders', 'email_')):
+            # Try to extract email from filename: email_user@domain.com_orders_SHIPID.yaml
+            parts = item.name.split('_', 1)
+            if '@' in parts[0]:
+                email = parts[0]
+                order_files.append((email, item))
+
+    if not order_files:
+        print("No order files found in inbox.")
+        conn.close()
+        return
+
+    accepted = 0
+    rejected = 0
+    skipped = 0
+
+    for email, filepath in order_files:
+        print(f"  Processing: {email} / {filepath.name}")
+
+        # Read and parse the orders file
+        try:
+            content = filepath.read_text()
+            parsed = parse_orders_file(str(filepath))
+        except Exception as e:
+            print(f"    ERROR: could not parse file: {e}")
+            rejected += 1
+            continue
+
+        if parsed.get('error'):
+            print(f"    REJECTED: {parsed['error']}")
+            rejected += 1
+            continue
+
+        orders = parsed.get('orders', [])
+        if not orders:
+            errors = parsed.get('errors', [])
+            if errors:
+                print(f"    REJECTED: {'; '.join(errors)}")
+                rejected += 1
+            else:
+                print(f"    SKIP: no valid orders found in file")
+                skipped += 1
+            continue
+
+        # Determine ship_id from the parsed header
+        ship_id = parsed.get('ship')
+        if not ship_id:
+            print(f"    SKIP: no ship ID found in orders file")
+            skipped += 1
+            continue
+
+        try:
+            ship_id = int(ship_id)
+        except (ValueError, TypeError):
+            print(f"    REJECTED: invalid ship ID '{ship_id}'")
+            rejected += 1
+            continue
+
+        # Validate ownership (also checks suspension)
+        valid, account_number, error = folders.validate_ship_ownership(email, ship_id)
+
+        if not valid:
+            print(f"    REJECTED: {error}")
+            folders.store_rejected(turn_str, email, ship_id, content, [error])
+            rejected += 1
+            continue
+
+        # Store the orders
+        stored_path = folders.store_incoming_orders(turn_str, email, ship_id, content)
+
+        # Write to database
+        game = conn.execute(
+            "SELECT current_year, current_week FROM games WHERE game_id = ?",
+            (args.game,)
+        ).fetchone()
+        player = conn.execute(
+            "SELECT player_id FROM players WHERE email = ? AND game_id = ?",
+            (email, args.game)
+        ).fetchone()
+
+        # Clear previous orders for this ship/turn
+        conn.execute("""
+            DELETE FROM turn_orders
+            WHERE game_id = ? AND turn_year = ? AND turn_week = ?
+              AND subject_type = 'ship' AND subject_id = ?
+        """, (args.game, game['current_year'], game['current_week'], ship_id))
+
+        # Insert new orders
+        for seq, order in enumerate(orders, 1):
+            params = json.dumps(order.get('params', {})) if order.get('params') else None
+            conn.execute("""
+                INSERT INTO turn_orders
+                    (game_id, turn_year, turn_week, player_id,
+                     subject_type, subject_id, order_sequence, command, parameters)
+                VALUES (?, ?, ?, ?, 'ship', ?, ?, ?, ?)
+            """, (args.game, game['current_year'], game['current_week'],
+                  player['player_id'], ship_id, seq,
+                  order['command'], params))
+
+        conn.commit()
+
+        # Store receipt
+        receipt_info = {
+            'status': 'accepted',
+            'order_count': len(orders),
+        }
+        folders.store_receipt(turn_str, email, ship_id, receipt_info)
+
+        ship_name = conn.execute(
+            "SELECT name FROM ships WHERE ship_id = ?", (ship_id,)
+        ).fetchone()
+        name_str = f" ({ship_name['name']})" if ship_name else ""
+        print(f"    ACCEPTED: {len(orders)} orders for ship {ship_id}{name_str}")
+        accepted += 1
+
+        # Move processed file to avoid re-processing
+        if not args.keep:
+            processed_dir = inbox_dir / "_processed"
+            processed_dir.mkdir(exist_ok=True)
+            dest = processed_dir / f"{email}_{filepath.name}"
+            filepath.rename(dest)
+
+    conn.close()
+
+    print(f"\n  Summary: {accepted} accepted, {rejected} rejected, {skipped} skipped")
+    print(f"  Run 'turn-status' to see who is still outstanding.")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Stellar Dominion - PBEM Strategy Game Engine",
@@ -602,6 +819,14 @@ Typical workflow:
   4. turn-status                 Check who has submitted
   5. run-turn --game OMICRON101     Resolve and generate reports
   6. advance-turn                Move to next week
+
+Player management:
+  suspend-player --email alice@example.com   Suspend a player
+  reinstate-player --account 12345678        Reinstate a player
+  list-players --all                         Show all players inc. suspended
+
+Batch processing:
+  process-inbox --inbox /path/to/inbox       Process all orders from inbox
         """
     )
     parser.add_argument('--db', help='Database file path', default=None)
@@ -661,6 +886,7 @@ Typical workflow:
     # --- list-ships ---
     sp = subparsers.add_parser('list-ships', help='List all ships')
     sp.add_argument('--game', default='OMICRON101', help='Game ID')
+    sp.add_argument('--all', action='store_true', help='Include suspended players\' ships')
 
     # --- advance-turn ---
     sp = subparsers.add_parser('advance-turn', help='Advance to next turn')
@@ -670,6 +896,30 @@ Typical workflow:
     sp = subparsers.add_parser('edit-credits', help='Set credits for a political position')
     sp.add_argument('--political', type=int, required=True, help='Political position ID')
     sp.add_argument('--amount', type=float, required=True, help='Credit amount')
+
+    # --- suspend-player ---
+    sp = subparsers.add_parser('suspend-player', help='Suspend a player account')
+    sp.add_argument('--game', default='OMICRON101', help='Game ID')
+    sp.add_argument('--account', help='Player account number')
+    sp.add_argument('--email', help='Player email')
+
+    # --- reinstate-player ---
+    sp = subparsers.add_parser('reinstate-player', help='Reinstate a suspended player')
+    sp.add_argument('--game', default='OMICRON101', help='Game ID')
+    sp.add_argument('--account', help='Player account number')
+    sp.add_argument('--email', help='Player email')
+
+    # --- list-players ---
+    sp = subparsers.add_parser('list-players', help='List all players')
+    sp.add_argument('--game', default='OMICRON101', help='Game ID')
+    sp.add_argument('--all', action='store_true', help='Include suspended players')
+
+    # --- process-inbox ---
+    sp = subparsers.add_parser('process-inbox', help='Batch process orders from inbox directory')
+    sp.add_argument('--inbox', required=True, help='Path to inbox directory')
+    sp.add_argument('--game', default='OMICRON101', help='Game ID')
+    sp.add_argument('--keep', action='store_true',
+                    help='Keep processed files in place (default: move to _processed)')
 
     args = parser.parse_args()
 
@@ -689,9 +939,19 @@ Typical workflow:
         'list-ships': cmd_list_ships,
         'advance-turn': cmd_advance_turn,
         'edit-credits': cmd_edit_credits,
+        'suspend-player': cmd_suspend_player,
+        'reinstate-player': cmd_reinstate_player,
+        'list-players': cmd_list_players,
+        'process-inbox': cmd_process_inbox,
     }
 
     if args.command in commands:
+        # Auto-migrate database schema if DB exists
+        db_path = Path(args.db) if args.db else None
+        try:
+            migrate_db(db_path)
+        except Exception:
+            pass  # DB may not exist yet (e.g. setup-game)
         commands[args.command](args)
     else:
         parser.print_help()

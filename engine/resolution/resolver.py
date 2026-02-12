@@ -90,9 +90,12 @@ class TurnResolver:
                 'base_type': base['base_type']
             })
 
-        # Other ships
+        # Other ships (exclude suspended players' ships)
         ships = self.conn.execute(
-            "SELECT * FROM ships WHERE system_id = ? AND game_id = ?",
+            """SELECT s.* FROM ships s
+               JOIN political_positions pp ON s.owner_political_id = pp.position_id
+               JOIN players p ON pp.player_id = p.player_id
+               WHERE s.system_id = ? AND s.game_id = ? AND p.status = 'active'""",
             (system_id, self.game_id)
         ).fetchall()
         for s in ships:

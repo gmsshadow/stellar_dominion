@@ -383,3 +383,183 @@ def setup_demo_game(db_path=None):
                          ship_start_col="P", ship_start_row=15)
         return p1, p2
     return None
+
+
+def suspend_player(db_path=None, game_id="OMICRON101", account_number=None, email=None):
+    """
+    Suspend a player account and all associated positions/assets.
+
+    Suspended players:
+    - Cannot submit orders
+    - Ships are invisible to other players (scans, maps)
+    - Ships do not participate in turn resolution
+    - Do not appear in turn-status
+    - Political position and credits are preserved
+    - Can be reinstated later with full state restored
+
+    Identify player by account_number or email (one required).
+    """
+    conn = get_connection(db_path)
+
+    # Find the player
+    if account_number:
+        player = conn.execute(
+            "SELECT * FROM players WHERE account_number = ? AND game_id = ?",
+            (account_number, game_id)
+        ).fetchone()
+    elif email:
+        player = conn.execute(
+            "SELECT * FROM players WHERE email = ? AND game_id = ?",
+            (email, game_id)
+        ).fetchone()
+    else:
+        print("Error: must provide --account or --email to identify the player.")
+        conn.close()
+        return False
+
+    if not player:
+        print(f"Error: player not found in game {game_id}.")
+        conn.close()
+        return False
+
+    if player['status'] == 'suspended':
+        print(f"Player '{player['player_name']}' is already suspended.")
+        conn.close()
+        return False
+
+    # Get their political position and ships for the summary
+    political = conn.execute(
+        "SELECT * FROM political_positions WHERE player_id = ? AND game_id = ?",
+        (player['player_id'], game_id)
+    ).fetchone()
+
+    ships = []
+    if political:
+        ships = conn.execute(
+            "SELECT ship_id, name FROM ships WHERE owner_political_id = ? AND game_id = ?",
+            (political['position_id'], game_id)
+        ).fetchall()
+
+    # Set player status to suspended
+    conn.execute(
+        "UPDATE players SET status = 'suspended' WHERE player_id = ?",
+        (player['player_id'],)
+    )
+    conn.commit()
+    conn.close()
+
+    print(f"Player SUSPENDED: {player['player_name']} ({player['email']})")
+    print(f"  Account: {player['account_number']}")
+    if political:
+        print(f"  Political: {political['name']} ({political['position_id']})")
+    if ships:
+        print(f"  Ships archived ({len(ships)}):")
+        for s in ships:
+            print(f"    {s['name']} ({s['ship_id']})")
+    print(f"")
+    print(f"  All assets are preserved and invisible to other players.")
+    print(f"  Use 'reinstate-player' to restore this account.")
+    return True
+
+
+def reinstate_player(db_path=None, game_id="OMICRON101", account_number=None, email=None):
+    """
+    Reinstate a previously suspended player account.
+
+    All positions, ships, and assets become active and visible again.
+    """
+    conn = get_connection(db_path)
+
+    # Find the player
+    if account_number:
+        player = conn.execute(
+            "SELECT * FROM players WHERE account_number = ? AND game_id = ?",
+            (account_number, game_id)
+        ).fetchone()
+    elif email:
+        player = conn.execute(
+            "SELECT * FROM players WHERE email = ? AND game_id = ?",
+            (email, game_id)
+        ).fetchone()
+    else:
+        print("Error: must provide --account or --email to identify the player.")
+        conn.close()
+        return False
+
+    if not player:
+        print(f"Error: player not found in game {game_id}.")
+        conn.close()
+        return False
+
+    if player['status'] == 'active':
+        print(f"Player '{player['player_name']}' is already active.")
+        conn.close()
+        return False
+
+    # Get their political position and ships for the summary
+    political = conn.execute(
+        "SELECT * FROM political_positions WHERE player_id = ? AND game_id = ?",
+        (player['player_id'], game_id)
+    ).fetchone()
+
+    ships = []
+    if political:
+        ships = conn.execute(
+            "SELECT ship_id, name, grid_col, grid_row FROM ships WHERE owner_political_id = ? AND game_id = ?",
+            (political['position_id'], game_id)
+        ).fetchall()
+
+    # Set player status back to active
+    conn.execute(
+        "UPDATE players SET status = 'active' WHERE player_id = ?",
+        (player['player_id'],)
+    )
+    conn.commit()
+    conn.close()
+
+    print(f"Player REINSTATED: {player['player_name']} ({player['email']})")
+    print(f"  Account: {player['account_number']}")
+    if political:
+        print(f"  Political: {political['name']} ({political['position_id']})")
+        print(f"  Credits: {political['credits']:,.0f}")
+    if ships:
+        print(f"  Ships restored ({len(ships)}):")
+        for s in ships:
+            loc = f"{s['grid_col']}{s['grid_row']:02d}"
+            print(f"    {s['name']} ({s['ship_id']}) at {loc}")
+    print(f"")
+    print(f"  All assets are now visible and active again.")
+    print(f"  Player can submit orders for the current turn.")
+    return True
+
+
+def list_players(db_path=None, game_id="OMICRON101", include_suspended=False):
+    """List all players in a game with their status."""
+    conn = get_connection(db_path)
+
+    query = """
+        SELECT p.*, pp.position_id, pp.name as political_name, pp.credits
+        FROM players p
+        LEFT JOIN political_positions pp ON p.player_id = pp.player_id AND pp.game_id = p.game_id
+        WHERE p.game_id = ?
+    """
+    if not include_suspended:
+        query += " AND p.status = 'active'"
+    query += " ORDER BY p.player_name"
+
+    players = conn.execute(query, (game_id,)).fetchall()
+
+    if not players:
+        print(f"No players in game {game_id}.")
+        conn.close()
+        return
+
+    print(f"\nPlayers in game {game_id}:")
+    print(f"{'Name':<16} {'Email':<28} {'Account':<12} {'Political':<20} {'Status':<10}")
+    print("-" * 86)
+    for p in players:
+        status = p['status'] if p['status'] != 'active' else ''
+        pol_name = p['political_name'] or '—'
+        print(f"{p['player_name']:<16} {p['email']:<28} {p['account_number']:<12} {pol_name:<20} {status:<10}")
+
+    conn.close()

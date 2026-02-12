@@ -1,0 +1,5 @@
+game: HANF231
+ship: 37869448
+orders:
+  - MOVE: M13
+  - LOCATIONSCAN: {}

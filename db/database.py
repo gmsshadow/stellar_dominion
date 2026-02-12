@@ -82,6 +82,7 @@ def init_db(db_path=None):
         player_name TEXT NOT NULL,
         email TEXT NOT NULL,
         account_number TEXT NOT NULL UNIQUE,
+        status TEXT NOT NULL DEFAULT 'active',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (game_id) REFERENCES games(game_id)
     );
@@ -253,3 +254,17 @@ def init_db(db_path=None):
 
     conn.commit()
     return conn
+
+
+def migrate_db(db_path=None):
+    """Apply any pending schema migrations to an existing database."""
+    conn = get_connection(db_path)
+
+    # Check if status column exists on players table
+    columns = [row[1] for row in conn.execute("PRAGMA table_info(players)").fetchall()]
+    if 'status' not in columns:
+        conn.execute("ALTER TABLE players ADD COLUMN status TEXT NOT NULL DEFAULT 'active'")
+        conn.commit()
+        print("  Migration: added 'status' column to players table.")
+
+    conn.close()
