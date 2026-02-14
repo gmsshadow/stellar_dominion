@@ -10,6 +10,35 @@ from pathlib import Path
 DB_PATH = Path(__file__).parent.parent / "game_data" / "stellar_dominion.db"
 
 
+def get_faction(conn, faction_id):
+    """Get faction details by ID. Returns dict with faction_id, abbreviation, name."""
+    if faction_id is None:
+        return {'faction_id': None, 'abbreviation': 'IND', 'name': 'Independent'}
+    result = conn.execute(
+        "SELECT * FROM factions WHERE faction_id = ?", (faction_id,)
+    ).fetchone()
+    if result:
+        return dict(result)
+    return {'faction_id': faction_id, 'abbreviation': '???', 'name': 'Unknown'}
+
+
+def faction_display_name(conn, name, faction_id):
+    """Return a name with faction prefix, e.g. 'STA Vengeance'."""
+    faction = get_faction(conn, faction_id)
+    return f"{faction['abbreviation']} {name}"
+
+
+def get_faction_for_prefect(conn, prefect_id):
+    """Look up the faction for a prefect."""
+    result = conn.execute(
+        "SELECT faction_id FROM prefects WHERE prefect_id = ?",
+        (prefect_id,)
+    ).fetchone()
+    if result and result['faction_id']:
+        return get_faction(conn, result['faction_id'])
+    return {'faction_id': None, 'abbreviation': 'IND', 'name': 'Independent'}
+
+
 def get_connection(db_path=None):
     """Get a database connection."""
     path = db_path or DB_PATH
@@ -32,6 +61,7 @@ def init_db(db_path=None):
         game_name TEXT NOT NULL,
         current_year INTEGER NOT NULL DEFAULT 500,
         current_week INTEGER NOT NULL DEFAULT 1,
+        schema_version INTEGER NOT NULL DEFAULT 1,
         rng_seed TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
@@ -75,6 +105,18 @@ def init_db(db_path=None):
         FOREIGN KEY (parent_body_id) REFERENCES celestial_bodies(body_id)
     );
 
+    -- Factions (2-digit code, 3-letter abbreviation, long name)
+    CREATE TABLE IF NOT EXISTS factions (
+        faction_id INTEGER PRIMARY KEY,
+        abbreviation TEXT NOT NULL UNIQUE,
+        name TEXT NOT NULL,
+        description TEXT DEFAULT ''
+    );
+
+    -- Seed default faction: Stellar Training Academy
+    INSERT OR IGNORE INTO factions (faction_id, abbreviation, name, description)
+    VALUES (11, 'STA', 'Stellar Training Academy', 'Default starting faction for new players');
+
     -- Players
     CREATE TABLE IF NOT EXISTS players (
         player_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -87,13 +129,13 @@ def init_db(db_path=None):
         FOREIGN KEY (game_id) REFERENCES games(game_id)
     );
 
-    -- Political positions (one per player, up to 8-digit ID)
-    CREATE TABLE IF NOT EXISTS political_positions (
-        position_id INTEGER PRIMARY KEY,
+    -- Prefect positions (one per player, up to 8-digit ID)
+    CREATE TABLE IF NOT EXISTS prefects (
+        prefect_id INTEGER PRIMARY KEY,
         player_id INTEGER NOT NULL UNIQUE,
         game_id TEXT NOT NULL,
         name TEXT NOT NULL,
-        affiliation TEXT DEFAULT 'Independent',
+        faction_id INTEGER DEFAULT 11,
         rank TEXT DEFAULT 'Citizen',
         credits REAL NOT NULL DEFAULT 10000,
         influence INTEGER DEFAULT 0,
@@ -102,14 +144,15 @@ def init_db(db_path=None):
         created_turn_year INTEGER,
         created_turn_week INTEGER,
         FOREIGN KEY (player_id) REFERENCES players(player_id),
-        FOREIGN KEY (game_id) REFERENCES games(game_id)
+        FOREIGN KEY (game_id) REFERENCES games(game_id),
+        FOREIGN KEY (faction_id) REFERENCES factions(faction_id)
     );
 
     -- Ships (up to 8-digit unique ID)
     CREATE TABLE IF NOT EXISTS ships (
         ship_id INTEGER PRIMARY KEY,
         game_id TEXT NOT NULL,
-        owner_political_id INTEGER NOT NULL,
+        owner_prefect_id INTEGER NOT NULL,
         name TEXT NOT NULL,
         ship_class TEXT DEFAULT 'Scout',
         design TEXT DEFAULT 'Explorer',
@@ -131,7 +174,7 @@ def init_db(db_path=None):
         efficiency REAL DEFAULT 100.0,
         integrity REAL DEFAULT 100.0,
         FOREIGN KEY (game_id) REFERENCES games(game_id),
-        FOREIGN KEY (owner_political_id) REFERENCES political_positions(position_id),
+        FOREIGN KEY (owner_prefect_id) REFERENCES prefects(prefect_id),
         FOREIGN KEY (system_id) REFERENCES star_systems(system_id)
     );
 
@@ -139,7 +182,7 @@ def init_db(db_path=None):
     CREATE TABLE IF NOT EXISTS starbases (
         base_id INTEGER PRIMARY KEY,
         game_id TEXT NOT NULL,
-        owner_political_id INTEGER,
+        owner_prefect_id INTEGER,
         name TEXT NOT NULL,
         base_type TEXT DEFAULT 'Outpost',
         system_id INTEGER NOT NULL,
@@ -189,10 +232,10 @@ def init_db(db_path=None):
         mass_per_unit INTEGER DEFAULT 1
     );
 
-    -- Known contacts per political position
+    -- Known contacts per prefect
     CREATE TABLE IF NOT EXISTS known_contacts (
         contact_id INTEGER PRIMARY KEY AUTOINCREMENT,
-        political_id INTEGER NOT NULL,
+        prefect_id INTEGER NOT NULL,
         object_type TEXT NOT NULL,
         object_id INTEGER NOT NULL,
         object_name TEXT,
@@ -201,7 +244,7 @@ def init_db(db_path=None):
         location_row INTEGER,
         discovered_turn_year INTEGER,
         discovered_turn_week INTEGER,
-        FOREIGN KEY (political_id) REFERENCES political_positions(position_id)
+        FOREIGN KEY (prefect_id) REFERENCES prefects(prefect_id)
     );
 
     -- Turn orders (stored)
@@ -256,15 +299,79 @@ def init_db(db_path=None):
     return conn
 
 
+CURRENT_SCHEMA_VERSION = 1
+
+
 def migrate_db(db_path=None):
-    """Apply any pending schema migrations to an existing database."""
+    """
+    Apply any pending schema migrations to an existing database.
+    
+    Reads schema_version from the games table and applies migrations
+    in sequence until the database is at CURRENT_SCHEMA_VERSION.
+    """
     conn = get_connection(db_path)
 
-    # Check if status column exists on players table
+    # Check if any game exists yet (skip migration if DB is brand new / empty)
+    game = conn.execute("SELECT * FROM games LIMIT 1").fetchone() if \
+        conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='games'").fetchone() \
+        else None
+
+    if not game:
+        conn.close()
+        return
+
+    # Add schema_version column if missing (pre-versioning databases)
+    game_columns = [row[1] for row in conn.execute("PRAGMA table_info(games)").fetchall()]
+    if 'schema_version' not in game_columns:
+        conn.execute("ALTER TABLE games ADD COLUMN schema_version INTEGER NOT NULL DEFAULT 0")
+        conn.execute("UPDATE games SET schema_version = 0")
+        conn.commit()
+
+    version = conn.execute("SELECT schema_version FROM games LIMIT 1").fetchone()[0]
+
+    if version < 1:
+        _migrate_v0_to_v1(conn)
+        conn.execute("UPDATE games SET schema_version = 1")
+        conn.commit()
+        print(f"  Migration: v0 → v1 (added player status, factions, prefect faction_id)")
+        version = 1
+
+    # Future migrations slot in here:
+    # if version < 2:
+    #     _migrate_v1_to_v2(conn)
+    #     conn.execute("UPDATE games SET schema_version = 2")
+    #     conn.commit()
+    #     print(f"  Migration: v1 → v2 (description)")
+    #     version = 2
+
+    conn.close()
+
+
+def _migrate_v0_to_v1(conn):
+    """Migration from pre-versioned schema to v1."""
+    # Add status column to players
     columns = [row[1] for row in conn.execute("PRAGMA table_info(players)").fetchall()]
     if 'status' not in columns:
         conn.execute("ALTER TABLE players ADD COLUMN status TEXT NOT NULL DEFAULT 'active'")
-        conn.commit()
-        print("  Migration: added 'status' column to players table.")
 
-    conn.close()
+    # Create factions table
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS factions (
+            faction_id INTEGER PRIMARY KEY,
+            abbreviation TEXT NOT NULL UNIQUE,
+            name TEXT NOT NULL,
+            description TEXT DEFAULT ''
+        )
+    """)
+    conn.execute("""
+        INSERT OR IGNORE INTO factions (faction_id, abbreviation, name, description)
+        VALUES (11, 'STA', 'Stellar Training Academy', 'Default starting faction for new players')
+    """)
+
+    # Add faction_id to prefects
+    pp_columns = [row[1] for row in conn.execute("PRAGMA table_info(prefects)").fetchall()]
+    if 'faction_id' not in pp_columns:
+        conn.execute("ALTER TABLE prefects ADD COLUMN faction_id INTEGER DEFAULT 11")
+        conn.execute("UPDATE prefects SET faction_id = 11 WHERE faction_id IS NULL")
+
+    conn.commit()

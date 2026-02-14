@@ -1,0 +1,18 @@
+# Stellar Dominion - Sample Orders (Plain Text Format)
+#
+# Submit with:
+#   python pbem.py submit-orders samples/sample_orders.txt --email alice@example.com
+#
+# IMPORTANT: Replace ACCOUNT_NUMBER and SHIP_ID below with your actual values.
+# Find them with:  python pbem.py list-ships
+#
+# Lines starting with # are ignored.
+GAME OMICRON101
+ACCOUNT ACCOUNT_NUMBER
+SHIP SHIP_ID
+WAIT 30
+MOVE M13
+LOCATIONSCAN
+MOVE H04
+ORBIT 247985
+DOCK 45687590

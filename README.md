@@ -69,12 +69,12 @@ Each player has three types of identifier:
 | Identifier | Visibility | Purpose |
 |------------|-----------|---------|
 | **Account Number** | Secret — known only to the player and the GM | Used for order validation and report folder routing. Never appears in reports or scans. |
-| **Political ID** | Public — discoverable by other players via scanning | In-game identity for diplomacy, contacts, and ownership. |
+| **Prefect ID** | Public — discoverable by other players via scanning | In-game identity for diplomacy, contacts, and ownership. |
 | **Ship/Base IDs** | Public — discoverable via scanning | Identify assets on the map. |
 
 The account number is generated when a player joins the game and must be kept
 secret. It is used alongside the player's email address to validate order
-submissions. Political IDs and ship IDs are the public-facing identifiers that
+submissions. Prefect IDs and ship IDs are the public-facing identifiers that
 other players encounter through the game's scanning and contact systems.
 
 ## Joining a Game
@@ -89,13 +89,13 @@ python pbem.py join-game --game OMICRON101
 The form prompts for:
 - **Real name** — the player's name (for GM reference)
 - **Email address** — must be unique, used for order submission and report delivery
-- **Political character name** — in-game identity (e.g. "Admiral Chen", "Warlord Zax")
-- **Ship name** — the player's starting vessel (e.g. "VFS Boethius", "SS Vengeance")
+- **Prefect character name** — in-game identity (e.g. "Li Chen", "Warlord Zax")
+- **Ship name** — the player's starting vessel (e.g. "Boethius", "Vengeance")
 
 The engine then:
-1. Generates a unique account number, political ID, and ship ID
+1. Generates a unique account number, prefect ID, and ship ID
 2. Picks a random starbase and docks the new ship there
-3. Creates the political position with 10,000 starting credits
+3. Creates the prefect with 10,000 starting credits
 4. Displays the account number with a reminder to keep it secret
 
 Players can also be added directly by the GM using `add-player` with explicit
@@ -127,7 +127,7 @@ incoming/
 
 Validation at submission checks:
 - Is the email registered to a player in this game?
-- Does that player's political position own the ship?
+- Does that player's prefect own the ship?
 - Are there any valid orders after parsing?
 
 If validation fails, the orders are stored as `rejected_` with a `.reason` file.
@@ -145,14 +145,14 @@ processed/
   500.1/
     25384359/                       # Alice's account number (secret)
       ship_57131458.txt             # Ship turn report
-      political_76106713.txt        # Political summary (finances, fleet, contacts)
+      prefect_76106713.txt        # Prefect summary (finances, fleet, contacts)
     13475868/                       # Bob's account number (secret)
       ship_17579149.txt
-      political_57142790.txt
+      prefect_57142790.txt
 ```
 
-Using account numbers rather than political IDs for the folder structure means
-that even if a player shares their political ID with another player (through
+Using account numbers rather than prefect IDs for the folder structure means
+that even if a player shares their prefect ID with another player (through
 diplomacy, contacts, or scanning), it doesn't expose where their turn reports
 are stored on the file system.
 
@@ -214,7 +214,7 @@ DOCK 45687590
 | Command          | TU Cost | Description                      |
 |------------------|---------|----------------------------------|
 | `WAIT {n}`       | n       | Consume n TU doing nothing       |
-| `MOVE {coord}`   | 20      | Move to grid coordinate (e.g. M13) |
+| `MOVE {coord}`   | 2/sq    | Move to grid coordinate step-by-step (e.g. M13) |
 | `LOCATIONSCAN`   | 20      | Scan nearby cells for objects    |
 | `SYSTEMSCAN`     | 20      | Produce full system ASCII map    |
 | `ORBIT {bodyId}` | 10      | Enter orbit of a celestial body  |
@@ -248,7 +248,7 @@ Turns follow `YEAR.WEEK` format: `500.1` through `500.52`, then `501.1`.
 | `show-status --ship ID` | Show ship status |
 | `list-ships --game ID` | List all ships with owner and account info |
 | `advance-turn --game ID` | Advance to next turn, reset TUs |
-| `edit-credits --political ID --amount N` | Set player credits |
+| `edit-credits --prefect ID --amount N` | Set player credits |
 | `suspend-player --email/--account` | Suspend a player (hide all assets) |
 | `reinstate-player --email/--account` | Reinstate a suspended player |
 | `list-players [--all]` | List players (--all includes suspended) |
@@ -261,11 +261,11 @@ python pbem.py join-game [--game OMICRON101]
 ```
 
 Interactive text form for new player registration. Prompts for name, email,
-political character name, and ship name. The new ship starts docked at a
+prefect character name, and ship name. The new ship starts docked at a
 random starbase. Players can join at any point during the game.
 
 On completion, the player receives their secret account number which they must
-keep private. Their political ID and ship ID are public identifiers.
+keep private. Their prefect ID and ship ID are public identifiers.
 
 ### submit-orders details
 
@@ -332,7 +332,7 @@ leave them in place.
 Ship turn reports include:
 - **Between Turn Report** — passive events between turns
 - **Turn Report** — order-by-order execution log with TU tracking
-- **Command Report** — ship identity, affiliation, efficiency, TU remaining
+- **Command Report** — ship identity, faction, efficiency, TU remaining
 - **Navigation Report** — current location, docked/orbiting status
 - **Crew Report** — officers and crew complement
 - **Cargo Report** — cargo hold contents
@@ -341,7 +341,7 @@ Ship turn reports include:
 - **Contacts** — known objects in the system
 - **Pending Orders** — orders that failed and carry forward
 
-Political reports include financial summaries, ship fleet overview, and known contacts.
+Prefect reports include financial summaries, ship fleet overview, and known contacts.
 
 ## Game Concepts
 
@@ -349,15 +349,15 @@ Political reports include financial summaries, ship fleet overview, and known co
 Every player receives a unique 8-digit account number when they join. This is
 their secret out-of-game identifier used for order validation and report
 delivery. It should never be shared with other players. If a future feature
-requires sharing political IDs (diplomacy, faction membership, etc.), the
+requires sharing prefect IDs (diplomacy, faction membership, etc.), the
 account number remains private.
 
-### Political Position
-Every player has one political position that:
+### Prefect Position
+Every player has one prefect that:
 - Owns all their ships and bases
 - Tracks credits (in-game currency)
 - Stores known contacts and intelligence
-- Has rank, affiliation, and influence
+- Has rank, faction, and influence
 - Has a public ID that other players can discover through scanning
 
 ### Credits
@@ -379,8 +379,7 @@ Every player has one political position that:
 - [ ] Trading between bases (buy/sell cargo)
 - [ ] Base complex management and production
 - [ ] Crew wages and morale
-- [ ] Faction system with shared knowledge
+- [ ] Faction diplomacy and shared knowledge
 - [ ] Planetary surface maps
 - [ ] Web portal for turn upload/display
-- [ ] Distance-based movement costs
 - [ ] Standing orders

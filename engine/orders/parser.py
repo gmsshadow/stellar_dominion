@@ -85,6 +85,7 @@ def parse_yaml_orders(yaml_content):
     
     Expected format:
     game: OMICRON101
+    account: 35846634
     ship: 2547876
     orders:
       - WAIT: 50
@@ -92,7 +93,7 @@ def parse_yaml_orders(yaml_content):
       - LOCATIONSCAN: {}
       - DOCK: 45687590
     
-    Returns dict with game, ship, and parsed orders list.
+    Returns dict with game, account, ship, and parsed orders list.
     """
     try:
         data = yaml.safe_load(yaml_content)
@@ -104,6 +105,7 @@ def parse_yaml_orders(yaml_content):
 
     result = {
         'game': data.get('game', ''),
+        'account': str(data.get('account', '')),
         'ship': data.get('ship', ''),
         'orders': [],
         'errors': [],
@@ -150,6 +152,7 @@ def parse_text_orders(text_content):
     
     Expected format (one per line):
     GAME OMICRON101
+    ACCOUNT 35846634
     SHIP 2547876
     WAIT 50
     MOVE M13
@@ -162,6 +165,7 @@ def parse_text_orders(text_content):
     """
     result = {
         'game': '',
+        'account': '',
         'ship': '',
         'orders': [],
         'errors': [],
@@ -177,6 +181,9 @@ def parse_text_orders(text_content):
 
         if cmd == 'GAME':
             result['game'] = params or ''
+            continue
+        elif cmd == 'ACCOUNT':
+            result['account'] = params or ''
             continue
         elif cmd == 'SHIP':
             result['ship'] = params or ''

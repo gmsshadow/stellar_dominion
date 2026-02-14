@@ -25,11 +25,11 @@ from datetime import datetime
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent))
 
-from db.database import init_db, get_connection, migrate_db
+from db.database import init_db, get_connection, migrate_db, get_faction, faction_display_name
 from engine.game_setup import create_game, add_player, setup_demo_game, join_game, suspend_player, reinstate_player, list_players
 from engine.orders.parser import parse_orders_file, parse_yaml_orders, parse_text_orders
 from engine.resolution.resolver import TurnResolver
-from engine.reports.report_gen import generate_ship_report, generate_political_report
+from engine.reports.report_gen import generate_ship_report, generate_prefect_report
 from engine.maps.system_map import render_system_map
 from engine.turn_folders import TurnFolders
 
@@ -53,7 +53,7 @@ def cmd_add_player(args):
     result = add_player(
         db_path, game_id=args.game,
         player_name=args.name, email=args.email,
-        political_name=args.political or f"Commander {args.name}",
+        prefect_name=args.prefect or f"Commander {args.name}",
         ship_name=args.ship_name or f"SS {args.name}",
         ship_start_col=args.start_col or 'I',
         ship_start_row=args.start_row or 6
@@ -107,10 +107,16 @@ def cmd_submit_orders(args):
         print("Error: orders file must specify a ship ID.")
         return
 
+    account = orders.get('account', '')
+    if not account:
+        print("Error: orders file must specify an account number.")
+        print("  Add 'account: YOUR_ACCOUNT_NUMBER' to your orders file.")
+        return
+
     raw_content = filepath.read_text()
 
-    # Validate ownership: does this email own this ship?
-    valid, account_number, error_msg = folders.validate_ship_ownership(email, ship_id)
+    # Validate ownership: does this email + account own this ship?
+    valid, account_number, error_msg = folders.validate_ship_ownership(email, ship_id, account)
 
     if not valid:
         # Store as rejected
@@ -214,8 +220,8 @@ def cmd_run_turn(args):
     Flow:
     1. Gather stored orders from database
     2. Resolve each ship's orders sequentially
-    3. Generate ship and political reports
-    4. Store reports in processed/{turn}/{political_id}/
+    3. Generate ship and prefect reports
+    4. Store reports in processed/{turn}/{prefect_id}/
     """
     db_path = Path(args.db) if args.db else None
     resolver = TurnResolver(db_path, game_id=args.game)
@@ -243,7 +249,7 @@ def cmd_run_turn(args):
     else:
         ships = conn.execute(
             """SELECT s.* FROM ships s
-               JOIN political_positions pp ON s.owner_political_id = pp.position_id
+               JOIN prefects pp ON s.owner_prefect_id = pp.prefect_id
                JOIN players p ON pp.player_id = p.player_id
                WHERE s.game_id = ? AND p.status = 'active'""",
             (args.game,)
@@ -253,10 +259,18 @@ def cmd_run_turn(args):
 
     for ship in ships:
         ship_id = ship['ship_id']
-        political_id = ship['owner_political_id']
+        prefect_id = ship['owner_prefect_id']
+
+        # Look up faction for display name
+        prefect = conn.execute(
+            "SELECT faction_id FROM prefects WHERE prefect_id = ?",
+            (prefect_id,)
+        ).fetchone()
+        faction = get_faction(conn, prefect['faction_id']) if prefect else {'abbreviation': 'IND'}
+        display_name = f"{faction['abbreviation']} {ship['name']}"
 
         # Look up account number for this ship's owner
-        account_number = folders.get_account_for_political(political_id)
+        account_number = folders.get_account_for_prefect(prefect_id)
 
         # Get stored orders for this ship/turn
         stored_orders = conn.execute("""
@@ -267,7 +281,7 @@ def cmd_run_turn(args):
         """, (args.game, game['current_year'], game['current_week'], ship_id)).fetchall()
 
         if not stored_orders:
-            print(f"  {ship['name']} ({ship_id}): No orders this turn.")
+            print(f"  {display_name} ({ship_id}): No orders this turn.")
             continue
 
         # Build orders list from stored orders
@@ -280,7 +294,7 @@ def cmd_run_turn(args):
                 'params': params,
             })
 
-        print(f"  Resolving {ship['name']} ({ship_id}) - {len(order_list)} orders...")
+        print(f"  Resolving {display_name} ({ship_id}) - {len(order_list)} orders...")
         result = resolver.resolve_ship_turn(ship_id, order_list)
 
         if result.get('error'):
@@ -308,23 +322,23 @@ def cmd_run_turn(args):
             print(report)
             print()
 
-    # Generate one political report per active political position
-    all_politicals = conn.execute("""
-        SELECT DISTINCT pp.position_id, p.email, p.account_number
-        FROM political_positions pp
+    # Generate one prefect report per active prefect
+    all_prefects = conn.execute("""
+        SELECT DISTINCT pp.prefect_id, p.email, p.account_number
+        FROM prefects pp
         JOIN players p ON pp.player_id = p.player_id
         WHERE pp.game_id = ? AND p.status = 'active'
     """, (args.game,)).fetchall()
 
     print()
-    for pol in all_politicals:
-        political_id = pol['position_id']
+    for pol in all_prefects:
+        prefect_id = pol['prefect_id']
         account_number = pol['account_number']
-        political_report = generate_political_report(political_id, db_path, args.game)
-        pol_file = folders.store_political_report(turn_str, account_number, political_id, political_report)
+        prefect_report = generate_prefect_report(prefect_id, db_path, args.game)
+        pol_file = folders.store_prefect_report(turn_str, account_number, prefect_id, prefect_report)
         email = pol['email']
         print(f"  Account {account_number} -> {email}")
-        print(f"    Political report: {pol_file}")
+        print(f"    Prefect report: {pol_file}")
 
         # Show total files to send
         player_reports = folders.get_player_reports(turn_str, account_number)
@@ -367,7 +381,7 @@ def cmd_turn_status(args):
         status_icon = "[done]" if player['processed'] else "[    ]"
         print(f"{status_icon} {player['name']} ({player['email']})")
         print(f"        Account:   {player['account_number']}")
-        print(f"        Political: {player['political_name']} ({player['political_id']})")
+        print(f"        Prefect: {player['prefect_name']} ({player['prefect_id']})")
         print(f"        Reports generated: {'Yes' if player['processed'] else 'No'}")
 
         for ship in player['ships']:
@@ -431,33 +445,16 @@ def cmd_show_map(args):
         return
 
     system_id = system['system_id']
-    objects = []
 
+    # Only celestial bodies go on the grid (no ships, no bases)
+    objects = []
     bodies = conn.execute(
-        "SELECT * FROM celestial_bodies WHERE system_id = ?", (system_id,)
+        "SELECT * FROM celestial_bodies WHERE system_id = ? ORDER BY grid_col, grid_row",
+        (system_id,)
     ).fetchall()
     for b in bodies:
         objects.append({'type': b['body_type'], 'col': b['grid_col'], 'row': b['grid_row'],
                         'symbol': b['map_symbol'], 'name': b['name']})
-
-    bases = conn.execute(
-        "SELECT * FROM starbases WHERE system_id = ? AND game_id = ?",
-        (system_id, args.game)
-    ).fetchall()
-    for b in bases:
-        objects.append({'type': 'base', 'col': b['grid_col'], 'row': b['grid_row'],
-                        'symbol': 'B', 'name': b['name']})
-
-    ships = conn.execute(
-        """SELECT s.* FROM ships s
-           JOIN political_positions pp ON s.owner_political_id = pp.position_id
-           JOIN players p ON pp.player_id = p.player_id
-           WHERE s.system_id = ? AND s.game_id = ? AND p.status = 'active'""",
-        (system_id, args.game)
-    ).fetchall()
-    for s in ships:
-        objects.append({'type': 'ship', 'col': s['grid_col'], 'row': s['grid_row'],
-                        'symbol': '@', 'name': s['name']})
 
     system_data = {
         'star_col': system['star_grid_col'],
@@ -469,18 +466,35 @@ def cmd_show_map(args):
     print("=" * len(title))
     print(render_system_map(system_data, objects))
 
-    print(f"\nLegend:")
-    print(f"  *  Star ({system['star_name']})")
+    # Structured legend: star, then celestial bodies with nested bases
+    print(f"\nCelestial Bodies:")
+    print(f"  *  {system['star_name']} ({system['star_spectral_type']}) at "
+          f"{system['star_grid_col']}{system['star_grid_row']:02d}")
+
+    # Get all bases indexed by orbiting_body_id
+    bases = conn.execute(
+        "SELECT * FROM starbases WHERE system_id = ? AND game_id = ?",
+        (system_id, args.game)
+    ).fetchall()
+    bases_by_body = {}
+    for b in bases:
+        body_id = b['orbiting_body_id']
+        if body_id not in bases_by_body:
+            bases_by_body[body_id] = []
+        bases_by_body[body_id].append(b)
+
     for b in bodies:
         loc = f"{b['grid_col']}{b['grid_row']:02d}"
-        print(f"  {b['map_symbol']}  {b['name']} ({b['body_id']}) at {loc} - {b['body_type']}")
-    for b in bases:
-        loc = f"{b['grid_col']}{b['grid_row']:02d}"
-        print(f"  B  {b['name']} ({b['base_id']}) at {loc}")
-    for s in ships:
-        loc = f"{s['grid_col']}{s['grid_row']:02d}"
-        dock_info = f" [Docked at {s['docked_at_base_id']}]" if s['docked_at_base_id'] else ""
-        print(f"  @  {s['name']} ({s['ship_id']}) at {loc}{dock_info}")
+        indent = "  " if not b['parent_body_id'] else "      "
+        type_label = b['body_type'].replace('_', ' ').title()
+        print(f"{indent}{b['map_symbol']}  {b['name']} ({b['body_id']}) at {loc} - {type_label}")
+
+        # Show bases orbiting this body
+        if b['body_id'] in bases_by_body:
+            for base in bases_by_body[b['body_id']]:
+                base_loc = f"{base['grid_col']}{base['grid_row']:02d}"
+                print(f"{indent}     [{base['base_type']}] {base['name']} ({base['base_id']}) at {base_loc}"
+                      f" - Docking: {base['docking_capacity']}")
 
     conn.close()
 
@@ -492,15 +506,19 @@ def cmd_show_status(args):
 
     if args.ship:
         ship = conn.execute(
-            "SELECT s.*, ss.name as system_name FROM ships s "
+            "SELECT s.*, ss.name as system_name, pp.faction_id FROM ships s "
             "JOIN star_systems ss ON s.system_id = ss.system_id "
+            "JOIN prefects pp ON s.owner_prefect_id = pp.prefect_id "
             "WHERE s.ship_id = ?", (args.ship,)
         ).fetchone()
         if ship:
+            display_name = faction_display_name(conn, ship['name'], ship['faction_id'])
             loc = f"{ship['grid_col']}{ship['grid_row']:02d}"
             dock_info = f" [Docked at {ship['docked_at_base_id']}]" if ship['docked_at_base_id'] else ""
             orbit_info = f" [Orbiting {ship['orbiting_body_id']}]" if ship['orbiting_body_id'] else ""
-            print(f"Ship: {ship['name']} ({ship['ship_id']})")
+            faction = get_faction(conn, ship['faction_id'])
+            print(f"Ship: {display_name} ({ship['ship_id']})")
+            print(f"  Faction: {faction['abbreviation']} - {faction['name']}")
             print(f"  Location: {loc} - {ship['system_name']} ({ship['system_id']}){dock_info}{orbit_info}")
             print(f"  Class: {ship['design']} {ship['ship_class']}")
             print(f"  Hull: {ship['hull_count']} {ship['hull_type']} ({ship['hull_damage_pct']:.0f}% damage)")
@@ -519,11 +537,11 @@ def cmd_list_ships(args):
     conn = get_connection(db_path)
 
     query = """
-        SELECT s.*, ss.name as system_name, pp.name as owner_name,
+        SELECT s.*, ss.name as system_name, pp.name as owner_name, pp.faction_id,
                p.email, p.account_number, p.status as player_status
         FROM ships s 
         JOIN star_systems ss ON s.system_id = ss.system_id
-        JOIN political_positions pp ON s.owner_political_id = pp.position_id
+        JOIN prefects pp ON s.owner_prefect_id = pp.prefect_id
         JOIN players p ON pp.player_id = p.player_id
         WHERE s.game_id = ?
     """
@@ -538,13 +556,15 @@ def cmd_list_ships(args):
         print(f"No ships in game {args.game}.")
     else:
         print(f"\nShips in game {args.game}:")
-        print(f"{'ID':<12} {'Name':<20} {'Owner':<18} {'Account':<12} {'Location':<10} {'TU':<10} {'Status':<10}")
-        print("-" * 92)
+        print(f"{'ID':<12} {'Name':<24} {'Owner':<18} {'Account':<12} {'Location':<10} {'TU':<10} {'Status':<10}")
+        print("-" * 96)
         for s in ships:
+            faction = get_faction(conn, s['faction_id'])
+            display_name = f"{faction['abbreviation']} {s['name']}"
             loc = f"{s['grid_col']}{s['grid_row']:02d}"
             dock = f" [D]" if s['docked_at_base_id'] else ""
             status = "SUSPENDED" if s['player_status'] == 'suspended' else ""
-            print(f"{s['ship_id']:<12} {s['name']:<20} {s['owner_name']:<18} "
+            print(f"{s['ship_id']:<12} {display_name:<24} {s['owner_name']:<18} "
                   f"{s['account_number']:<12} {loc}{dock:<10} {s['tu_remaining']}/{s['tu_per_turn']:<4} {status}")
 
     conn.close()
@@ -580,23 +600,23 @@ def cmd_advance_turn(args):
 
 
 def cmd_edit_credits(args):
-    """Set credits for a political position."""
+    """Set credits for a prefect."""
     db_path = Path(args.db) if args.db else None
     conn = get_connection(db_path)
 
-    political = conn.execute(
-        "SELECT * FROM political_positions WHERE position_id = ?",
-        (args.political,)
+    prefect = conn.execute(
+        "SELECT * FROM prefects WHERE prefect_id = ?",
+        (args.prefect,)
     ).fetchone()
-    if political:
+    if prefect:
         conn.execute(
-            "UPDATE political_positions SET credits = ? WHERE position_id = ?",
-            (args.amount, args.political)
+            "UPDATE prefects SET credits = ? WHERE prefect_id = ?",
+            (args.amount, args.prefect)
         )
         conn.commit()
-        print(f"Credits for {political['name']} ({args.political}) set to {args.amount:,.0f}")
+        print(f"Credits for {prefect['name']} ({args.prefect}) set to {args.amount:,.0f}")
     else:
-        print(f"Political position {args.political} not found.")
+        print(f"Prefect position {args.prefect} not found.")
 
     conn.close()
 
@@ -737,8 +757,17 @@ def cmd_process_inbox(args):
             rejected += 1
             continue
 
-        # Validate ownership (also checks suspension)
-        valid, account_number, error = folders.validate_ship_ownership(email, ship_id)
+        # Check account number
+        account = parsed.get('account', '')
+        if not account:
+            print(f"    REJECTED: no account number in orders file")
+            folders.store_rejected(turn_str, email, ship_id, content,
+                                   ["No account number specified in orders file"])
+            rejected += 1
+            continue
+
+        # Validate ownership (also checks suspension and account number)
+        valid, account_number, error = folders.validate_ship_ownership(email, ship_id, account)
 
         if not valid:
             print(f"    REJECTED: {error}")
@@ -844,7 +873,7 @@ Batch processing:
     sp.add_argument('--game', default='OMICRON101', help='Game ID')
     sp.add_argument('--name', required=True, help='Player name')
     sp.add_argument('--email', required=True, help='Player email')
-    sp.add_argument('--political', help='Political position name')
+    sp.add_argument('--prefect', help='Prefect position name')
     sp.add_argument('--ship-name', help='Starting ship name')
     sp.add_argument('--start-col', default='I', help='Starting grid column')
     sp.add_argument('--start-row', type=int, default=6, help='Starting grid row')
@@ -893,8 +922,8 @@ Batch processing:
     sp.add_argument('--game', default='OMICRON101', help='Game ID')
 
     # --- edit-credits ---
-    sp = subparsers.add_parser('edit-credits', help='Set credits for a political position')
-    sp.add_argument('--political', type=int, required=True, help='Political position ID')
+    sp = subparsers.add_parser('edit-credits', help='Set credits for a prefect')
+    sp.add_argument('--prefect', type=int, required=True, help='Prefect position ID')
     sp.add_argument('--amount', type=float, required=True, help='Credit amount')
 
     # --- suspend-player ---

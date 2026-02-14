@@ -19,10 +19,10 @@ Folder layout:
           500.1/
             38291047/                     ← Alice's account number (secret)
               ship_57131458.txt           ← ship report
-              political_42268153.txt      ← political summary
+              prefect_42268153.txt      ← prefect summary
             71503928/                     ← Bob's account number (secret)
               ship_88234561.txt
-              political_85545143.txt
+              prefect_85545143.txt
 """
 
 import shutil
@@ -190,10 +190,10 @@ class TurnFolders:
         report_file.write_text(report_text)
         return report_file
 
-    def store_political_report(self, turn_str, account_number, political_id, report_text):
-        """Store a political turn report in the correct processed folder."""
+    def store_prefect_report(self, turn_str, account_number, prefect_id, report_text):
+        """Store a prefect turn report in the correct processed folder."""
         folder = self.get_processed_dir(turn_str, account_number)
-        report_file = folder / f"political_{political_id}.txt"
+        report_file = folder / f"prefect_{prefect_id}.txt"
         report_file.write_text(report_text)
         return report_file
 
@@ -253,20 +253,21 @@ class TurnFolders:
         conn.close()
         return result['account_number'] if result else None
 
-    def get_account_for_political(self, political_id):
-        """Look up the account number for a political position."""
+    def get_account_for_prefect(self, prefect_id):
+        """Look up the account number for a prefect."""
         conn = get_connection(self.db_path)
         result = conn.execute("""
             SELECT p.account_number FROM players p
-            JOIN political_positions pp ON p.player_id = pp.player_id
-            WHERE pp.position_id = ?
-        """, (political_id,)).fetchone()
+            JOIN prefects pp ON p.player_id = pp.player_id
+            WHERE pp.prefect_id = ?
+        """, (prefect_id,)).fetchone()
         conn.close()
         return result['account_number'] if result else None
 
-    def validate_ship_ownership(self, email, ship_id):
+    def validate_ship_ownership(self, email, ship_id, account_number=None):
         """
         Validate that the given email owns the given ship.
+        If account_number is provided, also verify it matches the player.
         Returns (valid, account_number, error_message).
         """
         conn = get_connection(self.db_path)
@@ -280,6 +281,14 @@ class TurnFolders:
             conn.close()
             return False, None, f"No player registered with email '{email}' in game {self.game_id}"
 
+        # Verify account number if provided
+        if account_number and str(account_number) != str(player['account_number']):
+            conn.close()
+            return False, None, (
+                f"Account number does not match the player registered with '{email}'. "
+                f"Check your account number and try again."
+            )
+
         if player['status'] == 'suspended':
             conn.close()
             return False, player['account_number'], (
@@ -289,29 +298,29 @@ class TurnFolders:
 
         account_number = player['account_number']
 
-        # Find political position for player
-        political = conn.execute(
-            "SELECT position_id FROM political_positions WHERE player_id = ? AND game_id = ?",
+        # Find prefect for player
+        prefect = conn.execute(
+            "SELECT prefect_id FROM prefects WHERE player_id = ? AND game_id = ?",
             (player['player_id'], self.game_id)
         ).fetchone()
-        if not political:
+        if not prefect:
             conn.close()
-            return False, account_number, f"No political position found for player"
+            return False, account_number, f"No prefect found for player"
 
         # Check ship ownership
         ship = conn.execute(
-            "SELECT ship_id, name, owner_political_id FROM ships WHERE ship_id = ? AND game_id = ?",
+            "SELECT ship_id, name, owner_prefect_id FROM ships WHERE ship_id = ? AND game_id = ?",
             (int(ship_id), self.game_id)
         ).fetchone()
         if not ship:
             conn.close()
             return False, account_number, f"Ship {ship_id} not found in game {self.game_id}"
 
-        if ship['owner_political_id'] != political['position_id']:
+        if ship['owner_prefect_id'] != prefect['prefect_id']:
             conn.close()
             return False, account_number, (
-                f"Ship {ship['name']} ({ship_id}) is not owned by your political position. "
-                f"It belongs to political {ship['owner_political_id']}"
+                f"Ship {ship['name']} ({ship_id}) is not owned by your prefect. "
+                f"It belongs to prefect {ship['owner_prefect_id']}"
             )
 
         conn.close()
@@ -334,17 +343,17 @@ class TurnFolders:
         # Get all active players in the game (now including account_number)
         players = conn.execute("""
             SELECT p.email, p.player_name, p.account_number,
-                   pp.position_id, pp.name as political_name
+                   pp.prefect_id, pp.name as prefect_name
             FROM players p
-            JOIN political_positions pp ON p.player_id = pp.player_id
+            JOIN prefects pp ON p.player_id = pp.player_id
             WHERE p.game_id = ? AND p.status = 'active'
         """, (self.game_id,)).fetchall()
 
         # Get all ships (only active players)
         ships = conn.execute("""
-            SELECT s.ship_id, s.name, s.owner_political_id
+            SELECT s.ship_id, s.name, s.owner_prefect_id
             FROM ships s
-            JOIN political_positions pp ON s.owner_political_id = pp.position_id
+            JOIN prefects pp ON s.owner_prefect_id = pp.prefect_id
             JOIN players p ON pp.player_id = p.player_id
             WHERE s.game_id = ? AND p.status = 'active'
         """, (self.game_id,)).fetchall()
@@ -373,7 +382,7 @@ class TurnFolders:
         for player in players:
             email = player['email']
             account_number = player['account_number']
-            player_ships = [s for s in ships if s['owner_political_id'] == player['position_id']]
+            player_ships = [s for s in ships if s['owner_prefect_id'] == player['prefect_id']]
             has_processed = account_number in processed
             player_orders = orders_by_email.get(email, set())
             player_rejected = rejected_by_email.get(email, set())
@@ -382,8 +391,8 @@ class TurnFolders:
                 'email': email,
                 'name': player['player_name'],
                 'account_number': account_number,
-                'political_id': player['position_id'],
-                'political_name': player['political_name'],
+                'prefect_id': player['prefect_id'],
+                'prefect_name': player['prefect_name'],
                 'processed': has_processed,
                 'ships': [],
             }

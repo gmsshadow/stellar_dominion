@@ -1,0 +1,16 @@
+# Stellar Dominion - Sample Orders (Bob)
+#
+# Submit with:
+#   python pbem.py submit-orders samples/bob_orders.yaml --email bob@example.com
+#
+# IMPORTANT: Replace ACCOUNT_NUMBER and SHIP_ID below with your actual values.
+# Find them with:  python pbem.py list-ships
+
+game: OMICRON101
+account: ACCOUNT_NUMBER
+ship: SHIP_ID
+orders:
+  - MOVE: T20
+  - ORBIT: 412003
+  - DOCK: 78901234
+  - WAIT: 50

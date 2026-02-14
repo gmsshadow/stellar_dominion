@@ -6,16 +6,16 @@ Resolves orders for ships, deducting TU and updating game state.
 import random
 import hashlib
 from datetime import datetime
-from db.database import get_connection
+from db.database import get_connection, get_faction
 from engine.maps.system_map import (
-    col_to_index, grid_distance, render_system_map, render_location_scan
+    col_to_index, index_to_col, grid_distance, render_system_map, render_location_scan
 )
 
 
-# TU costs for v1 (flat costs)
+# TU costs for v1
 TU_COSTS = {
     'WAIT': 0,         # cost is the parameter value itself
-    'MOVE': 20,        # per move action
+    'MOVE': 2,         # per square moved (incremental)
     'LOCATIONSCAN': 20,
     'SYSTEMSCAN': 20,
     'ORBIT': 10,
@@ -47,6 +47,10 @@ class TurnResolver:
             "SELECT * FROM ships WHERE ship_id = ? AND game_id = ?",
             (ship_id, self.game_id)
         ).fetchone()
+
+    def _get_faction(self, faction_id):
+        """Get faction details."""
+        return get_faction(self.conn, faction_id)
 
     def get_system_objects(self, system_id):
         """Get all known objects in a star system."""
@@ -92,16 +96,19 @@ class TurnResolver:
 
         # Other ships (exclude suspended players' ships)
         ships = self.conn.execute(
-            """SELECT s.* FROM ships s
-               JOIN political_positions pp ON s.owner_political_id = pp.position_id
+            """SELECT s.*, pp.faction_id FROM ships s
+               JOIN prefects pp ON s.owner_prefect_id = pp.prefect_id
                JOIN players p ON pp.player_id = p.player_id
                WHERE s.system_id = ? AND s.game_id = ? AND p.status = 'active'""",
             (system_id, self.game_id)
         ).fetchall()
         for s in ships:
+            # Build faction-prefixed display name
+            faction = self._get_faction(s['faction_id'])
+            display_name = f"{faction['abbreviation']} {s['name']}"
             objects.append({
                 'type': 'ship', 'id': s['ship_id'],
-                'name': s['name'],
+                'name': display_name,
                 'col': s['grid_col'], 'row': s['grid_row'],
                 'symbol': '@',
                 'ship_class': s['ship_class'],
@@ -158,8 +165,8 @@ class TurnResolver:
         self._commit_ship_state(state)
 
         # Update known contacts
-        political_id = ship['owner_political_id']
-        self._update_contacts(political_id, system_id)
+        prefect_id = ship['owner_prefect_id']
+        self._update_contacts(prefect_id, system_id)
 
         return {
             'ship_id': ship_id,
@@ -236,13 +243,23 @@ class TurnResolver:
         }
 
     def _cmd_move(self, state, params):
-        """MOVE {coord} - move to grid coordinate."""
+        """MOVE {coord} - move to grid coordinate, one square at a time."""
         tu_before = state['tu']
         target_col = params['col']
         target_row = params['row']
-        cost = TU_COSTS['MOVE']
+        cost_per_step = TU_COSTS['MOVE']
 
-        if state['tu'] < cost:
+        # Already there?
+        if state['col'] == target_col and state['row'] == target_row:
+            return {
+                'command': 'MOVE', 'params': f"{target_col}{target_row:02d}",
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0,
+                'success': True,
+                'message': f"Already at {target_col}{target_row:02d}."
+            }
+
+        if state['tu'] < cost_per_step:
             self.pending.append({
                 'command': 'MOVE', 'params': f"{target_col}{target_row:02d}",
                 'reason': 'Insufficient TU'
@@ -252,7 +269,7 @@ class TurnResolver:
                 'tu_before': tu_before, 'tu_after': state['tu'],
                 'tu_cost': 0,
                 'success': False,
-                'message': f"Insufficient TU for move ({state['tu']} < {cost}). Order queued as pending."
+                'message': f"Insufficient TU for move ({state['tu']} < {cost_per_step}). Order queued as pending."
             }
 
         # If docked, must undock first
@@ -276,19 +293,93 @@ class TurnResolver:
             orbit_msg = f"Leaving orbit of {body_name}.\n    "
             state['orbiting'] = None
 
-        old_loc = f"{state['col']}{state['row']:02d}"
-        state['col'] = target_col
-        state['row'] = target_row
-        state['tu'] -= cost
-        new_loc = f"{target_col}{target_row:02d}"
+        # Generate step-by-step path (Chebyshev: diagonal then straight)
+        path = self._generate_path(state['col'], state['row'], target_col, target_row)
+
+        # Walk the path one square at a time
+        start_loc = f"{state['col']}{state['row']:02d}"
+        steps_taken = 0
+        waypoints = [start_loc]
+        encounters = []
+
+        for step_col, step_row in path:
+            if state['tu'] < cost_per_step:
+                # Out of TU — queue remaining distance as pending
+                self.pending.append({
+                    'command': 'MOVE', 'params': f"{target_col}{target_row:02d}",
+                    'reason': f"Ran out of TU at {state['col']}{state['row']:02d}"
+                })
+                break
+
+            # Move to next square
+            state['col'] = step_col
+            state['row'] = step_row
+            state['tu'] -= cost_per_step
+            steps_taken += 1
+            waypoints.append(f"{step_col}{step_row:02d}")
+
+            # === ENCOUNTER CHECK (hook for future combat) ===
+            # Check for other ships at this position
+            # hostile_ships = self._check_encounters(state, rng)
+            # if hostile_ships:
+            #     encounters.append(...)
+            #     break  # Combat halts movement
+
+        total_cost = steps_taken * cost_per_step
+        final_loc = f"{state['col']}{state['row']:02d}"
+        reached_destination = (state['col'] == target_col and state['row'] == target_row)
+
+        # Build movement message
+        if steps_taken <= 4:
+            path_str = " → ".join(waypoints)
+        else:
+            path_str = f"{waypoints[0]} → {waypoints[1]} → ... → {waypoints[-1]}"
+
+        if reached_destination:
+            msg = f"{orbit_msg}Moved {steps_taken} squares to {final_loc}. ({path_str})"
+        else:
+            remaining = grid_distance(state['col'], state['row'], target_col, target_row)
+            msg = (f"{orbit_msg}Moved {steps_taken} squares toward {target_col}{target_row:02d}, "
+                   f"stopped at {final_loc} ({remaining} squares remaining). ({path_str})")
 
         return {
-            'command': 'MOVE', 'params': new_loc,
+            'command': 'MOVE', 'params': f"{target_col}{target_row:02d}",
             'tu_before': tu_before, 'tu_after': state['tu'],
-            'tu_cost': cost,
-            'success': True,
-            'message': f"{orbit_msg}Ship moved to {new_loc}."
+            'tu_cost': total_cost,
+            'success': reached_destination,
+            'message': msg,
+            'steps': steps_taken,
+            'waypoints': waypoints,
         }
+
+    def _generate_path(self, from_col, from_row, to_col, to_row):
+        """
+        Generate a step-by-step path from one grid position to another.
+        Uses Chebyshev movement: diagonal steps when both axes need closing,
+        then straight steps for the remaining axis.
+        Returns list of (col_letter, row_int) for each step (excluding start).
+        """
+        path = []
+        cur_c = col_to_index(from_col)
+        cur_r = from_row
+        dst_c = col_to_index(to_col)
+        dst_r = to_row
+
+        while cur_c != dst_c or cur_r != dst_r:
+            # Step toward target on each axis
+            if cur_c < dst_c:
+                cur_c += 1
+            elif cur_c > dst_c:
+                cur_c -= 1
+
+            if cur_r < dst_r:
+                cur_r += 1
+            elif cur_r > dst_r:
+                cur_r -= 1
+
+            path.append((index_to_col(cur_c), cur_r))
+
+        return path
 
     def _cmd_location_scan(self, state, rng):
         """LOCATIONSCAN - scan nearby cells for objects."""
@@ -589,15 +680,15 @@ class TurnResolver:
         ))
         self.conn.commit()
 
-    def _update_contacts(self, political_id, system_id):
+    def _update_contacts(self, prefect_id, system_id):
         """Update the known contacts list for the player."""
         game = self.get_game()
         for contact in self.contacts:
             # Check if already known
             existing = self.conn.execute("""
                 SELECT contact_id FROM known_contacts
-                WHERE political_id = ? AND object_type = ? AND object_id = ?
-            """, (political_id, contact['type'], contact['id'])).fetchone()
+                WHERE prefect_id = ? AND object_type = ? AND object_id = ?
+            """, (prefect_id, contact['type'], contact['id'])).fetchone()
 
             if existing:
                 # Update location
@@ -610,12 +701,12 @@ class TurnResolver:
             else:
                 self.conn.execute("""
                     INSERT INTO known_contacts 
-                    (political_id, object_type, object_id, object_name,
+                    (prefect_id, object_type, object_id, object_name,
                      location_system, location_col, location_row,
                      discovered_turn_year, discovered_turn_week)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
-                    political_id, contact['type'], contact['id'], contact['name'],
+                    prefect_id, contact['type'], contact['id'], contact['name'],
                     system_id, contact['col'], contact['row'],
                     game['current_year'], game['current_week']
                 ))

@@ -5,7 +5,7 @@ Creates initial game state with star systems, celestial bodies, bases, and playe
 
 import random
 from pathlib import Path
-from db.database import init_db, get_connection
+from db.database import init_db, get_connection, get_faction, faction_display_name
 
 
 def _generate_unique_id(conn, table, column, min_val=10000000, max_val=99999999):
@@ -149,11 +149,11 @@ def create_game(db_path=None, game_id="OMICRON101", game_name="Stellar Dominion 
 
 
 def add_player(db_path=None, game_id="OMICRON101", player_name="Player 1",
-               email="player1@example.com", political_name="Commander Voss",
-               ship_name="VFS Boethius", ship_start_col="I", ship_start_row=6,
+               email="player1@example.com", prefect_name="Erik Voss",
+               ship_name="Boethius", ship_start_col="I", ship_start_row=6,
                dock_at_base=None):
     """
-    Add a player with a political position and starting ship.
+    Add a player with a prefect and starting ship.
     
     If dock_at_base is provided (base_id), the ship starts docked there
     and uses the base's grid position. Otherwise uses ship_start_col/row.
@@ -170,7 +170,7 @@ def add_player(db_path=None, game_id="OMICRON101", player_name="Player 1",
 
     # Generate unique IDs
     account_number = _generate_account_number(conn)
-    political_id = _generate_unique_id(conn, 'political_positions', 'position_id')
+    prefect_id = _generate_unique_id(conn, 'prefects', 'prefect_id')
     ship_id = _generate_unique_id(conn, 'ships', 'ship_id')
 
     # If docking at a base, use the base's location
@@ -194,31 +194,31 @@ def add_player(db_path=None, game_id="OMICRON101", player_name="Player 1",
     """, (game_id, player_name, email, account_number))
     player_id = c.lastrowid
 
-    # Create political position
+    # Create prefect
     c.execute("""
-        INSERT INTO political_positions 
-        (position_id, player_id, game_id, name, credits, location_type, location_id,
+        INSERT INTO prefects 
+        (prefect_id, player_id, game_id, name, credits, location_type, location_id,
          created_turn_year, created_turn_week)
         VALUES (?, ?, ?, ?, 10000, 'ship', ?, ?, ?)
-    """, (political_id, player_id, game_id, political_name, ship_id,
+    """, (prefect_id, player_id, game_id, prefect_name, ship_id,
           game['current_year'], game['current_week']))
 
     # Create ship
     c.execute("""
         INSERT INTO ships 
-        (ship_id, game_id, owner_political_id, name, ship_class, design, hull_type,
+        (ship_id, game_id, owner_prefect_id, name, ship_class, design, hull_type,
          hull_count, grid_col, grid_row, system_id, docked_at_base_id,
          tu_per_turn, tu_remaining, sensor_rating, cargo_capacity, crew_count, crew_required)
         VALUES (?, ?, ?, ?, 'Scout', 'Explorer Mk I', 'Light Hull', 50,
                 ?, ?, 101, ?, 300, 300, 20, 500, 15, 10)
-    """, (ship_id, game_id, political_id, ship_name,
+    """, (ship_id, game_id, prefect_id, ship_name,
           ship_start_col, ship_start_row, docked_at))
 
     # Add a starting officer
     c.execute("""
         INSERT INTO officers (ship_id, name, rank, specialty, experience, crew_factors)
         VALUES (?, ?, 'Captain', 'Navigation', 0, 8)
-    """, (ship_id, political_name))
+    """, (ship_id, prefect_name))
 
     # Add starting installed items
     starting_items = [
@@ -242,13 +242,14 @@ def add_player(db_path=None, game_id="OMICRON101", player_name="Player 1",
     dock_info = f" [Docked at {docked_at}]" if docked_at else ""
     print(f"Player '{player_name}' added to game {game_id}:")
     print(f"  Account Number: {account_number}  ** KEEP THIS SECRET **")
-    print(f"  Political: {political_name} (ID: {political_id})")
-    print(f"  Ship: {ship_name} (ID: {ship_id}) at {ship_start_col}{ship_start_row:02d}{dock_info}")
+    print(f"  Prefect: {prefect_name} (ID: {prefect_id})")
+    print(f"  Faction: STA - Stellar Training Academy")
+    print(f"  Ship: STA {ship_name} (ID: {ship_id}) at {ship_start_col}{ship_start_row:02d}{dock_info}")
     print(f"  Starting Credits: 10,000")
     return {
         'player_id': player_id,
         'account_number': account_number,
-        'political_id': political_id,
+        'prefect_id': prefect_id,
         'ship_id': ship_id,
     }
 
@@ -257,7 +258,7 @@ def join_game(db_path=None, game_id="OMICRON101"):
     """
     Interactive player registration form.
     
-    Prompts for name, email, political name, and ship name.
+    Prompts for name, email, prefect name, and ship name.
     Assigns the new ship to a random starbase (docked).
     Returns the new player's details including their secret account number.
     """
@@ -303,14 +304,14 @@ def join_game(db_path=None, game_id="OMICRON101"):
         conn.close()
         return None
 
-    political_name = input("  Name for your political character: ").strip()
-    if not political_name:
-        political_name = f"Commander {player_name.split()[0]}"
-        print(f"  (Defaulting to: {political_name})")
+    prefect_name = input("  Name for your prefect character: ").strip()
+    if not prefect_name:
+        prefect_name = f"Commander {player_name.split()[0]}"
+        print(f"  (Defaulting to: {prefect_name})")
 
     ship_name = input("  Name for your starting ship: ").strip()
     if not ship_name:
-        ship_name = f"SS {player_name.split()[0]}"
+        ship_name = f"{player_name.split()[0]}"
         print(f"  (Defaulting to: {ship_name})")
 
     # Pick a random starbase to dock at
@@ -330,8 +331,9 @@ def join_game(db_path=None, game_id="OMICRON101"):
     print(f"  Confirming registration:")
     print(f"    Player:    {player_name}")
     print(f"    Email:     {email}")
-    print(f"    Political: {political_name}")
-    print(f"    Ship:      {ship_name}")
+    print(f"    Prefect: {prefect_name}")
+    print(f"    Ship:      STA {ship_name}")
+    print(f"    Faction:   STA - Stellar Training Academy")
     print(f"    Starting:  Docked at {dock_base['name']} ({dock_base['grid_col']}{dock_base['grid_row']:02d})")
     print(f"")
 
@@ -346,7 +348,7 @@ def join_game(db_path=None, game_id="OMICRON101"):
         game_id=game_id,
         player_name=player_name,
         email=email,
-        political_name=political_name,
+        prefect_name=prefect_name,
         ship_name=ship_name,
         dock_at_base=dock_base['base_id'],
     )
@@ -364,7 +366,7 @@ def join_game(db_path=None, game_id="OMICRON101"):
         print(f"  submit orders each turn. Do not share it with")
         print(f"  other players.")
         print(f"")
-        print(f"  Your political ID ({result['political_id']}) and")
+        print(f"  Your prefect ID ({result['prefect_id']}) and")
         print(f"  ship ID ({result['ship_id']}) are public — other")
         print(f"  players may discover these through scanning.")
         print(f"")
@@ -376,10 +378,10 @@ def setup_demo_game(db_path=None):
     """Create a complete demo game with 2 players."""
     if create_game(db_path):
         p1 = add_player(db_path, player_name="Alice", email="alice@example.com",
-                         political_name="Admiral Chen", ship_name="VFS Boethius",
+                         prefect_name="Li Chen", ship_name="Boethius",
                          ship_start_col="I", ship_start_row=6)
         p2 = add_player(db_path, player_name="Bob", email="bob@example.com",
-                         political_name="Commander Voss", ship_name="HMS Resolute",
+                         prefect_name="Erik Voss", ship_name="Resolute",
                          ship_start_col="P", ship_start_row=15)
         return p1, p2
     return None
@@ -394,7 +396,7 @@ def suspend_player(db_path=None, game_id="OMICRON101", account_number=None, emai
     - Ships are invisible to other players (scans, maps)
     - Ships do not participate in turn resolution
     - Do not appear in turn-status
-    - Political position and credits are preserved
+    - Prefect position and credits are preserved
     - Can be reinstated later with full state restored
 
     Identify player by account_number or email (one required).
@@ -427,17 +429,17 @@ def suspend_player(db_path=None, game_id="OMICRON101", account_number=None, emai
         conn.close()
         return False
 
-    # Get their political position and ships for the summary
-    political = conn.execute(
-        "SELECT * FROM political_positions WHERE player_id = ? AND game_id = ?",
+    # Get their prefect and ships for the summary
+    prefect = conn.execute(
+        "SELECT * FROM prefects WHERE player_id = ? AND game_id = ?",
         (player['player_id'], game_id)
     ).fetchone()
 
     ships = []
-    if political:
+    if prefect:
         ships = conn.execute(
-            "SELECT ship_id, name FROM ships WHERE owner_political_id = ? AND game_id = ?",
-            (political['position_id'], game_id)
+            "SELECT ship_id, name FROM ships WHERE owner_prefect_id = ? AND game_id = ?",
+            (prefect['prefect_id'], game_id)
         ).fetchall()
 
     # Set player status to suspended
@@ -446,16 +448,22 @@ def suspend_player(db_path=None, game_id="OMICRON101", account_number=None, emai
         (player['player_id'],)
     )
     conn.commit()
+
+    # Get faction info for display
+    faction_id = prefect["faction_id"] if prefect else None
+    faction = get_faction(conn, faction_id)
+
     conn.close()
 
     print(f"Player SUSPENDED: {player['player_name']} ({player['email']})")
     print(f"  Account: {player['account_number']}")
-    if political:
-        print(f"  Political: {political['name']} ({political['position_id']})")
+    if prefect:
+        print(f"  Prefect: {prefect['name']} ({prefect['prefect_id']})")
+        print(f"  Faction: {faction['abbreviation']} - {faction['name']}")
     if ships:
         print(f"  Ships archived ({len(ships)}):")
         for s in ships:
-            print(f"    {s['name']} ({s['ship_id']})")
+            print(f"    {faction['abbreviation']} {s['name']} ({s['ship_id']})")
     print(f"")
     print(f"  All assets are preserved and invisible to other players.")
     print(f"  Use 'reinstate-player' to restore this account.")
@@ -496,17 +504,17 @@ def reinstate_player(db_path=None, game_id="OMICRON101", account_number=None, em
         conn.close()
         return False
 
-    # Get their political position and ships for the summary
-    political = conn.execute(
-        "SELECT * FROM political_positions WHERE player_id = ? AND game_id = ?",
+    # Get their prefect and ships for the summary
+    prefect = conn.execute(
+        "SELECT * FROM prefects WHERE player_id = ? AND game_id = ?",
         (player['player_id'], game_id)
     ).fetchone()
 
     ships = []
-    if political:
+    if prefect:
         ships = conn.execute(
-            "SELECT ship_id, name, grid_col, grid_row FROM ships WHERE owner_political_id = ? AND game_id = ?",
-            (political['position_id'], game_id)
+            "SELECT ship_id, name, grid_col, grid_row FROM ships WHERE owner_prefect_id = ? AND game_id = ?",
+            (prefect['prefect_id'], game_id)
         ).fetchall()
 
     # Set player status back to active
@@ -515,18 +523,24 @@ def reinstate_player(db_path=None, game_id="OMICRON101", account_number=None, em
         (player['player_id'],)
     )
     conn.commit()
+
+    # Get faction info for display
+    faction_id = prefect["faction_id"] if prefect else None
+    faction = get_faction(conn, faction_id)
+
     conn.close()
 
     print(f"Player REINSTATED: {player['player_name']} ({player['email']})")
     print(f"  Account: {player['account_number']}")
-    if political:
-        print(f"  Political: {political['name']} ({political['position_id']})")
-        print(f"  Credits: {political['credits']:,.0f}")
+    if prefect:
+        print(f"  Prefect: {prefect['name']} ({prefect['prefect_id']})")
+        print(f"  Faction: {faction['abbreviation']} - {faction['name']}")
+        print(f"  Credits: {prefect['credits']:,.0f}")
     if ships:
         print(f"  Ships restored ({len(ships)}):")
         for s in ships:
             loc = f"{s['grid_col']}{s['grid_row']:02d}"
-            print(f"    {s['name']} ({s['ship_id']}) at {loc}")
+            print(f"    {faction['abbreviation']} {s['name']} ({s['ship_id']}) at {loc}")
     print(f"")
     print(f"  All assets are now visible and active again.")
     print(f"  Player can submit orders for the current turn.")
@@ -538,9 +552,11 @@ def list_players(db_path=None, game_id="OMICRON101", include_suspended=False):
     conn = get_connection(db_path)
 
     query = """
-        SELECT p.*, pp.position_id, pp.name as political_name, pp.credits
+        SELECT p.*, pp.prefect_id, pp.name as prefect_name, pp.credits, pp.faction_id,
+               f.abbreviation as faction_abbr
         FROM players p
-        LEFT JOIN political_positions pp ON p.player_id = pp.player_id AND pp.game_id = p.game_id
+        LEFT JOIN prefects pp ON p.player_id = pp.player_id AND pp.game_id = p.game_id
+        LEFT JOIN factions f ON pp.faction_id = f.faction_id
         WHERE p.game_id = ?
     """
     if not include_suspended:
@@ -555,11 +571,12 @@ def list_players(db_path=None, game_id="OMICRON101", include_suspended=False):
         return
 
     print(f"\nPlayers in game {game_id}:")
-    print(f"{'Name':<16} {'Email':<28} {'Account':<12} {'Political':<20} {'Status':<10}")
-    print("-" * 86)
+    print(f"{'Name':<16} {'Email':<28} {'Account':<12} {'Faction':<8} {'Prefect':<20} {'Status':<10}")
+    print("-" * 94)
     for p in players:
         status = p['status'] if p['status'] != 'active' else ''
-        pol_name = p['political_name'] or '—'
-        print(f"{p['player_name']:<16} {p['email']:<28} {p['account_number']:<12} {pol_name:<20} {status:<10}")
+        pol_name = p['prefect_name'] or '—'
+        faction = p['faction_abbr'] or '—'
+        print(f"{p['player_name']:<16} {p['email']:<28} {p['account_number']:<12} {faction:<8} {pol_name:<20} {status:<10}")
 
     conn.close()

@@ -4,7 +4,7 @@ Generates Phoenix-BSE-style ASCII turn reports for email delivery.
 """
 
 from datetime import datetime
-from db.database import get_connection
+from db.database import get_connection, get_faction, faction_display_name, get_faction_for_prefect
 
 
 REPORT_WIDTH = 78
@@ -49,16 +49,16 @@ def generate_ship_report(turn_result, db_path=None, game_id="OMICRON101"):
     # Fetch additional data
     ship = conn.execute("SELECT * FROM ships WHERE ship_id = ?", (ship_id,)).fetchone()
     system = conn.execute("SELECT * FROM star_systems WHERE system_id = ?", (system_id,)).fetchone()
-    political = conn.execute(
-        "SELECT * FROM political_positions WHERE position_id = ?",
-        (ship['owner_political_id'],)
+    prefect = conn.execute(
+        "SELECT * FROM prefects WHERE prefect_id = ?",
+        (ship['owner_prefect_id'],)
     ).fetchone()
     officers = conn.execute("SELECT * FROM officers WHERE ship_id = ?", (ship_id,)).fetchall()
     installed = conn.execute("SELECT * FROM installed_items WHERE ship_id = ?", (ship_id,)).fetchall()
     cargo = conn.execute("SELECT * FROM cargo_items WHERE ship_id = ?", (ship_id,)).fetchall()
     contacts = conn.execute(
-        "SELECT * FROM known_contacts WHERE political_id = ? AND location_system = ?",
-        (ship['owner_political_id'], system_id)
+        "SELECT * FROM known_contacts WHERE prefect_id = ? AND location_system = ?",
+        (ship['owner_prefect_id'], system_id)
     ).fetchall()
 
     # Get base name if docked
@@ -85,7 +85,9 @@ def generate_ship_report(turn_result, db_path=None, game_id="OMICRON101"):
     turn_str = f"{turn_result['turn_year']}.{turn_result['turn_week']}"
     start_loc = f"{turn_result['start_col']}{turn_result['start_row']:02d}"
     final_loc = f"{turn_result['final_col']}{turn_result['final_row']:02d}"
-    affiliation = political['affiliation'] if political else 'Independent'
+    faction = get_faction(conn, prefect['faction_id']) if prefect else {'abbreviation': 'IND', 'name': 'Independent'}
+    faction_str = f"{faction['abbreviation']} - {faction['name']}"
+    display_name = faction_display_name(conn, ship_name, prefect['faction_id']) if prefect else ship_name
 
     lines = []
 
@@ -97,7 +99,7 @@ def generate_ship_report(turn_result, db_path=None, game_id="OMICRON101"):
     lines.append(center_text("Stellar Dominion"))
     lines.append(center_text("PBEM Strategy Game"))
     lines.append("")
-    lines.append(center_text(f"SHIP {ship_name} ({ship_id})"))
+    lines.append(center_text(f"{faction['abbreviation']} SHIP {ship_name} ({ship_id})"))
     lines.append("")
     lines.append(f"Printed on {now.strftime('%d %B %Y')}, Star Date {turn_str}")
     lines.append("")
@@ -164,9 +166,9 @@ def generate_ship_report(turn_result, db_path=None, game_id="OMICRON101"):
     # ==========================================
     lines.append(section_header("Command Report"))
     lines.append(section_line())
-    lines.append(section_line(f"Name: {ship_name} ({ship_id})".ljust(38) +
-                               f"Aff: {affiliation}"))
-    lines.append(section_line(f"Wealth: {political['credits']:,.0f} Credits".ljust(38) +
+    lines.append(section_line(f"Name: {display_name} ({ship_id})".ljust(38) +
+                               f"Faction: {faction_str}"))
+    lines.append(section_line(f"Wealth: {prefect['credits']:,.0f} Credits".ljust(38) +
                                "Ownership: Player owned"))
     lines.append(section_line(f"Efficiency: {ship['efficiency']:.0f}%".ljust(38) +
                                f"TUs left: {turn_result['final_tu']} tus"))
@@ -303,37 +305,39 @@ def generate_ship_report(turn_result, db_path=None, game_id="OMICRON101"):
     return "\n".join(lines)
 
 
-def generate_political_report(political_id, db_path=None, game_id="OMICRON101"):
-    """Generate a political position turn report."""
+def generate_prefect_report(prefect_id, db_path=None, game_id="OMICRON101"):
+    """Generate a prefect turn report."""
     conn = get_connection(db_path)
 
-    political = conn.execute(
-        "SELECT * FROM political_positions WHERE position_id = ?",
-        (political_id,)
+    prefect = conn.execute(
+        "SELECT * FROM prefects WHERE prefect_id = ?",
+        (prefect_id,)
     ).fetchone()
-    if not political:
+    if not prefect:
         conn.close()
-        return "Error: Political position not found."
+        return "Error: Prefect position not found."
 
     player = conn.execute(
         "SELECT * FROM players WHERE player_id = ?",
-        (political['player_id'],)
+        (prefect['player_id'],)
     ).fetchone()
 
     game = conn.execute(
         "SELECT * FROM games WHERE game_id = ?", (game_id,)
     ).fetchone()
 
-    # Get all ships owned by this political position
+    # Get all ships owned by this prefect
     ships = conn.execute(
         "SELECT s.*, ss.name as system_name FROM ships s "
         "JOIN star_systems ss ON s.system_id = ss.system_id "
-        "WHERE s.owner_political_id = ? AND s.game_id = ?",
-        (political_id, game_id)
+        "WHERE s.owner_prefect_id = ? AND s.game_id = ?",
+        (prefect_id, game_id)
     ).fetchall()
 
     now = datetime.now()
     turn_str = f"{game['current_year']}.{game['current_week']}"
+    faction = get_faction(conn, prefect['faction_id'])
+    faction_str = f"{faction['abbreviation']} - {faction['name']}"
 
     lines = []
     lines.append("=== BEGIN REPORT ===")
@@ -341,7 +345,7 @@ def generate_political_report(political_id, db_path=None, game_id="OMICRON101"):
     lines.append(center_text("Stellar Dominion"))
     lines.append(center_text("PBEM Strategy Game"))
     lines.append("")
-    lines.append(center_text(f"POLITICAL {political['name']} ({political_id})"))
+    lines.append(center_text(f"{faction['abbreviation']} PREFECT {prefect['name']} ({prefect_id})"))
     lines.append("")
     lines.append(f"Printed on {now.strftime('%d %B %Y')}, Star Date {turn_str}")
     lines.append("")
@@ -361,42 +365,43 @@ def generate_political_report(political_id, db_path=None, game_id="OMICRON101"):
     lines.append(center_text("PLAYER REPORTS"))
     lines.append(HEADER_CHAR * REPORT_WIDTH)
 
-    # Political summary
-    lines.append(section_header("Political Report"))
+    # Prefect summary
+    lines.append(section_header("Prefect Report"))
     lines.append(section_line())
     lines.append(section_line(
-        f"Name: {political['name']} ({political_id})".ljust(38) +
-        f"Aff: {political['affiliation']}"
+        f"Name: {prefect['name']} ({prefect_id})".ljust(38) +
+        f"Faction: {faction_str}"
     ))
     lines.append(section_line(
-        f"Rank: {political['rank']}".ljust(38) +
-        f"Influence: {political['influence']}"
+        f"Rank: {prefect['rank']}".ljust(38) +
+        f"Influence: {prefect['influence']}"
     ))
     lines.append(section_line(
-        f"Created: {political['created_turn_year']}.{political['created_turn_week']}"
+        f"Created: {prefect['created_turn_year']}.{prefect['created_turn_week']}"
     ))
     lines.append(section_line())
 
     # Location
     lines.append(section_line("LOCATION"))
-    if political['location_type'] == 'ship':
+    if prefect['location_type'] == 'ship':
         loc_ship = conn.execute(
             "SELECT s.*, ss.name as system_name FROM ships s "
             "JOIN star_systems ss ON s.system_id = ss.system_id WHERE s.ship_id = ?",
-            (political['location_id'],)
+            (prefect['location_id'],)
         ).fetchone()
         if loc_ship:
+            ship_display = faction_display_name(conn, loc_ship['name'], prefect['faction_id'])
             if loc_ship['docked_at_base_id']:
                 base = conn.execute("SELECT * FROM starbases WHERE base_id = ?",
                                      (loc_ship['docked_at_base_id'],)).fetchone()
                 lines.append(section_line(
-                    f"Aboard {loc_ship['name']} ({loc_ship['ship_id']}), "
+                    f"Aboard {ship_display} ({loc_ship['ship_id']}), "
                     f"Docked at {base['name']} ({base['base_id']}) - "
                     f"{loc_ship['system_name']} System ({loc_ship['system_id']})"
                 ))
             else:
                 lines.append(section_line(
-                    f"Aboard {loc_ship['name']} ({loc_ship['ship_id']}) - "
+                    f"Aboard {ship_display} ({loc_ship['ship_id']}) - "
                     f"{loc_ship['system_name']} System ({loc_ship['system_id']})"
                 ))
     lines.append(section_line())
@@ -418,8 +423,9 @@ def generate_political_report(political_id, db_path=None, game_id="OMICRON101"):
         net = income - expenses
         total_income += income
         total_expenses += expenses
+        ship_display = faction_display_name(conn, s['name'], prefect['faction_id'])
         lines.append(section_line(
-            f"{s['name']} ({s['ship_id']})".ljust(40) +
+            f"{ship_display} ({s['ship_id']})".ljust(40) +
             f"{income:>8}  {expenses:>8}  {net:>8}"
         ))
 
@@ -431,7 +437,7 @@ def generate_political_report(political_id, db_path=None, game_id="OMICRON101"):
         f"{total_income - total_expenses:>8}"
     ))
     lines.append(section_line())
-    lines.append(section_line(f"Wealth: {political['credits']:,.0f} Credits"))
+    lines.append(section_line(f"Wealth: {prefect['credits']:,.0f} Credits"))
     lines.append(section_line())
 
     # ==========================================
@@ -441,6 +447,7 @@ def generate_political_report(political_id, db_path=None, game_id="OMICRON101"):
     lines.append(section_line())
     for s in ships:
         loc = f"{s['grid_col']}{s['grid_row']:02d}"
+        ship_display = faction_display_name(conn, s['name'], prefect['faction_id'])
         dock_info = ""
         if s['docked_at_base_id']:
             base = conn.execute("SELECT name FROM starbases WHERE base_id = ?",
@@ -448,7 +455,7 @@ def generate_political_report(political_id, db_path=None, game_id="OMICRON101"):
             dock_info = f" [Docked at {base['name']}]" if base else " [Docked]"
 
         lines.append(section_line(
-            f"{s['name']} ({s['ship_id']})".ljust(35) +
+            f"{ship_display} ({s['ship_id']})".ljust(35) +
             f"{s['system_name']} ({s['system_id']}) {loc}{dock_info}"
         ))
         lines.append(section_line(
@@ -462,8 +469,8 @@ def generate_political_report(political_id, db_path=None, game_id="OMICRON101"):
     # KNOWN ITEMS / CONTACTS
     # ==========================================
     contacts = conn.execute(
-        "SELECT * FROM known_contacts WHERE political_id = ? ORDER BY object_type, object_name",
-        (political_id,)
+        "SELECT * FROM known_contacts WHERE prefect_id = ? ORDER BY object_type, object_name",
+        (prefect_id,)
     ).fetchall()
 
     lines.append(section_header("Known Contacts"))

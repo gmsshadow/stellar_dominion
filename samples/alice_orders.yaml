@@ -1,0 +1,17 @@
+# Stellar Dominion - Sample Orders (Alice)
+#
+# Submit with:
+#   python pbem.py submit-orders samples/alice_orders.yaml --email alice@example.com
+#
+# IMPORTANT: Replace ACCOUNT_NUMBER and SHIP_ID below with your actual values.
+# Find them with:  python pbem.py list-ships
+
+game: OMICRON101
+account: ACCOUNT_NUMBER
+ship: SHIP_ID
+orders:
+  - MOVE: M13
+  - LOCATIONSCAN: {}
+  - MOVE: H04
+  - ORBIT: 247985
+  - DOCK: 45687590
