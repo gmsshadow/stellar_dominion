@@ -16,7 +16,7 @@ Below are the reports for the player "Alice" after her first turn.
                                Stellar Dominion                               
                               PBEM Strategy Game                              
 
-                         STA SHIP Boethius (55609371)                         
+                         STA SHIP Boethius (63687532)                         
 
 Printed on 14 February 2026, Star Date 500.1
 
@@ -34,7 +34,7 @@ Starting Location:
     I06 - Omicron System (101)
 
 >TU 300: MOVE {M13}
-    Moved 7 squares to M13. (I06 → J07 → ... → M13)
+    Moved 7 squares to M13. (I06 -> J07 -> ... -> M13)
 
 >TU 286: LOCATIONSCAN
     Scan complete. Detected:
@@ -45,10 +45,10 @@ Starting Location:
         Meridian (412003) at T20
         Tartarus Depot (12340001) at R08
         Meridian Waystation (78901234) at T20
-        STA Resolute (56836494) at P15
+        STA Resolute (70769686) at P15
 
 >TU 266: MOVE {H04}
-    Moved 9 squares to H04. (M13 → L12 → ... → H04)
+    Moved 9 squares to H04. (M13 -> L12 -> ... -> H04)
 
 >TU 248: ORBIT {247985}
     Ship entered orbit of Orion (247985) [0.9g]
@@ -60,7 +60,7 @@ Starting Location:
 
 |- Command Report ------------------------------------------------------------|
 |                                                                            |
-| Name: STA Boethius (55609371)         Faction: STA - Stellar Training Academy|
+| Name: STA Boethius (63687532)         Faction: STA - Stellar Training Academy|
 | Wealth: 10,000 Credits                Ownership: Player owned              |
 | Efficiency: 100%                      TUs left: 208 tus                    |
 |                                                                            |
@@ -112,7 +112,7 @@ Starting Location:
 | - Planet Meridian (412003) at T20                                          |
 | - Base Tartarus Depot (12340001) at R08                                    |
 | - Base Meridian Waystation (78901234) at T20                               |
-| - Ship STA Resolute (56836494) at P15                                      |
+| - Ship STA Resolute (70769686) at P15                                      |
 | - Planet Orion (247985) at H04                                             |
 | - Base Citadel Station (45687590) at H04                                   |
 |                                                                            |
@@ -133,7 +133,7 @@ Starting Location:
                                Stellar Dominion                               
                               PBEM Strategy Game                              
 
-                        STA PREFECT Li Chen (64527900)                        
+                        STA PREFECT Li Chen (79979911)                        
 
 Printed on 14 February 2026, Star Date 500.1
 
@@ -146,17 +146,17 @@ Printed on 14 February 2026, Star Date 500.1
 ------------------------------------------------------------------------------
 |- Prefect Report ------------------------------------------------------------|
 |                                                                            |
-| Name: Li Chen (64527900)              Faction: STA - Stellar Training Academy|
+| Name: Li Chen (79979911)              Faction: STA - Stellar Training Academy|
 | Rank: Citizen                         Influence: 0                         |
 | Created: 500.1                                                             |
 |                                                                            |
 | LOCATION                                                                   |
-| Aboard STA Boethius (55609371), Docked at Citadel Station (45687590) - Omicron System (101)|
+| Aboard STA Boethius (63687532), Docked at Citadel Station (45687590) - Omicron System (101)|
 |                                                                            |
 |- Financial Report ----------------------------------------------------------|
 |                                                                            |
 | POSITION                                   INCOME  EXPENSES       NET      |
-| STA Boethius (55609371)                        0         0         0       |
+| STA Boethius (63687532)                        0         0         0       |
 |                                           -------   -------   -------      |
 |                                                 0         0         0      |
 |                                                                            |
@@ -164,7 +164,7 @@ Printed on 14 February 2026, Star Date 500.1
 |                                                                            |
 |- Ships ---------------------------------------------------------------------|
 |                                                                            |
-| STA Boethius (55609371)            Omicron (101) H04 [Docked at Citadel Station]|
+| STA Boethius (63687532)            Omicron (101) H04 [Docked at Citadel Station]|
 |    Explorer Mk I Class Scout       TU: 208/300  Hull: 50 (Light Hull)      |
 |                                                                            |
 |- Known Contacts ------------------------------------------------------------|
@@ -182,7 +182,7 @@ Printed on 14 February 2026, Star Date 500.1
 |   Orion (247985) at H04                                                    |
 |   Tartarus (301442) at R08                                                 |
 | SHIPS:                                                                     |
-|   STA Resolute (56836494) at P15                                           |
+|   STA Resolute (70769686) at P15                                           |
 | STARS:                                                                     |
 |   Omicron Prime (101) at M13                                               |
 |                                                                            |

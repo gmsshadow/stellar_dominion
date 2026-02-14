@@ -304,7 +304,7 @@ class TurnResolver:
 
         for step_col, step_row in path:
             if state['tu'] < cost_per_step:
-                # Out of TU — queue remaining distance as pending
+                # Out of TU -- queue remaining distance as pending
                 self.pending.append({
                     'command': 'MOVE', 'params': f"{target_col}{target_row:02d}",
                     'reason': f"Ran out of TU at {state['col']}{state['row']:02d}"
@@ -331,9 +331,9 @@ class TurnResolver:
 
         # Build movement message
         if steps_taken <= 4:
-            path_str = " → ".join(waypoints)
+            path_str = " -> ".join(waypoints)
         else:
-            path_str = f"{waypoints[0]} → {waypoints[1]} → ... → {waypoints[-1]}"
+            path_str = f"{waypoints[0]} -> {waypoints[1]} -> ... -> {waypoints[-1]}"
 
         if reached_destination:
             msg = f"{orbit_msg}Moved {steps_taken} squares to {final_loc}. ({path_str})"

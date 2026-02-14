@@ -206,7 +206,7 @@ def parse_text_orders(text_content):
 def parse_orders_file(filepath):
     """Parse orders from a file, auto-detecting format."""
     path = Path(filepath)
-    content = path.read_text()
+    content = path.read_text(encoding='utf-8')
 
     if path.suffix.lower() in ('.yaml', '.yml'):
         return parse_yaml_orders(content)

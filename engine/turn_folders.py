@@ -5,22 +5,22 @@ Manages the folder structure for incoming orders and processed turn reports.
 Folder layout:
     game_data/
       turns/
-        incoming/                         ← raw orders arrive here
+        incoming/                         <- raw orders arrive here
           500.1/
             alice@example.com/
-              orders_57131458.yaml        ← valid orders for ship
-              orders_57131458.yaml.receipt ← confirmation of acceptance
-              rejected_99999999.yaml      ← orders that failed validation
-              rejected_99999999.reason     ← explanation of rejection
+              orders_57131458.yaml        <- valid orders for ship
+              orders_57131458.yaml.receipt <- confirmation of acceptance
+              rejected_99999999.yaml      <- orders that failed validation
+              rejected_99999999.reason     <- explanation of rejection
             bob@example.com/
               orders_88234561.yaml
 
-        processed/                        ← resolved turn output
+        processed/                        <- resolved turn output
           500.1/
-            38291047/                     ← Alice's account number (secret)
-              ship_57131458.txt           ← ship report
-              prefect_42268153.txt      ← prefect summary
-            71503928/                     ← Bob's account number (secret)
+            38291047/                     <- Alice's account number (secret)
+              ship_57131458.txt           <- ship report
+              prefect_42268153.txt      <- prefect summary
+            71503928/                     <- Bob's account number (secret)
               ship_88234561.txt
               prefect_85545143.txt
 """
@@ -82,7 +82,7 @@ class TurnFolders:
         if filename is None:
             filename = f"orders_{ship_id}.yaml"
         dest = folder / filename
-        dest.write_text(orders_content)
+        dest.write_text(orders_content, encoding='utf-8')
         return dest
 
     def store_receipt(self, turn_str, email, ship_id, receipt_info):
@@ -107,7 +107,7 @@ class TurnFolders:
             lines.append(f"Warnings:")
             for w in receipt_info['warnings']:
                 lines.append(f"  - {w}")
-        receipt_file.write_text("\n".join(lines))
+        receipt_file.write_text("\n".join(lines), encoding='utf-8')
         return receipt_file
 
     def store_rejected(self, turn_str, email, ship_id, orders_content, reasons):
@@ -117,7 +117,7 @@ class TurnFolders:
         folder = self.get_incoming_dir(turn_str, email)
         # Save the original orders
         rejected_file = folder / f"rejected_{ship_id}.yaml"
-        rejected_file.write_text(orders_content)
+        rejected_file.write_text(orders_content, encoding='utf-8')
         # Save the reason
         reason_file = folder / f"rejected_{ship_id}.reason"
         lines = [
@@ -133,7 +133,7 @@ class TurnFolders:
         ]
         for r in reasons:
             lines.append(f"  - {r}")
-        reason_file.write_text("\n".join(lines))
+        reason_file.write_text("\n".join(lines), encoding='utf-8')
         return rejected_file, reason_file
 
     def list_incoming(self, turn_str=None):
@@ -187,14 +187,14 @@ class TurnFolders:
         """Store a ship turn report in the correct processed folder."""
         folder = self.get_processed_dir(turn_str, account_number)
         report_file = folder / f"ship_{ship_id}.txt"
-        report_file.write_text(report_text)
+        report_file.write_text(report_text, encoding='utf-8')
         return report_file
 
     def store_prefect_report(self, turn_str, account_number, prefect_id, report_text):
         """Store a prefect turn report in the correct processed folder."""
         folder = self.get_processed_dir(turn_str, account_number)
         report_file = folder / f"prefect_{prefect_id}.txt"
-        report_file.write_text(report_text)
+        report_file.write_text(report_text, encoding='utf-8')
         return report_file
 
     def list_processed(self, turn_str=None):

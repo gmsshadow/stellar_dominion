@@ -367,7 +367,7 @@ def join_game(db_path=None, game_id="OMICRON101"):
         print(f"  other players.")
         print(f"")
         print(f"  Your prefect ID ({result['prefect_id']}) and")
-        print(f"  ship ID ({result['ship_id']}) are public — other")
+        print(f"  ship ID ({result['ship_id']}) are public -- other")
         print(f"  players may discover these through scanning.")
         print(f"")
 
@@ -575,8 +575,8 @@ def list_players(db_path=None, game_id="OMICRON101", include_suspended=False):
     print("-" * 94)
     for p in players:
         status = p['status'] if p['status'] != 'active' else ''
-        pol_name = p['prefect_name'] or '—'
-        faction = p['faction_abbr'] or '—'
+        pol_name = p['prefect_name'] or '--'
+        faction = p['faction_abbr'] or '--'
         print(f"{p['player_name']:<16} {p['email']:<28} {p['account_number']:<12} {faction:<8} {pol_name:<20} {status:<10}")
 
     conn.close()

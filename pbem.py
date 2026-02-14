@@ -113,7 +113,7 @@ def cmd_submit_orders(args):
         print("  Add 'account: YOUR_ACCOUNT_NUMBER' to your orders file.")
         return
 
-    raw_content = filepath.read_text()
+    raw_content = filepath.read_text(encoding='utf-8')
 
     # Validate ownership: does this email + account own this ship?
     valid, account_number, error_msg = folders.validate_ship_ownership(email, ship_id, account)
@@ -720,7 +720,7 @@ def cmd_process_inbox(args):
 
         # Read and parse the orders file
         try:
-            content = filepath.read_text()
+            content = filepath.read_text(encoding='utf-8')
             parsed = parse_orders_file(str(filepath))
         except Exception as e:
             print(f"    ERROR: could not parse file: {e}")

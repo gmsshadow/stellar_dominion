@@ -50,7 +50,7 @@ def render_system_map(system_data, objects, ship_position=None, title=None):
     # Initialize empty grid
     grid = [['.' for _ in range(25)] for _ in range(25)]
 
-    # Place star at center (M13 = index 12, row 13 → index 12)
+    # Place star at center (M13 = index 12, row 13 -> index 12)
     star_col = col_to_index(system_data.get('star_col', 'M'))
     star_row = system_data.get('star_row', 13) - 1
     grid[star_row][star_col] = SYMBOLS['star']

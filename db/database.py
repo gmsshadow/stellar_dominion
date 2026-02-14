@@ -333,7 +333,7 @@ def migrate_db(db_path=None):
         _migrate_v0_to_v1(conn)
         conn.execute("UPDATE games SET schema_version = 1")
         conn.commit()
-        print(f"  Migration: v0 → v1 (added player status, factions, prefect faction_id)")
+        print(f"  Migration: v0 -> v1 (added player status, factions, prefect faction_id)")
         version = 1
 
     # Future migrations slot in here:
@@ -341,7 +341,7 @@ def migrate_db(db_path=None):
     #     _migrate_v1_to_v2(conn)
     #     conn.execute("UPDATE games SET schema_version = 2")
     #     conn.commit()
-    #     print(f"  Migration: v1 → v2 (description)")
+    #     print(f"  Migration: v1 -> v2 (description)")
     #     version = 2
 
     conn.close()
