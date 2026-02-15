@@ -454,23 +454,22 @@ class TurnResolver:
         ).fetchone()
 
         objects = self.get_system_objects(state['system_id'])
-        # Remove the current ship from objects so we can show it as @
-        map_objects = [o for o in objects if not (o['type'] == 'ship' and o['id'] == state['ship_id'])]
 
-        # Add all detected objects as contacts
+        # Add all detected objects as contacts (except own ship)
         for obj in objects:
             if obj['type'] != 'ship' or obj['id'] != state['ship_id']:
                 self.contacts.append(obj)
+
+        # Only celestial bodies go on the grid (no ships, no bases)
+        map_objects = [o for o in objects
+                       if o['type'] not in ('ship', 'base')]
 
         system_data = {
             'star_col': system['star_grid_col'],
             'star_row': system['star_grid_row']
         }
 
-        ascii_map = render_system_map(
-            system_data, map_objects,
-            ship_position=(state['col'], state['row'])
-        )
+        ascii_map = render_system_map(system_data, map_objects)
 
         return {
             'command': 'SYSTEMSCAN', 'params': None,
@@ -586,6 +585,26 @@ class TurnResolver:
                 'success': False,
                 'message': f"Unable to dock: ship is not at base location ({loc}). Order queued as pending."
             }
+
+        # If base is in orbit, ship must also be orbiting the same body
+        if base['orbiting_body_id']:
+            if state['orbiting'] != base['orbiting_body_id']:
+                body = self.conn.execute(
+                    "SELECT name FROM celestial_bodies WHERE body_id = ?",
+                    (base['orbiting_body_id'],)
+                ).fetchone()
+                body_name = body['name'] if body else str(base['orbiting_body_id'])
+                return {
+                    'command': 'DOCK', 'params': base_id,
+                    'tu_before': tu_before, 'tu_after': state['tu'],
+                    'tu_cost': 0,
+                    'success': False,
+                    'message': (
+                        f"Unable to dock: {base['name']} ({base_id}) is in orbit of "
+                        f"{body_name} ({base['orbiting_body_id']}). "
+                        f"You must ORBIT {base['orbiting_body_id']} first."
+                    )
+                }
 
         state['docked_at'] = base_id
         state['tu'] -= cost

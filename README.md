@@ -218,7 +218,7 @@ DOCK 45687590
 | `LOCATIONSCAN`   | 20      | Scan nearby cells for objects    |
 | `SYSTEMSCAN`     | 20      | Produce full system ASCII map    |
 | `ORBIT {bodyId}` | 10      | Enter orbit of a celestial body  |
-| `DOCK {baseId}`  | 30      | Dock at a starbase               |
+| `DOCK {baseId}`  | 30      | Dock at a starbase (must ORBIT first if base is in orbit) |
 | `UNDOCK`          | 10      | Leave docked starbase            |
 
 ## Turn Resolution Rules
@@ -252,6 +252,8 @@ Turns follow `YEAR.WEEK` format: `500.1` through `500.52`, then `501.1`.
 | `suspend-player --email/--account` | Suspend a player (hide all assets) |
 | `reinstate-player --email/--account` | Reinstate a suspended player |
 | `list-players [--all]` | List players (--all includes suspended) |
+| `generate-form --game ID [--output dir]` | Generate blank registration form for new players |
+| `register-player <form>` | Process a filled-in registration form |
 | `process-inbox --inbox <dir>` | Batch process orders from inbox directory |
 
 ### join-game details
@@ -266,6 +268,28 @@ random starbase. Players can join at any point during the game.
 
 On completion, the player receives their secret account number which they must
 keep private. Their prefect ID and ship ID are public identifiers.
+
+### Registration forms (remote players)
+
+For players who can't run the CLI directly, the GM can use registration forms:
+
+```bash
+# 1. GM generates blank forms (lists available starbases)
+python pbem.py generate-form --game OMICRON101 --output forms/
+
+# 2. GM sends the form to the new player (YAML or text format)
+# 3. Player fills in their details and chosen starbase, sends it back
+# 4. GM processes the form
+python pbem.py register-player forms/alice_registration.yaml
+```
+
+The form includes a list of available starbases with their IDs, locations,
+and facilities. Both YAML and plain text formats are supported, matching
+the same dual-format approach used for orders.
+
+On registration, the player's ship is created docked at their chosen starbase,
+a SYSTEMSCAN is automatically run, and welcome reports (ship + prefect) are
+generated ready to send to the player.
 
 ### submit-orders details
 

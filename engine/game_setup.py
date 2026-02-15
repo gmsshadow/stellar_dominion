@@ -6,6 +6,9 @@ Creates initial game state with star systems, celestial bodies, bases, and playe
 import random
 from pathlib import Path
 from db.database import init_db, get_connection, get_faction, faction_display_name
+from engine.resolution.resolver import TurnResolver
+from engine.reports.report_gen import generate_ship_report, generate_prefect_report
+from engine.turn_folders import TurnFolders
 
 
 def _generate_unique_id(conn, table, column, min_val=10000000, max_val=99999999):
@@ -148,6 +151,112 @@ def create_game(db_path=None, game_id="OMICRON101", game_name="Stellar Dominion 
     return True
 
 
+def generate_welcome_reports(db_path, game_id, account_number, prefect_id, ship_id):
+    """
+    Generate welcome reports for a newly added player.
+    
+    Runs a SYSTEMSCAN on their ship and produces both a ship report
+    and a prefect report with an introductory welcome message.
+    Reports are stored in the processed turn folder.
+    """
+    import textwrap
+
+    conn = get_connection(db_path)
+    game = conn.execute("SELECT * FROM games WHERE game_id = ?", (game_id,)).fetchone()
+    turn_str = f"{game['current_year']}.{game['current_week']}"
+    conn.close()
+
+    # Run SYSTEMSCAN as the welcome order
+    resolver = TurnResolver(db_path, game_id=game_id)
+    welcome_orders = [
+        {'sequence': 1, 'command': 'SYSTEMSCAN', 'params': None},
+    ]
+    result = resolver.resolve_ship_turn(ship_id, welcome_orders)
+    resolver.close()
+
+    if result.get('error'):
+        print(f"  Warning: could not generate welcome reports: {result['error']}")
+        return
+
+    # Welcome blurb for ship report
+    ship_blurb = textwrap.dedent("""\
+        WELCOME TO STELLAR DOMINION
+        ===========================
+
+        You have been assigned command of this vessel. Your ship has completed
+        an initial system scan -- see the TURN REPORT below for what was found.
+
+        Your Contacts section at the end of this report lists everything your
+        ship has detected so far. Use this to plan your first set of orders.
+
+        QUICK START - SAMPLE ORDERS
+        ----------------------------
+        Here are some example orders to get you moving. Copy the format below
+        into a YAML file and submit it as your first turn:
+
+            game: {game_id}
+            account: YOUR_ACCOUNT_NUMBER
+            ship: YOUR_SHIP_ID
+            orders:
+              - MOVE: M13          # Move to grid square M13
+              - LOCATIONSCAN: {{}}   # Scan nearby area on arrival
+              - ORBIT: 247985      # Enter orbit of a planet (use body ID)
+              - DOCK: 45687590     # Dock at a starbase (use base ID)
+
+        AVAILABLE COMMANDS
+        -------------------
+        MOVE <coord>       Move to a grid square (e.g. M13, H04). Costs 2 TU/square.
+        LOCATIONSCAN       Scan nearby space. Costs 20 TU.
+        SYSTEMSCAN         Produce a full system map. Costs 20 TU.
+        ORBIT <body_id>    Enter orbit of a planet, moon, or gas giant. Costs 10 TU.
+        DOCK <base_id>     Dock at a starbase (must be at same location). Costs 30 TU.
+        UNDOCK             Leave a starbase. Costs 10 TU.
+        WAIT <tu>          Wait and do nothing for a number of TU.
+
+        Your ship has 300 TU per turn. Unspent TU are lost at end of turn.
+        Submit orders by email or file -- see your game moderator for details.
+
+        Good luck, Commander.\
+    """).format(game_id=game_id)
+    ship_messages = ship_blurb.split('\n')
+
+    # Welcome blurb for prefect report
+    prefect_blurb = textwrap.dedent("""\
+        WELCOME TO STELLAR DOMINION
+        ===========================
+
+        This is your Prefect report. It provides an overview of your position:
+        your finances, your fleet, and everything you have discovered so far.
+
+        You will receive this report each turn alongside your ship reports.
+        Use it to track your credits, monitor your ships, and review contacts.
+
+        Your account number is SECRET -- never share it with other players.
+        Your prefect ID and ship IDs are public and may be discovered by
+        other players through scanning.\
+    """)
+    prefect_messages = prefect_blurb.split('\n')
+
+    # Generate reports
+    ship_report = generate_ship_report(
+        result, db_path, game_id,
+        between_turn_messages=ship_messages
+    )
+    prefect_report = generate_prefect_report(
+        prefect_id, db_path, game_id,
+        between_turn_messages=prefect_messages
+    )
+
+    # Store in processed folder
+    folders = TurnFolders(db_path=db_path, game_id=game_id)
+    ship_file = folders.store_ship_report(turn_str, account_number, ship_id, ship_report)
+    prefect_file = folders.store_prefect_report(turn_str, account_number, prefect_id, prefect_report)
+
+    print(f"  Welcome reports generated:")
+    print(f"    Ship:    {ship_file}")
+    print(f"    Prefect: {prefect_file}")
+
+
 def add_player(db_path=None, game_id="OMICRON101", player_name="Player 1",
                email="player1@example.com", prefect_name="Erik Voss",
                ship_name="Boethius", ship_start_col="I", ship_start_row=6,
@@ -173,8 +282,9 @@ def add_player(db_path=None, game_id="OMICRON101", player_name="Player 1",
     prefect_id = _generate_unique_id(conn, 'prefects', 'prefect_id')
     ship_id = _generate_unique_id(conn, 'ships', 'ship_id')
 
-    # If docking at a base, use the base's location
+    # If docking at a base, use the base's location and orbit
     docked_at = None
+    orbiting_body = None
     if dock_at_base:
         base = c.execute(
             "SELECT * FROM starbases WHERE base_id = ? AND game_id = ?",
@@ -184,6 +294,7 @@ def add_player(db_path=None, game_id="OMICRON101", player_name="Player 1",
             ship_start_col = base['grid_col']
             ship_start_row = base['grid_row']
             docked_at = dock_at_base
+            orbiting_body = base['orbiting_body_id']  # May be None for space bases
         else:
             print(f"Warning: Base {dock_at_base} not found, using default position.")
 
@@ -207,12 +318,12 @@ def add_player(db_path=None, game_id="OMICRON101", player_name="Player 1",
     c.execute("""
         INSERT INTO ships 
         (ship_id, game_id, owner_prefect_id, name, ship_class, design, hull_type,
-         hull_count, grid_col, grid_row, system_id, docked_at_base_id,
+         hull_count, grid_col, grid_row, system_id, docked_at_base_id, orbiting_body_id,
          tu_per_turn, tu_remaining, sensor_rating, cargo_capacity, crew_count, crew_required)
         VALUES (?, ?, ?, ?, 'Scout', 'Explorer Mk I', 'Light Hull', 50,
-                ?, ?, 101, ?, 300, 300, 20, 500, 15, 10)
+                ?, ?, 101, ?, ?, 300, 300, 20, 500, 15, 10)
     """, (ship_id, game_id, prefect_id, ship_name,
-          ship_start_col, ship_start_row, docked_at))
+          ship_start_col, ship_start_row, docked_at, orbiting_body))
 
     # Add a starting officer
     c.execute("""
@@ -246,6 +357,10 @@ def add_player(db_path=None, game_id="OMICRON101", player_name="Player 1",
     print(f"  Faction: STA - Stellar Training Academy")
     print(f"  Ship: STA {ship_name} (ID: {ship_id}) at {ship_start_col}{ship_start_row:02d}{dock_info}")
     print(f"  Starting Credits: 10,000")
+
+    # Generate welcome reports (system scan + intro blurb)
+    generate_welcome_reports(db_path, game_id, account_number, prefect_id, ship_id)
+
     return {
         'player_id': player_id,
         'account_number': account_number,

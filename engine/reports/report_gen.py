@@ -34,11 +34,13 @@ def section_close(width=REPORT_WIDTH):
     return "|" + SECTION_CHAR * (width - 2) + "|"
 
 
-def generate_ship_report(turn_result, db_path=None, game_id="OMICRON101"):
+def generate_ship_report(turn_result, db_path=None, game_id="OMICRON101",
+                         between_turn_messages=None):
     """
     Generate a full Phoenix-style turn report for a ship.
     
     turn_result: dict from TurnResolver.resolve_ship_turn()
+    between_turn_messages: optional list of strings to show in between-turn section
     """
     conn = get_connection(db_path)
 
@@ -111,8 +113,13 @@ def generate_ship_report(turn_result, db_path=None, game_id="OMICRON101"):
     lines.append(center_text("BETWEEN TURN REPORT"))
     lines.append(HEADER_CHAR * REPORT_WIDTH)
     lines.append("")
-    lines.append("No between-turn events.")
-    lines.append("")
+    if between_turn_messages:
+        for msg in between_turn_messages:
+            lines.append(msg)
+        lines.append("")
+    else:
+        lines.append("No between-turn events.")
+        lines.append("")
 
     # ==========================================
     # TURN REPORT
@@ -305,7 +312,8 @@ def generate_ship_report(turn_result, db_path=None, game_id="OMICRON101"):
     return "\n".join(lines)
 
 
-def generate_prefect_report(prefect_id, db_path=None, game_id="OMICRON101"):
+def generate_prefect_report(prefect_id, db_path=None, game_id="OMICRON101",
+                            between_turn_messages=None):
     """Generate a prefect turn report."""
     conn = get_connection(db_path)
 
@@ -349,6 +357,18 @@ def generate_prefect_report(prefect_id, db_path=None, game_id="OMICRON101"):
     lines.append("")
     lines.append(f"Printed on {now.strftime('%d %B %Y')}, Star Date {turn_str}")
     lines.append("")
+
+    # ==========================================
+    # BETWEEN TURN REPORT
+    # ==========================================
+    if between_turn_messages:
+        lines.append(HEADER_CHAR * REPORT_WIDTH)
+        lines.append(center_text("BETWEEN TURN REPORT"))
+        lines.append(HEADER_CHAR * REPORT_WIDTH)
+        lines.append("")
+        for msg in between_turn_messages:
+            lines.append(msg)
+        lines.append("")
 
     # ==========================================
     # TURN REPORT

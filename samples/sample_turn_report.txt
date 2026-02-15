@@ -1,13 +1,14 @@
 ================================================================================
                            STELLAR DOMINION
-                     Sample Turn Report - Turn 500.1
+                     Sample Turn Report - Welcome Turn
 ================================================================================
 
-This is a sample of what players receive each turn. Every player gets:
-  1. A SHIP REPORT for each ship they own (orders, movement, scans, status)
+This is a sample of what new players receive when they join the game.
+Every player gets:
+  1. A SHIP REPORT for each ship they own (with system scan and welcome guide)
   2. A PREFECT REPORT summarising their finances, fleet, and known contacts
 
-Below are the reports for the player "Alice" after her first turn.
+Below are the welcome reports for a new player "Alice".
 
 ================================================================================
 
@@ -16,7 +17,7 @@ Below are the reports for the player "Alice" after her first turn.
                                Stellar Dominion                               
                               PBEM Strategy Game                              
 
-                         STA SHIP Boethius (63687532)                         
+                         STA SHIP Boethius (66232320)                         
 
 Printed on 14 February 2026, Star Date 500.1
 
@@ -24,7 +25,43 @@ Printed on 14 February 2026, Star Date 500.1
                              BETWEEN TURN REPORT                              
 ------------------------------------------------------------------------------
 
-No between-turn events.
+WELCOME TO STELLAR DOMINION
+===========================
+
+You have been assigned command of this vessel. Your ship has completed
+an initial system scan -- see the TURN REPORT below for what was found.
+
+Your Contacts section at the end of this report lists everything your
+ship has detected so far. Use this to plan your first set of orders.
+
+QUICK START - SAMPLE ORDERS
+----------------------------
+Here are some example orders to get you moving. Copy the format below
+into a YAML file and submit it as your first turn:
+
+    game: OMICRON101
+    account: YOUR_ACCOUNT_NUMBER
+    ship: YOUR_SHIP_ID
+    orders:
+      - MOVE: M13          # Move to grid square M13
+      - LOCATIONSCAN: {}   # Scan nearby area on arrival
+      - ORBIT: 247985      # Enter orbit of a planet (use body ID)
+      - DOCK: 45687590     # Dock at a starbase (use base ID)
+
+AVAILABLE COMMANDS
+-------------------
+MOVE <coord>       Move to a grid square (e.g. M13, H04). Costs 2 TU/square.
+LOCATIONSCAN       Scan nearby space. Costs 20 TU.
+SYSTEMSCAN         Produce a full system map. Costs 20 TU.
+ORBIT <body_id>    Enter orbit of a planet, moon, or gas giant. Costs 10 TU.
+DOCK <base_id>     Dock at a starbase (must be at same location). Costs 30 TU.
+UNDOCK             Leave a starbase. Costs 10 TU.
+WAIT <tu>          Wait and do nothing for a number of TU.
+
+Your ship has 300 TU per turn. Unspent TU are lost at end of turn.
+Submit orders by email or file -- see your game moderator for details.
+
+Good luck, Commander.    
 
 ------------------------------------------------------------------------------
                                  TURN REPORT                                  
@@ -33,36 +70,40 @@ No between-turn events.
 Starting Location:
     I06 - Omicron System (101)
 
->TU 300: MOVE {M13}
-    Moved 7 squares to M13. (I06 -> J07 -> ... -> M13)
-
->TU 286: LOCATIONSCAN
-    Scan complete. Detected:
-        Omicron Prime (101) at M13
-        Callyx (88341) at F19
-        Leviathan (155230) at E18
-        Tartarus (301442) at R08
-        Meridian (412003) at T20
-        Tartarus Depot (12340001) at R08
-        Meridian Waystation (78901234) at T20
-        STA Resolute (70769686) at P15
-
->TU 266: MOVE {H04}
-    Moved 9 squares to H04. (M13 -> L12 -> ... -> H04)
-
->TU 248: ORBIT {247985}
-    Ship entered orbit of Orion (247985) [0.9g]
-
->TU 238: DOCK {45687590}
-    Docking at Starbase Citadel Station (45687590).
-        Scanned:
-            Citadel Station (45687590)
+>TU 300: SYSTEMSCAN
+    System scan complete.
+        A  B  C  D  E  F  G  H  I  J  K  L  M  N  O  P  Q  R  S  T  U  V  W  X  Y
+    01  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .
+    02  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .
+    03  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .
+    04  .  .  .  .  .  .  .  O  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .
+    05  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .
+    06  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .
+    07  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .
+    08  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  O  .  .  .  .  .  .  .
+    09  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .
+    10  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .
+    11  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .
+    12  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .
+    13  .  .  .  .  .  .  .  .  .  .  .  .  *  .  .  .  .  .  .  .  .  .  .  .  .
+    14  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .
+    15  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .
+    16  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .
+    17  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .
+    18  .  .  .  .  G  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .
+    19  .  .  .  .  .  o  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .
+    20  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  O  .  .  .  .  .
+    21  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .
+    22  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .
+    23  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .
+    24  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .
+    25  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .
 
 |- Command Report ------------------------------------------------------------|
 |                                                                            |
-| Name: STA Boethius (63687532)         Faction: STA - Stellar Training Academy|
+| Name: STA Boethius (66232320)         Faction: STA - Stellar Training Academy|
 | Wealth: 10,000 Credits                Ownership: Player owned              |
-| Efficiency: 100%                      TUs left: 208 tus                    |
+| Efficiency: 100%                      TUs left: 280 tus                    |
 |                                                                            |
 | Design: Explorer Mk I Class Scout                                          |
 | Hulls: 50 (Light Hull)                Hull Damage: 0%                      |
@@ -71,8 +112,8 @@ Starting Location:
 |- Navigation Report ---------------------------------------------------------|
 |                                                                            |
 | LOCATION                                                                   |
-| Docked at Starbase Citadel Station (45687590) - Omicron System (101)       |
-| Omicron (101) - {H04}                                                      |
+| I06 - Omicron System (101)                                                 |
+| Omicron (101) - {I06}                                                      |
 |                                                                            |
 | Sensor Rating: 20%                    Cargo: 0/500                         |
 |                                                                            |
@@ -108,13 +149,12 @@ Starting Location:
 | - Star Omicron Prime (101) at M13                                          |
 | - Moon Callyx (88341) at F19                                               |
 | - Gas_Giant Leviathan (155230) at E18                                      |
+| - Planet Orion (247985) at H04                                             |
 | - Planet Tartarus (301442) at R08                                          |
 | - Planet Meridian (412003) at T20                                          |
 | - Base Tartarus Depot (12340001) at R08                                    |
-| - Base Meridian Waystation (78901234) at T20                               |
-| - Ship STA Resolute (70769686) at P15                                      |
-| - Planet Orion (247985) at H04                                             |
 | - Base Citadel Station (45687590) at H04                                   |
+| - Base Meridian Waystation (78901234) at T20                               |
 |                                                                            |
 |- Pending Orders ------------------------------------------------------------|
 |                                                                            |
@@ -133,9 +173,26 @@ Starting Location:
                                Stellar Dominion                               
                               PBEM Strategy Game                              
 
-                        STA PREFECT Li Chen (79979911)                        
+                        STA PREFECT Li Chen (79063795)                        
 
 Printed on 14 February 2026, Star Date 500.1
+
+------------------------------------------------------------------------------
+                             BETWEEN TURN REPORT                              
+------------------------------------------------------------------------------
+
+WELCOME TO STELLAR DOMINION
+===========================
+
+This is your Prefect report. It provides an overview of your position:
+your finances, your fleet, and everything you have discovered so far.
+
+You will receive this report each turn alongside your ship reports.
+Use it to track your credits, monitor your ships, and review contacts.
+
+Your account number is SECRET -- never share it with other players.
+Your prefect ID and ship IDs are public and may be discovered by
+other players through scanning.    
 
 ------------------------------------------------------------------------------
                                  TURN REPORT                                  
@@ -146,17 +203,17 @@ Printed on 14 February 2026, Star Date 500.1
 ------------------------------------------------------------------------------
 |- Prefect Report ------------------------------------------------------------|
 |                                                                            |
-| Name: Li Chen (79979911)              Faction: STA - Stellar Training Academy|
+| Name: Li Chen (79063795)              Faction: STA - Stellar Training Academy|
 | Rank: Citizen                         Influence: 0                         |
 | Created: 500.1                                                             |
 |                                                                            |
 | LOCATION                                                                   |
-| Aboard STA Boethius (63687532), Docked at Citadel Station (45687590) - Omicron System (101)|
+| Aboard STA Boethius (66232320) - Omicron System (101)                      |
 |                                                                            |
 |- Financial Report ----------------------------------------------------------|
 |                                                                            |
 | POSITION                                   INCOME  EXPENSES       NET      |
-| STA Boethius (63687532)                        0         0         0       |
+| STA Boethius (66232320)                        0         0         0       |
 |                                           -------   -------   -------      |
 |                                                 0         0         0      |
 |                                                                            |
@@ -164,8 +221,8 @@ Printed on 14 February 2026, Star Date 500.1
 |                                                                            |
 |- Ships ---------------------------------------------------------------------|
 |                                                                            |
-| STA Boethius (63687532)            Omicron (101) H04 [Docked at Citadel Station]|
-|    Explorer Mk I Class Scout       TU: 208/300  Hull: 50 (Light Hull)      |
+| STA Boethius (66232320)            Omicron (101) I06                       |
+|    Explorer Mk I Class Scout       TU: 280/300  Hull: 50 (Light Hull)      |
 |                                                                            |
 |- Known Contacts ------------------------------------------------------------|
 |                                                                            |
@@ -181,8 +238,6 @@ Printed on 14 February 2026, Star Date 500.1
 |   Meridian (412003) at T20                                                 |
 |   Orion (247985) at H04                                                    |
 |   Tartarus (301442) at R08                                                 |
-| SHIPS:                                                                     |
-|   STA Resolute (70769686) at P15                                           |
 | STARS:                                                                     |
 |   Omicron Prime (101) at M13                                               |
 |                                                                            |
@@ -196,7 +251,8 @@ Printed on 14 February 2026, Star Date 500.1
 
 NOTES:
 - Ship IDs and account numbers are randomly generated per game.
+- The welcome guide in the BETWEEN TURN REPORT only appears on your first turn.
 - The "Contacts" section grows as you scan and explore the system.
-- "Pending Orders" shows any orders that couldn't complete (e.g. ran out of TU).
-- Movement costs 2 TU per square. This ship moved 16 squares total (32 TU).
+- Movement costs 2 TU per square. Your ship has 300 TU per turn.
+- To dock at an orbiting base, you must ORBIT the same body first.
 - Orders are submitted as YAML or plain text files with your secret account number.

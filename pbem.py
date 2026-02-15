@@ -28,6 +28,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from db.database import init_db, get_connection, migrate_db, get_faction, faction_display_name
 from engine.game_setup import create_game, add_player, setup_demo_game, join_game, suspend_player, reinstate_player, list_players
 from engine.orders.parser import parse_orders_file, parse_yaml_orders, parse_text_orders
+from engine.registration import parse_registration_file, validate_registration
 from engine.resolution.resolver import TurnResolver
 from engine.reports.report_gen import generate_ship_report, generate_prefect_report
 from engine.maps.system_map import render_system_map
@@ -657,6 +658,201 @@ def cmd_list_players(args):
     )
 
 
+# ======================================================================
+# REGISTRATION FORM COMMANDS
+# ======================================================================
+
+def cmd_generate_form(args):
+    """
+    Generate a blank registration form for new players.
+    Lists available starbases so players can choose their starting location.
+    Outputs both YAML and text formats to the specified directory.
+    """
+    db_path = Path(args.db) if args.db else None
+    conn = get_connection(db_path)
+
+    game = conn.execute("SELECT * FROM games WHERE game_id = ?", (args.game,)).fetchone()
+    if not game:
+        print(f"Error: Game {args.game} not found.")
+        conn.close()
+        return
+
+    # Get available starbases
+    bases = conn.execute(
+        "SELECT b.*, cb.name as body_name, ss.name as system_name "
+        "FROM starbases b "
+        "JOIN star_systems ss ON b.system_id = ss.system_id "
+        "LEFT JOIN celestial_bodies cb ON b.orbiting_body_id = cb.body_id "
+        "WHERE b.game_id = ? ORDER BY b.name",
+        (args.game,)
+    ).fetchall()
+
+    turn_str = f"{game['current_year']}.{game['current_week']}"
+    conn.close()
+
+    # Build starbase listing
+    base_lines_yaml = []
+    base_lines_text = []
+    for b in bases:
+        loc = f"{b['grid_col']}{b['grid_row']:02d}"
+        orbit_info = f", orbiting {b['body_name']}" if b['body_name'] else ""
+        docking = f"Docking: {b['docking_capacity']}"
+        market = ", Market" if b['has_market'] else ""
+        desc = f"{b['name']} ({b['base_id']}) - {b['base_type']} at {loc}{orbit_info} - {docking}{market}"
+        base_lines_yaml.append(f"#   {desc}")
+        base_lines_text.append(f"#   {desc}")
+
+    # Generate YAML form
+    yaml_form = f"""# ============================================================
+# STELLAR DOMINION - New Player Registration Form
+# Game: {game['game_name']} ({args.game})
+# Current Turn: {turn_str}
+# ============================================================
+#
+# Fill in the fields below and return this file to the GM.
+#
+# AVAILABLE STARTING STARBASES:
+{chr(10).join(base_lines_yaml)}
+#
+# Choose one starbase ID from the list above for your starting
+# location. Your ship will begin the game docked there.
+# ============================================================
+
+game: {args.game}
+player_name: 
+email: 
+prefect_name: 
+ship_name: 
+starbase: 
+"""
+
+    # Generate text form
+    text_form = f"""# ============================================================
+# STELLAR DOMINION - New Player Registration Form
+# Game: {game['game_name']} ({args.game})
+# Current Turn: {turn_str}
+# ============================================================
+#
+# Fill in the fields below and return this file to the GM.
+# Each field must be on its own line: FIELD_NAME value
+#
+# AVAILABLE STARTING STARBASES:
+{chr(10).join(base_lines_text)}
+#
+# Choose one starbase ID from the list above for your starting
+# location. Your ship will begin the game docked there.
+# ============================================================
+
+GAME {args.game}
+PLAYER_NAME 
+EMAIL 
+PREFECT_NAME 
+SHIP_NAME 
+STARBASE 
+"""
+
+    # Write forms to output directory
+    output_dir = Path(args.output) if args.output else Path('.')
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    yaml_file = output_dir / f"registration_{args.game}.yaml"
+    text_file = output_dir / f"registration_{args.game}.txt"
+
+    yaml_file.write_text(yaml_form, encoding='utf-8')
+    text_file.write_text(text_form, encoding='utf-8')
+
+    print(f"Registration forms generated for game {args.game}:")
+    print(f"  YAML: {yaml_file}")
+    print(f"  Text: {text_file}")
+    print(f"\nAvailable starbases:")
+    for b in bases:
+        loc = f"{b['grid_col']}{b['grid_row']:02d}"
+        orbit_info = f", orbiting {b['body_name']}" if b['body_name'] else ""
+        print(f"  {b['name']} ({b['base_id']}) - {b['base_type']} at {loc}{orbit_info}")
+
+
+def cmd_register_player(args):
+    """
+    Process a filled-in registration form and create the player account.
+    Validates all fields, creates player/prefect/ship, docks at chosen starbase,
+    and generates welcome reports.
+    """
+    db_path = Path(args.db) if args.db else None
+
+    # Parse the form
+    filepath = Path(args.form)
+    if not filepath.exists():
+        print(f"Error: File '{filepath}' not found.")
+        return
+
+    data = parse_registration_file(filepath)
+
+    if data.get('error'):
+        print(f"Parse error: {data['error']}")
+        return
+
+    # Validate required fields
+    errors = validate_registration(data)
+    if errors:
+        print("Registration REJECTED - missing or invalid fields:")
+        for e in errors:
+            print(f"  - {e}")
+        return
+
+    game_id = data['game']
+    conn = get_connection(db_path)
+
+    # Verify game exists
+    game = conn.execute("SELECT * FROM games WHERE game_id = ?", (game_id,)).fetchone()
+    if not game:
+        print(f"Error: Game '{game_id}' not found.")
+        conn.close()
+        return
+
+    # Check email not already registered
+    existing = conn.execute(
+        "SELECT player_name FROM players WHERE email = ? AND game_id = ?",
+        (data['email'], game_id)
+    ).fetchone()
+    if existing:
+        print(f"Error: Email '{data['email']}' is already registered to {existing['player_name']}.")
+        conn.close()
+        return
+
+    # Verify starbase exists
+    base_id = int(data['starbase'])
+    base = conn.execute(
+        "SELECT b.*, ss.name as system_name FROM starbases b "
+        "JOIN star_systems ss ON b.system_id = ss.system_id "
+        "WHERE b.base_id = ? AND b.game_id = ?",
+        (base_id, game_id)
+    ).fetchone()
+    if not base:
+        print(f"Error: Starbase {base_id} not found in game {game_id}.")
+        conn.close()
+        return
+
+    conn.close()
+
+    # Create the player via add_player
+    print(f"\nProcessing registration for: {data['player_name']} ({data['email']})")
+    print(f"  Starting at: {base['name']} ({base_id}) in {base['system_name']} System")
+    print()
+
+    result = add_player(
+        db_path=db_path,
+        game_id=game_id,
+        player_name=data['player_name'],
+        email=data['email'],
+        prefect_name=data['prefect_name'],
+        ship_name=data['ship_name'],
+        dock_at_base=base_id,
+    )
+
+    if result:
+        print(f"\nRegistration complete. Send the welcome reports to {data['email']}.")
+
+
 def cmd_process_inbox(args):
     """
     Process all order files from an inbox directory.
@@ -943,6 +1139,15 @@ Batch processing:
     sp.add_argument('--game', default='OMICRON101', help='Game ID')
     sp.add_argument('--all', action='store_true', help='Include suspended players')
 
+    # --- generate-form ---
+    sp = subparsers.add_parser('generate-form', help='Generate blank registration form for new players')
+    sp.add_argument('--game', default='OMICRON101', help='Game ID')
+    sp.add_argument('--output', default='.', help='Output directory for form files')
+
+    # --- register-player ---
+    sp = subparsers.add_parser('register-player', help='Process a filled-in registration form')
+    sp.add_argument('form', help='Path to the filled registration form')
+
     # --- process-inbox ---
     sp = subparsers.add_parser('process-inbox', help='Batch process orders from inbox directory')
     sp.add_argument('--inbox', required=True, help='Path to inbox directory')
@@ -971,6 +1176,8 @@ Batch processing:
         'suspend-player': cmd_suspend_player,
         'reinstate-player': cmd_reinstate_player,
         'list-players': cmd_list_players,
+        'generate-form': cmd_generate_form,
+        'register-player': cmd_register_player,
         'process-inbox': cmd_process_inbox,
     }
 
