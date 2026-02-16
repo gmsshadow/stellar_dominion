@@ -260,12 +260,16 @@ def generate_welcome_reports(db_path, game_id, account_number, prefect_id, ship_
 def add_player(db_path=None, game_id="OMICRON101", player_name="Player 1",
                email="player1@example.com", prefect_name="Erik Voss",
                ship_name="Boethius", ship_start_col="I", ship_start_row=6,
-               dock_at_base=None):
+               start_orbit_body=None, dock_at_base=None):
     """
     Add a player with a prefect and starting ship.
     
-    If dock_at_base is provided (base_id), the ship starts docked there
-    and uses the base's grid position. Otherwise uses ship_start_col/row.
+    Starting location precedence:
+      1) If dock_at_base is provided (base_id), the ship starts docked there
+         and uses the base's grid position.
+      2) Else if start_orbit_body is provided (body_id), the ship starts in
+         orbit around that body and uses the body's grid position.
+      3) Else uses ship_start_col/row.
     """
     conn = get_connection(db_path)
     c = conn.cursor()
@@ -282,6 +286,8 @@ def add_player(db_path=None, game_id="OMICRON101", player_name="Player 1",
     prefect_id = _generate_unique_id(conn, 'prefects', 'prefect_id')
     ship_id = _generate_unique_id(conn, 'ships', 'ship_id')
 
+    ship_system_id = 101
+
     # If docking at a base, use the base's location and orbit
     docked_at = None
     orbiting_body = None
@@ -293,10 +299,26 @@ def add_player(db_path=None, game_id="OMICRON101", player_name="Player 1",
         if base:
             ship_start_col = base['grid_col']
             ship_start_row = base['grid_row']
+            ship_system_id = base['system_id']
             docked_at = dock_at_base
             orbiting_body = base['orbiting_body_id']  # May be None for space bases
         else:
             print(f"Warning: Base {dock_at_base} not found, using default position.")
+    elif start_orbit_body:
+        body = c.execute(
+            "SELECT cb.*, ss.game_id FROM celestial_bodies cb "
+            "JOIN star_systems ss ON cb.system_id = ss.system_id "
+            "WHERE cb.body_id = ? AND ss.game_id = ?",
+            (start_orbit_body, game_id)
+        ).fetchone()
+        if body:
+            ship_start_col = body['grid_col']
+            ship_start_row = body['grid_row']
+            ship_system_id = body['system_id']
+            docked_at = None
+            orbiting_body = body['body_id']
+        else:
+            print(f"Warning: Body {start_orbit_body} not found, using default position.")
 
     # Create player
     c.execute("""
@@ -321,9 +343,9 @@ def add_player(db_path=None, game_id="OMICRON101", player_name="Player 1",
          hull_count, grid_col, grid_row, system_id, docked_at_base_id, orbiting_body_id,
          tu_per_turn, tu_remaining, sensor_rating, cargo_capacity, crew_count, crew_required)
         VALUES (?, ?, ?, ?, 'Scout', 'Explorer Mk I', 'Light Hull', 50,
-                ?, ?, 101, ?, ?, 300, 300, 20, 500, 15, 10)
+                ?, ?, ?, ?, ?, 300, 300, 20, 500, 15, 10)
     """, (ship_id, game_id, prefect_id, ship_name,
-          ship_start_col, ship_start_row, docked_at, orbiting_body))
+          ship_start_col, ship_start_row, ship_system_id, docked_at, orbiting_body))
 
     # Add a starting officer
     c.execute("""
@@ -351,11 +373,12 @@ def add_player(db_path=None, game_id="OMICRON101", player_name="Player 1",
     conn.close()
 
     dock_info = f" [Docked at {docked_at}]" if docked_at else ""
+    orbit_info = f" [Orbiting {orbiting_body}]" if orbiting_body and not docked_at else ""
     print(f"Player '{player_name}' added to game {game_id}:")
     print(f"  Account Number: {account_number}  ** KEEP THIS SECRET **")
     print(f"  Prefect: {prefect_name} (ID: {prefect_id})")
     print(f"  Faction: STA - Stellar Training Academy")
-    print(f"  Ship: STA {ship_name} (ID: {ship_id}) at {ship_start_col}{ship_start_row:02d}{dock_info}")
+    print(f"  Ship: STA {ship_name} (ID: {ship_id}) at {ship_start_col}{ship_start_row:02d}{dock_info}{orbit_info}")
     print(f"  Starting Credits: 10,000")
 
     # Generate welcome reports (system scan + intro blurb)
@@ -374,7 +397,7 @@ def join_game(db_path=None, game_id="OMICRON101"):
     Interactive player registration form.
     
     Prompts for name, email, prefect name, and ship name.
-    Assigns the new ship to a random starbase (docked).
+    Prompts the player to choose a starting planet to begin in orbit around.
     Returns the new player's details including their secret account number.
     """
     conn = get_connection(db_path)
@@ -429,18 +452,42 @@ def join_game(db_path=None, game_id="OMICRON101"):
         ship_name = f"{player_name.split()[0]}"
         print(f"  (Defaulting to: {ship_name})")
 
-    # Pick a random starbase to dock at
-    bases = conn.execute(
-        "SELECT base_id, name, grid_col, grid_row FROM starbases WHERE game_id = ?",
+    # Present a list of planets to start in orbit around
+    planets = conn.execute(
+        "SELECT cb.body_id, cb.name, cb.grid_col, cb.grid_row, cb.system_id, ss.name as system_name "
+        "FROM celestial_bodies cb "
+        "JOIN star_systems ss ON cb.system_id = ss.system_id "
+        "WHERE ss.game_id = ? AND cb.body_type = 'planet' "
+        "ORDER BY cb.name",
         (game_id,)
     ).fetchall()
     conn.close()
 
-    if not bases:
-        print("Error: No starbases available in this game.")
+    if not planets:
+        print("Error: No planets available in this game.")
         return None
 
-    dock_base = random.choice(bases)
+    print("")
+    print("  Available starting planets (enter body ID):")
+    for p in planets:
+        loc = f"{p['grid_col']}{p['grid_row']:02d}"
+        print(f"    - {p['name']} ({p['body_id']}) at {loc} - {p['system_name']} ({p['system_id']})")
+
+    planet_by_id = {int(p['body_id']): p for p in planets}
+    chosen_planet = None
+    while not chosen_planet:
+        raw = input("  Starting planet ID (blank = random): ").strip()
+        if not raw:
+            chosen_planet = random.choice(planets)
+            break
+        try:
+            pid = int(raw)
+        except ValueError:
+            print("  Please enter a numeric planet/body ID from the list.")
+            continue
+        chosen_planet = planet_by_id.get(pid)
+        if not chosen_planet:
+            print("  Unknown planet ID. Choose one from the list above.")
 
     print(f"")
     print(f"  Confirming registration:")
@@ -449,7 +496,8 @@ def join_game(db_path=None, game_id="OMICRON101"):
     print(f"    Prefect: {prefect_name}")
     print(f"    Ship:      STA {ship_name}")
     print(f"    Faction:   STA - Stellar Training Academy")
-    print(f"    Starting:  Docked at {dock_base['name']} ({dock_base['grid_col']}{dock_base['grid_row']:02d})")
+    start_loc = f"{chosen_planet['grid_col']}{chosen_planet['grid_row']:02d}"
+    print(f"    Starting:  In orbit of {chosen_planet['name']} ({start_loc})")
     print(f"")
 
     confirm = input("  Proceed? (y/n): ").strip().lower()
@@ -465,7 +513,7 @@ def join_game(db_path=None, game_id="OMICRON101"):
         email=email,
         prefect_name=prefect_name,
         ship_name=ship_name,
-        dock_at_base=dock_base['base_id'],
+        start_orbit_body=int(chosen_planet['body_id']),
     )
 
     if result:

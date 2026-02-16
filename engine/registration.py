@@ -17,7 +17,7 @@ def parse_yaml_registration(yaml_content):
     email: alice@example.com
     prefect_name: Li Chen
     ship_name: Boethius
-    starbase: 45687590
+    planet: 247985
     """
     try:
         data = yaml.safe_load(yaml_content)
@@ -33,7 +33,7 @@ def parse_yaml_registration(yaml_content):
         'email': str(data.get('email') or '').strip(),
         'prefect_name': str(data.get('prefect_name') or '').strip(),
         'ship_name': str(data.get('ship_name') or '').strip(),
-        'starbase': str(data.get('starbase') or '').strip(),
+        'planet': str(data.get('planet') or '').strip(),
         'errors': [],
     }
 
@@ -48,7 +48,7 @@ def parse_text_registration(text_content):
     EMAIL alice@example.com
     PREFECT_NAME Li Chen
     SHIP_NAME Boethius
-    STARBASE 45687590
+    PLANET 247985
     """
     result = {
         'game': '',
@@ -56,7 +56,7 @@ def parse_text_registration(text_content):
         'email': '',
         'prefect_name': '',
         'ship_name': '',
-        'starbase': '',
+        'planet': '',
         'errors': [],
     }
 
@@ -66,7 +66,7 @@ def parse_text_registration(text_content):
         'EMAIL': 'email',
         'PREFECT_NAME': 'prefect_name',
         'SHIP_NAME': 'ship_name',
-        'STARBASE': 'starbase',
+        'PLANET': 'planet',
     }
 
     lines = [l.strip() for l in text_content.strip().splitlines()
@@ -113,7 +113,7 @@ def validate_registration(data):
         errors.append("Missing required field: prefect_name")
     if not data.get('ship_name'):
         errors.append("Missing required field: ship_name")
-    if not data.get('starbase'):
-        errors.append("Missing required field: starbase")
+    if not data.get('planet'):
+        errors.append("Missing required field: planet")
 
     return errors

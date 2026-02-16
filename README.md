@@ -94,7 +94,7 @@ The form prompts for:
 
 The engine then:
 1. Generates a unique account number, prefect ID, and ship ID
-2. Picks a random starbase and docks the new ship there
+2. Lets the player choose a starting planet and places the new ship in orbit around it
 3. Creates the prefect with 10,000 starting credits
 4. Displays the account number with a reminder to keep it secret
 
@@ -263,8 +263,9 @@ python pbem.py join-game [--game OMICRON101]
 ```
 
 Interactive text form for new player registration. Prompts for name, email,
-prefect character name, and ship name. The new ship starts docked at a
-random starbase. Players can join at any point during the game.
+prefect character name, and ship name. The player selects a starting planet
+from a list, and the new ship begins in orbit around that planet. Players can
+join at any point during the game.
 
 On completion, the player receives their secret account number which they must
 keep private. Their prefect ID and ship ID are public identifiers.
@@ -274,20 +275,20 @@ keep private. Their prefect ID and ship ID are public identifiers.
 For players who can't run the CLI directly, the GM can use registration forms:
 
 ```bash
-# 1. GM generates blank forms (lists available starbases)
+# 1. GM generates blank forms (lists available starting planets)
 python pbem.py generate-form --game OMICRON101 --output forms/
 
 # 2. GM sends the form to the new player (YAML or text format)
-# 3. Player fills in their details and chosen starbase, sends it back
+# 3. Player fills in their details and chosen starting planet, sends it back
 # 4. GM processes the form
 python pbem.py register-player forms/alice_registration.yaml
 ```
 
-The form includes a list of available starbases with their IDs, locations,
-and facilities. Both YAML and plain text formats are supported, matching
+The form includes a list of available starting planets with their IDs, locations,
+and types. Both YAML and plain text formats are supported, matching
 the same dual-format approach used for orders.
 
-On registration, the player's ship is created docked at their chosen starbase,
+On registration, the player's ship is created in orbit around their chosen planet,
 a SYSTEMSCAN is automatically run, and welcome reports (ship + prefect) are
 generated ready to send to the player.
 

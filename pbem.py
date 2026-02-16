@@ -665,7 +665,7 @@ def cmd_list_players(args):
 def cmd_generate_form(args):
     """
     Generate a blank registration form for new players.
-    Lists available starbases so players can choose their starting location.
+    Lists available planets so players can choose their starting location (in orbit).
     Outputs both YAML and text formats to the specified directory.
     """
     db_path = Path(args.db) if args.db else None
@@ -677,30 +677,28 @@ def cmd_generate_form(args):
         conn.close()
         return
 
-    # Get available starbases
-    bases = conn.execute(
-        "SELECT b.*, cb.name as body_name, ss.name as system_name "
-        "FROM starbases b "
-        "JOIN star_systems ss ON b.system_id = ss.system_id "
-        "LEFT JOIN celestial_bodies cb ON b.orbiting_body_id = cb.body_id "
-        "WHERE b.game_id = ? ORDER BY b.name",
+    # Get available planets (starting locations)
+    planets = conn.execute(
+        "SELECT cb.*, ss.name as system_name "
+        "FROM celestial_bodies cb "
+        "JOIN star_systems ss ON cb.system_id = ss.system_id "
+        "WHERE ss.game_id = ? AND cb.body_type = 'planet' "
+        "ORDER BY cb.name",
         (args.game,)
     ).fetchall()
 
     turn_str = f"{game['current_year']}.{game['current_week']}"
     conn.close()
 
-    # Build starbase listing
-    base_lines_yaml = []
-    base_lines_text = []
-    for b in bases:
-        loc = f"{b['grid_col']}{b['grid_row']:02d}"
-        orbit_info = f", orbiting {b['body_name']}" if b['body_name'] else ""
-        docking = f"Docking: {b['docking_capacity']}"
-        market = ", Market" if b['has_market'] else ""
-        desc = f"{b['name']} ({b['base_id']}) - {b['base_type']} at {loc}{orbit_info} - {docking}{market}"
-        base_lines_yaml.append(f"#   {desc}")
-        base_lines_text.append(f"#   {desc}")
+    # Build planet listing
+    planet_lines_yaml = []
+    planet_lines_text = []
+    for p in planets:
+        loc = f"{p['grid_col']}{p['grid_row']:02d}"
+        type_label = p['body_type'].replace('_', ' ').title()
+        desc = f"{p['name']} ({p['body_id']}) - {type_label} at {loc} - {p['system_name']} ({p['system_id']})"
+        planet_lines_yaml.append(f"#   {desc}")
+        planet_lines_text.append(f"#   {desc}")
 
     # Generate YAML form
     yaml_form = f"""# ============================================================
@@ -711,11 +709,11 @@ def cmd_generate_form(args):
 #
 # Fill in the fields below and return this file to the GM.
 #
-# AVAILABLE STARTING STARBASES:
-{chr(10).join(base_lines_yaml)}
+# AVAILABLE STARTING PLANETS:
+{chr(10).join(planet_lines_yaml)}
 #
-# Choose one starbase ID from the list above for your starting
-# location. Your ship will begin the game docked there.
+# Choose one planet body ID from the list above for your starting
+# location. Your ship will begin the game in orbit around it.
 # ============================================================
 
 game: {args.game}
@@ -723,7 +721,7 @@ player_name:
 email: 
 prefect_name: 
 ship_name: 
-starbase: 
+planet: 
 """
 
     # Generate text form
@@ -736,11 +734,11 @@ starbase:
 # Fill in the fields below and return this file to the GM.
 # Each field must be on its own line: FIELD_NAME value
 #
-# AVAILABLE STARTING STARBASES:
-{chr(10).join(base_lines_text)}
+# AVAILABLE STARTING PLANETS:
+{chr(10).join(planet_lines_text)}
 #
-# Choose one starbase ID from the list above for your starting
-# location. Your ship will begin the game docked there.
+# Choose one planet body ID from the list above for your starting
+# location. Your ship will begin the game in orbit around it.
 # ============================================================
 
 GAME {args.game}
@@ -748,7 +746,7 @@ PLAYER_NAME
 EMAIL 
 PREFECT_NAME 
 SHIP_NAME 
-STARBASE 
+PLANET 
 """
 
     # Write forms to output directory
@@ -764,17 +762,17 @@ STARBASE
     print(f"Registration forms generated for game {args.game}:")
     print(f"  YAML: {yaml_file}")
     print(f"  Text: {text_file}")
-    print(f"\nAvailable starbases:")
-    for b in bases:
-        loc = f"{b['grid_col']}{b['grid_row']:02d}"
-        orbit_info = f", orbiting {b['body_name']}" if b['body_name'] else ""
-        print(f"  {b['name']} ({b['base_id']}) - {b['base_type']} at {loc}{orbit_info}")
+    print(f"\nAvailable starting planets:")
+    for p in planets:
+        loc = f"{p['grid_col']}{p['grid_row']:02d}"
+        type_label = p['body_type'].replace('_', ' ').title()
+        print(f"  {p['name']} ({p['body_id']}) - {type_label} at {loc} - {p['system_name']} ({p['system_id']})")
 
 
 def cmd_register_player(args):
     """
     Process a filled-in registration form and create the player account.
-    Validates all fields, creates player/prefect/ship, docks at chosen starbase,
+    Validates all fields, creates player/prefect/ship, starts in orbit at chosen planet,
     and generates welcome reports.
     """
     db_path = Path(args.db) if args.db else None
@@ -819,16 +817,21 @@ def cmd_register_player(args):
         conn.close()
         return
 
-    # Verify starbase exists
-    base_id = int(data['starbase'])
-    base = conn.execute(
-        "SELECT b.*, ss.name as system_name FROM starbases b "
-        "JOIN star_systems ss ON b.system_id = ss.system_id "
-        "WHERE b.base_id = ? AND b.game_id = ?",
-        (base_id, game_id)
+    # Verify planet exists (and belongs to this game)
+    try:
+        planet_id = int(data['planet'])
+    except (ValueError, TypeError):
+        print(f"Error: planet must be a numeric body ID (got '{data.get('planet', '')}').")
+        conn.close()
+        return
+    planet = conn.execute(
+        "SELECT cb.*, ss.name as system_name FROM celestial_bodies cb "
+        "JOIN star_systems ss ON cb.system_id = ss.system_id "
+        "WHERE cb.body_id = ? AND ss.game_id = ?",
+        (planet_id, game_id)
     ).fetchone()
-    if not base:
-        print(f"Error: Starbase {base_id} not found in game {game_id}.")
+    if not planet:
+        print(f"Error: Planet/body {planet_id} not found in game {game_id}.")
         conn.close()
         return
 
@@ -836,7 +839,7 @@ def cmd_register_player(args):
 
     # Create the player via add_player
     print(f"\nProcessing registration for: {data['player_name']} ({data['email']})")
-    print(f"  Starting at: {base['name']} ({base_id}) in {base['system_name']} System")
+    print(f"  Starting in orbit of: {planet['name']} ({planet_id}) in {planet['system_name']} System")
     print()
 
     result = add_player(
@@ -846,7 +849,7 @@ def cmd_register_player(args):
         email=data['email'],
         prefect_name=data['prefect_name'],
         ship_name=data['ship_name'],
-        dock_at_base=base_id,
+        start_orbit_body=planet_id,
     )
 
     if result:
