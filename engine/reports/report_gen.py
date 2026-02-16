@@ -96,7 +96,7 @@ def generate_ship_report(turn_result, db_path=None, game_id="OMICRON101",
     # ==========================================
     # REPORT HEADER
     # ==========================================
-    lines.append("=== BEGIN REPORT ===")
+    lines.append(center_text("=== BEGIN REPORT ==="))
     lines.append("")
     lines.append(center_text("Stellar Dominion"))
     lines.append(center_text("PBEM Strategy Game"))
