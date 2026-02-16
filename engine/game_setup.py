@@ -183,6 +183,15 @@ def generate_welcome_reports(db_path, game_id, account_number, prefect_id, ship_
         WELCOME TO STELLAR DOMINION
         ===========================
 
+        Boarding the ship the captain smiles at you warmly. "She's a fine ship
+        to be sure," he states, as you watch a panel on the all behind him
+        fall off, revealing freyed wiring. He looks back at you slighlty more
+        nervous now. "Well, she might not be the newest ship on the market,
+        but she'll get you where you want to go.
+
+        This perhaps wasn't the state of the art vessel you had always dreamed
+        of, but at least it was a start.                                                                                                                                                                               
+
         You have been assigned command of this vessel. Your ship has completed
         an initial system scan -- see the TURN REPORT below for what was found.
 
@@ -225,6 +234,13 @@ def generate_welcome_reports(db_path, game_id, account_number, prefect_id, ship_
         WELCOME TO STELLAR DOMINION
         ===========================
 
+        They warned you at the Stellar Academy that is was a big universe out
+        there. Looks like it was time to find out. The Academy also offered                                                        
+        for you to use their designation (STA) on your ship for now, as a mark
+        of safety in your first steps. You know you'll have to join another 
+        faction at some point, but for now you can get out own your own and
+        explore.                                                                                    
+                                    
         This is your Prefect report. It provides an overview of your position:
         your finances, your fleet, and everything you have discovered so far.
 
