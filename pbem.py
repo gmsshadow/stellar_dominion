@@ -29,6 +29,10 @@ from db.database import init_db, get_connection, migrate_db, get_faction, factio
 from engine.game_setup import create_game, add_player, setup_demo_game, join_game, suspend_player, reinstate_player, list_players
 from engine.orders.parser import parse_orders_file, parse_yaml_orders, parse_text_orders
 from engine.registration import parse_registration_file, validate_registration
+from engine.order_processor import (
+    detect_content_type, process_single_order, process_single_registration,
+    format_received_ack, format_reply_text,
+)
 from engine.resolution.resolver import TurnResolver
 from engine.reports.report_gen import generate_ship_report, generate_prefect_report
 from engine.maps.system_map import render_system_map
@@ -858,21 +862,20 @@ def cmd_register_player(args):
 
 def cmd_process_inbox(args):
     """
-    Process all order files from an inbox directory.
+    Process all submissions from an inbox directory.
 
-    Scans a directory (simulating an email inbox) for order files.
-    Each file should be in a subdirectory named by the sender's email:
+    Auto-detects each file as player orders or a registration form:
+      - Orders: validates ownership, files into turn folders, stores in DB
+      - Registration: validates fields, creates player/prefect/ship, generates welcome reports
+
+    Expected directory structure (created by fetch-mail or manually):
         inbox/
           alice@example.com/
-            orders_12345678.yaml
+            msg_abc123.yaml          (from fetch-mail)
+            orders_12345678.yaml     (manually placed)
+            registration.yaml        (manually placed)
           bob@example.com/
-            orders_87654321.yaml
-
-    Or flat with email embedded in filename:
-        inbox/
-          alice@example.com_orders_12345678.yaml
-
-    For each file found, runs the same validation and filing as submit-orders.
+            msg_def456.txt
     """
     db_path = Path(args.db) if args.db else None
     inbox_dir = Path(args.inbox)
@@ -887,152 +890,234 @@ def cmd_process_inbox(args):
 
     print(f"\n=== Processing Inbox - Game {args.game}, Turn {turn_str} ===\n")
 
-    # Collect order files to process
-    order_files = []
+    # Collect all submission files from email subdirectories
+    submission_files = []
 
-    # Pattern 1: subdirectories named by email
     for item in sorted(inbox_dir.iterdir()):
+        if item.name.startswith(('_', '.')):
+            continue
         if item.is_dir() and '@' in item.name:
             email = item.name
             for f in sorted(item.iterdir()):
-                if f.suffix in ('.yaml', '.yml', '.txt') and f.name.startswith('orders'):
-                    order_files.append((email, f))
-        # Pattern 2: flat files with email prefix
-        elif item.is_file() and '@' in item.name and item.name.startswith(('orders', 'email_')):
-            # Try to extract email from filename: email_user@domain.com_orders_SHIPID.yaml
-            parts = item.name.split('_', 1)
-            if '@' in parts[0]:
-                email = parts[0]
-                order_files.append((email, item))
+                if f.suffix in ('.yaml', '.yml', '.txt') and not f.name.startswith('.'):
+                    submission_files.append((email, f))
 
-    if not order_files:
-        print("No order files found in inbox.")
+    if not submission_files:
+        print("No submission files found in inbox.")
         conn.close()
         return
 
-    accepted = 0
-    rejected = 0
+    orders_accepted = 0
+    orders_rejected = 0
+    registrations = 0
+    reg_rejected = 0
     skipped = 0
 
-    for email, filepath in order_files:
+    for email, filepath in submission_files:
         print(f"  Processing: {email} / {filepath.name}")
 
-        # Read and parse the orders file
         try:
             content = filepath.read_text(encoding='utf-8')
-            parsed = parse_orders_file(str(filepath))
         except Exception as e:
-            print(f"    ERROR: could not parse file: {e}")
-            rejected += 1
-            continue
-
-        if parsed.get('error'):
-            print(f"    REJECTED: {parsed['error']}")
-            rejected += 1
-            continue
-
-        orders = parsed.get('orders', [])
-        if not orders:
-            errors = parsed.get('errors', [])
-            if errors:
-                print(f"    REJECTED: {'; '.join(errors)}")
-                rejected += 1
-            else:
-                print(f"    SKIP: no valid orders found in file")
-                skipped += 1
-            continue
-
-        # Determine ship_id from the parsed header
-        ship_id = parsed.get('ship')
-        if not ship_id:
-            print(f"    SKIP: no ship ID found in orders file")
+            print(f"    ERROR: could not read file: {e}")
             skipped += 1
             continue
 
-        try:
-            ship_id = int(ship_id)
-        except (ValueError, TypeError):
-            print(f"    REJECTED: invalid ship ID '{ship_id}'")
-            rejected += 1
+        content_type = detect_content_type(content)
+
+        if content_type == 'orders':
+            result = process_single_order(conn, folders, turn_str, args.game, email, content)
+
+            if result['status'] == 'accepted':
+                name_str = f" ({result['ship_name']})" if result['ship_name'] else ""
+                print(f"    ORDERS ACCEPTED: {result['order_count']} orders for ship {result['ship_id']}{name_str}")
+                orders_accepted += 1
+            elif result['status'] == 'rejected':
+                print(f"    ORDERS REJECTED: {result['error']}")
+                orders_rejected += 1
+            else:
+                print(f"    ORDERS SKIP: {result['error']}")
+                skipped += 1
+
+        elif content_type == 'registration':
+            result = process_single_registration(db_path, args.game, email, content)
+
+            if result['status'] == 'registered':
+                print(f"    REGISTERED: {result['player_name']} - ship '{result['ship_name']}'"
+                      f" at {result['planet_name']}")
+                print(f"      Account: {result['account_number']}  ** Send to player **")
+                registrations += 1
+            else:
+                print(f"    REGISTRATION REJECTED: {result['error']}")
+                reg_rejected += 1
+
+        else:
+            print(f"    SKIP: could not identify as orders or registration")
+            skipped += 1
             continue
 
-        # Check account number
-        account = parsed.get('account', '')
-        if not account:
-            print(f"    REJECTED: no account number in orders file")
-            folders.store_rejected(turn_str, email, ship_id, content,
-                                   ["No account number specified in orders file"])
-            rejected += 1
-            continue
-
-        # Validate ownership (also checks suspension and account number)
-        valid, account_number, error = folders.validate_ship_ownership(email, ship_id, account)
-
-        if not valid:
-            print(f"    REJECTED: {error}")
-            folders.store_rejected(turn_str, email, ship_id, content, [error])
-            rejected += 1
-            continue
-
-        # Store the orders
-        stored_path = folders.store_incoming_orders(turn_str, email, ship_id, content)
-
-        # Write to database
-        game = conn.execute(
-            "SELECT current_year, current_week FROM games WHERE game_id = ?",
-            (args.game,)
-        ).fetchone()
-        player = conn.execute(
-            "SELECT player_id FROM players WHERE email = ? AND game_id = ?",
-            (email, args.game)
-        ).fetchone()
-
-        # Clear previous orders for this ship/turn
-        conn.execute("""
-            DELETE FROM turn_orders
-            WHERE game_id = ? AND turn_year = ? AND turn_week = ?
-              AND subject_type = 'ship' AND subject_id = ?
-        """, (args.game, game['current_year'], game['current_week'], ship_id))
-
-        # Insert new orders
-        for seq, order in enumerate(orders, 1):
-            params = json.dumps(order.get('params', {})) if order.get('params') else None
-            conn.execute("""
-                INSERT INTO turn_orders
-                    (game_id, turn_year, turn_week, player_id,
-                     subject_type, subject_id, order_sequence, command, parameters)
-                VALUES (?, ?, ?, ?, 'ship', ?, ?, ?, ?)
-            """, (args.game, game['current_year'], game['current_week'],
-                  player['player_id'], ship_id, seq,
-                  order['command'], params))
-
-        conn.commit()
-
-        # Store receipt
-        receipt_info = {
-            'status': 'accepted',
-            'order_count': len(orders),
-        }
-        folders.store_receipt(turn_str, email, ship_id, receipt_info)
-
-        ship_name = conn.execute(
-            "SELECT name FROM ships WHERE ship_id = ?", (ship_id,)
-        ).fetchone()
-        name_str = f" ({ship_name['name']})" if ship_name else ""
-        print(f"    ACCEPTED: {len(orders)} orders for ship {ship_id}{name_str}")
-        accepted += 1
-
-        # Move processed file to avoid re-processing
+        # Move processed file
         if not args.keep:
             processed_dir = inbox_dir / "_processed"
             processed_dir.mkdir(exist_ok=True)
-            dest = processed_dir / f"{email}_{filepath.name}"
+            dest = processed_dir / f"{email}__{filepath.name}"
             filepath.rename(dest)
 
     conn.close()
 
-    print(f"\n  Summary: {accepted} accepted, {rejected} rejected, {skipped} skipped")
-    print(f"  Run 'turn-status' to see who is still outstanding.")
+    print(f"\n  Summary:")
+    print(f"    Orders:        {orders_accepted} accepted, {orders_rejected} rejected")
+    print(f"    Registrations: {registrations} created, {reg_rejected} rejected")
+    print(f"    Skipped:       {skipped}")
+    if orders_accepted > 0:
+        print(f"  Run 'turn-status' to see who is still outstanding.")
+    if registrations > 0:
+        print(f"  Welcome reports have been generated for new players.")
+
+
+# ======================================================================
+# GMAIL FETCH
+# ======================================================================
+
+def cmd_fetch_mail(args):
+    """
+    Fetch submissions from Gmail and save to a staging inbox directory.
+
+    Stage 1 of the two-stage workflow:
+    1. Connects to Gmail via OAuth
+    2. Searches for emails matching the orders label
+    3. For each email: extracts sender and text content
+    4. Saves to inbox/{email}/msg_{gmail_id}.txt
+    5. Optionally sends a 'received' acknowledgement reply
+    6. Relabels the Gmail message (orders -> processed)
+
+    Does NOT validate orders or interact with the game database.
+    Run 'process-inbox' afterwards to validate and file.
+
+    Gmail labels provide exactly-once fetch: even if a message is
+    later marked unread, it won't be re-fetched unless the orders
+    label is reapplied.
+    """
+    # Check Gmail dependencies
+    from engine.gmail import check_dependencies
+    ok, error_msg = check_dependencies()
+    if not ok:
+        print(f"Error: {error_msg}")
+        return
+
+    from email import message_from_bytes
+    from engine.gmail import (
+        get_gmail_service, ensure_label, fetch_candidate_message_ids,
+        read_message_raw, extract_email_address, find_orders_text,
+        apply_post_process_labels, get_message_metadata, send_reply,
+    )
+
+    credentials_path = Path(args.credentials)
+    token_path = Path(args.token)
+    inbox_dir = Path(args.inbox)
+
+    if not credentials_path.exists():
+        print(f"Error: credentials file '{credentials_path}' not found.")
+        print("Download OAuth client secrets from Google Cloud Console.")
+        return
+
+    # Connect to Gmail
+    print(f"Connecting to Gmail...")
+    try:
+        service = get_gmail_service(credentials_path, token_path, port=args.port)
+    except Exception as e:
+        print(f"Error connecting to Gmail: {e}")
+        return
+
+    # Ensure labels exist
+    orders_label_id = ensure_label(service, args.orders_label)
+    processed_label_id = ensure_label(service, args.processed_label)
+
+    query = args.query or f'label:"{args.orders_label}" is:unread'
+    print(f"Searching: {query}")
+
+    msg_ids = fetch_candidate_message_ids(service, query, max_results=args.max_results)
+    print(f"Found {len(msg_ids)} messages\n")
+
+    if not msg_ids:
+        print("No new mail to fetch.")
+        return
+
+    inbox_dir.mkdir(parents=True, exist_ok=True)
+
+    fetched = 0
+    skipped = 0
+    gmail_errors = 0
+
+    for msg_id in msg_ids:
+        # Fetch the raw email
+        try:
+            raw_bytes, _full = read_message_raw(service, msg_id)
+        except Exception as e:
+            print(f"  [{msg_id}] ERROR: could not fetch: {e}")
+            gmail_errors += 1
+            continue
+
+        eml = message_from_bytes(raw_bytes)
+        from_email = extract_email_address(eml.get("From", ""))
+        subject = (eml.get("Subject") or "").strip()
+
+        # Extract text content
+        text = find_orders_text(eml)
+        if not text:
+            print(f"  [{msg_id}] SKIP from {from_email} - no text content (subj: '{subject}')")
+            skipped += 1
+            # Still relabel to avoid re-fetching
+            if not args.dry_run:
+                try:
+                    apply_post_process_labels(
+                        service, msg_id,
+                        remove_label_ids=[orders_label_id],
+                        add_label_ids=[processed_label_id],
+                    )
+                except Exception:
+                    pass
+            continue
+
+        # Save to inbox/{email}/msg_{gmail_id}.txt
+        email_dir = inbox_dir / from_email
+        email_dir.mkdir(parents=True, exist_ok=True)
+        out_path = email_dir / f"msg_{msg_id}.txt"
+        out_path.write_text(text.strip() + "\n", encoding="utf-8")
+
+        print(f"  [{msg_id}] from {from_email} -> {out_path.name}")
+        fetched += 1
+
+        # Send 'received' acknowledgement
+        if args.reply and not args.dry_run:
+            try:
+                metadata = get_message_metadata(service, msg_id)
+                ack_body = format_received_ack(args.game)
+                send_reply(service, metadata, ack_body)
+                print(f"    ACK sent to {from_email}")
+            except Exception as e:
+                print(f"    WARNING: could not send ack: {e}")
+                gmail_errors += 1
+
+        # Relabel in Gmail
+        if not args.dry_run:
+            try:
+                apply_post_process_labels(
+                    service, msg_id,
+                    remove_label_ids=[orders_label_id],
+                    add_label_ids=[processed_label_id],
+                )
+            except Exception as e:
+                print(f"    WARNING: could not relabel: {e}")
+                gmail_errors += 1
+
+    print(f"\n  Summary: {fetched} fetched, {skipped} skipped, {gmail_errors} gmail errors")
+    print(f"  Inbox: {inbox_dir.resolve()}")
+    if args.dry_run:
+        print("  (Dry run - Gmail labels not modified, no acks sent)")
+    elif args.reply:
+        print("  (Acknowledgement replies sent to players)")
+    print(f"\n  Next step: python pbem.py process-inbox --inbox {inbox_dir} --game {args.game}")
 
 
 def main():
@@ -1054,7 +1139,11 @@ Player management:
   list-players --all                         Show all players inc. suspended
 
 Batch processing:
-  process-inbox --inbox /path/to/inbox       Process all orders from inbox
+  process-inbox --inbox /path/to/inbox       Process orders + registrations from inbox
+
+Gmail integration (two-stage workflow):
+  fetch-mail --credentials creds.json        Fetch from Gmail -> staging inbox
+  process-inbox --inbox ./inbox              Validate and file all submissions
         """
     )
     parser.add_argument('--db', help='Database file path', default=None)
@@ -1158,6 +1247,31 @@ Batch processing:
     sp.add_argument('--keep', action='store_true',
                     help='Keep processed files in place (default: move to _processed)')
 
+    # --- fetch-mail ---
+    sp = subparsers.add_parser('fetch-mail',
+                               help='Fetch submissions from Gmail to staging inbox')
+    sp.add_argument('--credentials', required=True,
+                    help='Path to OAuth client secrets JSON (credentials.json)')
+    sp.add_argument('--token', default='./token.json',
+                    help='Token cache path (default: ./token.json)')
+    sp.add_argument('--game', default='OMICRON101', help='Game ID (for ack replies)')
+    sp.add_argument('--inbox', default='./inbox',
+                    help='Staging inbox directory (default: ./inbox)')
+    sp.add_argument('--orders-label', default='sd-orders',
+                    help='Gmail label for incoming submissions (default: sd-orders)')
+    sp.add_argument('--processed-label', default='sd-processed',
+                    help='Gmail label for fetched messages (default: sd-processed)')
+    sp.add_argument('--query', default=None,
+                    help='Override Gmail search query')
+    sp.add_argument('--max-results', type=int, default=25,
+                    help='Max messages to fetch per run (default: 25)')
+    sp.add_argument('--port', type=int, default=0,
+                    help='OAuth local server port (0 = auto)')
+    sp.add_argument('--dry-run', action='store_true',
+                    help='Fetch and save but do not modify Gmail or send acks')
+    sp.add_argument('--reply', action='store_true',
+                    help='Send received acknowledgement reply to each sender')
+
     args = parser.parse_args()
 
     if not args.command:
@@ -1182,6 +1296,7 @@ Batch processing:
         'generate-form': cmd_generate_form,
         'register-player': cmd_register_player,
         'process-inbox': cmd_process_inbox,
+        'fetch-mail': cmd_fetch_mail,
     }
 
     if args.command in commands:

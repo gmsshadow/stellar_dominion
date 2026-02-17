@@ -1,4 +1,4 @@
-# Stellar Dominion – PBEM Strategy Game Engine v1.0
+# Stellar Dominion -- PBEM Strategy Game Engine v1.0
 
 A play-by-email (PBEM) grand strategy game engine inspired by Phoenix-BSE style games.
 Deterministic turn resolution, ASCII reports, persistent SQLite universe.
@@ -41,25 +41,29 @@ python pbem.py advance-turn --game OMICRON101
 
 ```
 stellar_dominion/
-├── pbem.py                          # Main CLI entry point
-├── db/
-│   └── database.py                  # SQLite schema & connection
-├── engine/
-│   ├── game_setup.py                # Game/player creation & join-game registration
-│   ├── turn_folders.py              # Turn folder manager (incoming/processed)
-│   ├── maps/
-│   │   └── system_map.py            # 25x25 ASCII grid renderer
-│   ├── orders/
-│   │   └── parser.py                # YAML & text order parser
-│   ├── resolution/
-│   │   └── resolver.py              # Turn resolution engine (TU system)
-│   └── reports/
-│       └── report_gen.py            # Phoenix-style ASCII report generator
-└── game_data/                       # Created by setup-game
-    ├── stellar_dominion.db          # Persistent game database
-    └── turns/
-        ├── incoming/                # Player orders filed by email address
-        └── processed/               # Resolved reports filed by account number
+|-- pbem.py                          # Main CLI entry point
+|-- gmail_fetch.py                   # Standalone Gmail fetch (for testing)
+|-- db/
+|   +-- database.py                  # SQLite schema & connection
+|-- engine/
+|   |-- game_setup.py                # Game/player creation & join-game registration
+|   |-- gmail.py                     # Gmail API integration (auth, fetch, labels)
+|   |-- order_processor.py           # Shared order validation & filing logic
+|   |-- registration.py              # Registration form parser (YAML & text)
+|   |-- turn_folders.py              # Turn folder manager (incoming/processed)
+|   |-- maps/
+|   |   +-- system_map.py            # 25x25 ASCII grid renderer
+|   |-- orders/
+|   |   +-- parser.py                # YAML & text order parser
+|   |-- resolution/
+|   |   +-- resolver.py              # Turn resolution engine (TU system)
+|   +-- reports/
+|       +-- report_gen.py            # Phoenix-style ASCII report generator
++-- game_data/                       # Created by setup-game
+    |-- stellar_dominion.db          # Persistent game database
+    +-- turns/
+        |-- incoming/                # Player orders filed by email address
+        +-- processed/               # Resolved reports filed by account number
 ```
 
 ## Player Identity
@@ -68,9 +72,9 @@ Each player has three types of identifier:
 
 | Identifier | Visibility | Purpose |
 |------------|-----------|---------|
-| **Account Number** | Secret — known only to the player and the GM | Used for order validation and report folder routing. Never appears in reports or scans. |
-| **Prefect ID** | Public — discoverable by other players via scanning | In-game identity for diplomacy, contacts, and ownership. |
-| **Ship/Base IDs** | Public — discoverable via scanning | Identify assets on the map. |
+| **Account Number** | Secret -- known only to the player and the GM | Used for order validation and report folder routing. Never appears in reports or scans. |
+| **Prefect ID** | Public -- discoverable by other players via scanning | In-game identity for diplomacy, contacts, and ownership. |
+| **Ship/Base IDs** | Public -- discoverable via scanning | Identify assets on the map. |
 
 The account number is generated when a player joins the game and must be kept
 secret. It is used alongside the player's email address to validate order
@@ -87,10 +91,10 @@ python pbem.py join-game --game OMICRON101
 ```
 
 The form prompts for:
-- **Real name** — the player's name (for GM reference)
-- **Email address** — must be unique, used for order submission and report delivery
-- **Prefect character name** — in-game identity (e.g. "Li Chen", "Warlord Zax")
-- **Ship name** — the player's starting vessel (e.g. "Boethius", "Vengeance")
+- **Real name** -- the player's name (for GM reference)
+- **Email address** -- must be unique, used for order submission and report delivery
+- **Prefect character name** -- in-game identity (e.g. "Li Chen", "Warlord Zax")
+- **Ship name** -- the player's starting vessel (e.g. "Boethius", "Vengeance")
 
 The engine then:
 1. Generates a unique account number, prefect ID, and ship ID
@@ -106,7 +110,7 @@ parameters.
 Orders and reports are managed through a structured folder layout that separates
 incoming orders (keyed by email) from processed output (keyed by account number).
 
-### Incoming — `turns/incoming/{turn}/{email}/`
+### Incoming -- `turns/incoming/{turn}/{email}/`
 
 When a player submits orders, they are filed under the sender's email address.
 This is the natural key at the point of arrival (especially for future IMAP
@@ -133,9 +137,9 @@ Validation at submission checks:
 If validation fails, the orders are stored as `rejected_` with a `.reason` file.
 Resubmitting valid orders for the same ship replaces the previous submission.
 
-### Processed — `turns/processed/{turn}/{account_number}/`
+### Processed -- `turns/processed/{turn}/{account_number}/`
 
-Resolved reports are filed under the player's account number — a secret,
+Resolved reports are filed under the player's account number -- a secret,
 permanent identifier that never changes. The email address is looked up from
 the database at send time, keeping the folder structure stable even if a
 player updates their email.
@@ -161,7 +165,7 @@ folder, looks up the email from the database, and sends everything in the folder
 
 ## The Omicron System (101)
 
-The demo game creates the **Omicron** star system — a 25×25 grid:
+The demo game creates the **Omicron** star system -- a 25x25 grid:
 
 | Object              | Type       | Location | Notes                      |
 |---------------------|------------|----------|----------------------------|
@@ -254,7 +258,8 @@ Turns follow `YEAR.WEEK` format: `500.1` through `500.52`, then `501.1`.
 | `list-players [--all]` | List players (--all includes suspended) |
 | `generate-form --game ID [--output dir]` | Generate blank registration form for new players |
 | `register-player <form>` | Process a filled-in registration form |
-| `process-inbox --inbox <dir>` | Batch process orders from inbox directory |
+| `process-inbox --inbox <dir>` | Process orders + registrations from inbox |
+| `fetch-mail --credentials <json>` | Fetch from Gmail to staging inbox |
 
 ### join-game details
 
@@ -330,41 +335,93 @@ players. They won't appear on maps, in scans, or in turn status. Suspended
 players cannot submit orders. Use `list-ships --all` or `list-players --all`
 to see suspended accounts. All assets are fully restored on reinstatement.
 
-### Batch Inbox Processing
+### Two-Stage Email Workflow
+
+The recommended workflow separates fetching from processing:
+
+**Stage 1 -- Fetch mail** (pull from Gmail, send "received" ack):
 
 ```bash
-python pbem.py process-inbox --inbox /path/to/inbox [--game OMICRON101] [--keep]
+python pbem.py fetch-mail --credentials credentials.json --reply
 ```
 
-Processes all order files from a directory. The inbox should contain
-subdirectories named by player email, each containing order files:
+This fetches all messages with the `sd-orders` Gmail label, saves the text
+content to a staging inbox directory organised by sender email, optionally
+sends a "received" acknowledgement, and relabels the Gmail messages.
 
 ```
-inbox/
+inbox/                              (staging directory)
   alice@example.com/
-    orders_12345678.yaml
+    msg_18f3a2b.txt                 (orders)
   bob@example.com/
-    orders_87654321.yaml
+    msg_29d4c1e.txt                 (orders)
+  charlie@example.com/
+    msg_3ae5f0d.txt                 (registration form)
 ```
 
-Each file is validated, filed, and a receipt or rejection is generated — the
-same as calling `submit-orders` for each one. By default, processed files
-are moved to `inbox/_processed/` to avoid re-processing. Use `--keep` to
-leave them in place.
+**Stage 2 -- Process inbox** (validate, file, create players):
+
+```bash
+python pbem.py process-inbox --inbox ./inbox
+```
+
+Reads every file in the staging directory and auto-detects whether it
+contains **player orders** or a **registration form**:
+
+- **Orders** -- validates ownership (email -> account -> ship), files into the
+  turn folder structure, stores in the database, writes receipt/rejection
+- **Registration** -- validates all fields, creates player/prefect/ship in
+  orbit at chosen planet, generates welcome reports
+
+Processed files are moved to `inbox/_processed/`. Use `--keep` to leave
+them in place.
+
+You can also place files manually into the inbox directory (e.g. orders
+received by other means) and they will be processed the same way.
+
+### Gmail Setup
+
+Requires the Google API Python client:
+
+```bash
+pip install google-api-python-client google-auth-httplib2 google-auth-oauthlib
+```
+
+**One-time setup:**
+1. Enable Gmail API in Google Cloud Console
+2. Create OAuth credentials (Desktop App) and download `credentials.json`
+3. First run opens a browser for consent and caches a `token.json`
+
+**`fetch-mail` options:**
+- `--inbox DIR` -- Staging directory (default: `./inbox`)
+- `--orders-label NAME` -- Gmail label for incoming submissions (default: `sd-orders`)
+- `--processed-label NAME` -- Label applied after fetching (default: `sd-processed`)
+- `--reply` -- Send "received" acknowledgement (threads in player's inbox)
+- `--query QUERY` -- Override the Gmail search query
+- `--dry-run` -- Fetch and save but don't modify Gmail or send acks
+- `--max-results N` -- Max messages per run (default: 25)
+
+The label-based approach gives exactly-once fetching: even if a message
+is later marked unread, it won't be re-fetched unless the orders label
+is reapplied.
+
+**Note:** The Gmail integration uses `gmail.modify` and `gmail.send` scopes.
+If you previously authenticated with only `modify`, delete `token.json` and
+re-authenticate.
 
 ## Report Sections
 
 Ship turn reports include:
-- **Between Turn Report** — passive events between turns
-- **Turn Report** — order-by-order execution log with TU tracking
-- **Command Report** — ship identity, faction, efficiency, TU remaining
-- **Navigation Report** — current location, docked/orbiting status
-- **Crew Report** — officers and crew complement
-- **Cargo Report** — cargo hold contents
-- **Space Combat Report** — combat status (placeholder for v1)
-- **Installed Items** — ship modules and equipment
-- **Contacts** — known objects in the system
-- **Pending Orders** — orders that failed and carry forward
+- **Between Turn Report** -- passive events between turns
+- **Turn Report** -- order-by-order execution log with TU tracking
+- **Command Report** -- ship identity, faction, efficiency, TU remaining
+- **Navigation Report** -- current location, docked/orbiting status
+- **Crew Report** -- officers and crew complement
+- **Cargo Report** -- cargo hold contents
+- **Space Combat Report** -- combat status (placeholder for v1)
+- **Installed Items** -- ship modules and equipment
+- **Contacts** -- known objects in the system
+- **Pending Orders** -- orders that failed and carry forward
 
 Prefect reports include financial summaries, ship fleet overview, and known contacts.
 

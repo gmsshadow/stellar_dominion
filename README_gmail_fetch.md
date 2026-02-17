@@ -60,7 +60,7 @@ On first run, your browser will open for consent and the script will create `tok
 In Gmail, create a label named **`sd-orders`** (or whatever you choose) and apply it to incoming orders emails.
 
 You can do this manually, or with a Gmail filter:
-- If subject contains `SD Orders` → Apply label `sd-orders`
+- If subject contains `SD Orders` -> Apply label `sd-orders`
 
 The script will also auto-create the label if it doesn't exist, but you still need to label the messages for them to match the default query.
 
@@ -98,7 +98,7 @@ python stellar_dominion_gmail_fetch_labeled.py --credentials credentials.json --
 python stellar_dominion_gmail_fetch_labeled.py --credentials credentials.json --query 'label:"sd-orders" newer_than:7d'
 ```
 
-### Dry run (don’t change Gmail state)
+### Dry run (don't change Gmail state)
 
 ```powershell
 python stellar_dominion_gmail_fetch_labeled.py --credentials credentials.json --dry-run
