@@ -17,6 +17,9 @@ VALID_COMMANDS = {
     'ORBIT': {'params': 'body_id', 'description': 'Orbit a celestial body'},
     'DOCK': {'params': 'base_id', 'description': 'Dock at a starbase'},
     'UNDOCK': {'params': 'none', 'description': 'Leave docked starbase'},
+    'BUY': {'params': 'trade_order', 'description': 'Buy items from base market'},
+    'SELL': {'params': 'trade_order', 'description': 'Sell items to base market'},
+    'GETMARKET': {'params': 'base_id', 'description': 'View base market prices'},
 }
 
 # Grid coordinate pattern: A-Y followed by 01-25
@@ -75,6 +78,35 @@ def parse_order(command_str, params):
             return command, value, None
         except (ValueError, TypeError):
             return command, params, f"{command}: expected numeric ID, got '{params}'"
+
+    elif spec['params'] == 'trade_order':
+        # BUY/SELL: needs base_id, item_id, quantity
+        # YAML: {base: 45687590, item: 101, qty: 10} or "45687590 101 10"
+        # Text: BUY 45687590 101 10
+        if isinstance(params, dict):
+            try:
+                base_id = int(params.get('base', params.get('base_id', 0)))
+                item_id = int(params.get('item', params.get('item_id', 0)))
+                qty = int(params.get('qty', params.get('quantity', 0)))
+                if base_id <= 0 or item_id <= 0 or qty <= 0:
+                    return command, params, f"{command}: base, item, and qty must be positive integers"
+                return command, {'base_id': base_id, 'item_id': item_id, 'quantity': qty}, None
+            except (ValueError, TypeError):
+                return command, params, f"{command}: invalid trade parameters"
+        elif isinstance(params, str):
+            parts = params.strip().split()
+            if len(parts) != 3:
+                return command, params, f"{command}: expected 'base_id item_id quantity', got '{params}'"
+            try:
+                base_id = int(parts[0])
+                item_id = int(parts[1])
+                qty = int(parts[2])
+                if base_id <= 0 or item_id <= 0 or qty <= 0:
+                    return command, params, f"{command}: base, item, and qty must be positive integers"
+                return command, {'base_id': base_id, 'item_id': item_id, 'quantity': qty}, None
+            except ValueError:
+                return command, params, f"{command}: expected numeric values, got '{params}'"
+        return command, params, f"{command}: expected trade parameters (base_id item_id quantity)"
 
     return command, params, f"Unknown parameter type for {command}"
 

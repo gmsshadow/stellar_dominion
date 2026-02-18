@@ -340,7 +340,12 @@ def cmd_run_turn(args):
             print(report)
             print()
 
+    # Close the main connection before generating reports
+    # (ensures fresh reads see all committed trade/movement changes)
+    conn.close()
+
     # Generate one prefect report per active prefect
+    conn = get_connection(db_path)
     all_prefects = conn.execute("""
         SELECT DISTINCT pp.prefect_id, p.email, p.account_number
         FROM prefects pp

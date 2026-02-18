@@ -256,7 +256,7 @@ def generate_ship_report(turn_result, db_path=None, game_id="OMICRON101",
     lines.append(section_line(f"{system['name']} ({system_id}) - {{{final_loc}}}"))
     lines.append(section_line())
     lines.append(section_line(f"Sensor Rating: {ship['sensor_rating']}%".ljust(COL_LEFT) +
-                               f"Cargo: {ship['cargo_used']}/{ship['cargo_capacity']}"))
+                               f"Cargo: {ship['cargo_used']}/{ship['cargo_capacity']} MU"))
     lines.append(section_line())
 
     # ==========================================
@@ -290,11 +290,13 @@ def generate_ship_report(turn_result, db_path=None, game_id="OMICRON101",
     # ==========================================
     lines.append(section_header("Cargo Report"))
     lines.append(section_line())
-    lines.append(section_line(f"Cargo: {ship['cargo_used']}/{ship['cargo_capacity']}"))
+    lines.append(section_line(f"Cargo: {ship['cargo_used']}/{ship['cargo_capacity']} MU"))
     if cargo:
         for item in cargo:
+            total_mu = item['quantity'] * item['mass_per_unit']
             lines.append(section_line(
-                f"{item['quantity']:>8}  {item['item_name']} - {item['mass_per_unit']} mus"
+                f"{item['quantity']:>8}  {item['item_name']} ({item['item_type_id']})"
+                f" - {item['mass_per_unit']} MU each = {total_mu} MU"
             ))
     else:
         lines.append(section_line("Cargo hold empty."))

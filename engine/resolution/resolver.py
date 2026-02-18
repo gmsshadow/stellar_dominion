@@ -22,6 +22,9 @@ TU_COSTS = {
     'ORBIT': 10,
     'DOCK': 30,
     'UNDOCK': 10,
+    'BUY': 0,          # trading while docked is free
+    'SELL': 0,
+    'GETMARKET': 0,
 }
 
 
@@ -56,7 +59,7 @@ class TurnResolver:
         Returns dict: moved (bool), finished (bool), step (col, row),
                       orbit_msg (str), error_msg (str or None).
         """
-        cost = TU_COSTS['MOVE']
+        cost = state['move_cost']
 
         # Already there
         if state['col'] == target_col and state['row'] == target_row:
@@ -145,6 +148,7 @@ class TurnResolver:
                 'col': ship['grid_col'],
                 'row': ship['grid_row'],
                 'tu': ship['tu_per_turn'],
+                'move_cost': TU_COSTS['MOVE'],  # per-ship; will vary by engines
                 'docked_at': ship['docked_at_base_id'],
                 'orbiting': ship['orbiting_body_id'],
                 'start_col': ship['grid_col'],
@@ -195,6 +199,7 @@ class TurnResolver:
                         'tu_before': state['tu'],
                         'waypoints': [f"{state['col']}{state['row']:02d}"],
                         'orbit_msg': '',
+                        'encounters': [],
                     }
 
                 acc = move_acc[ship_id]
@@ -207,6 +212,16 @@ class TurnResolver:
                     sc, sr = step_result['step']
                     acc['waypoints'].append(f"{sc}{sr:02d}")
                     self._commit_ship_position(state)
+
+                    # Automatic detection: check for ships at new position
+                    detected = self._detect_ships_at_location(state)
+                    for d in detected:
+                        loc = f"{d['col']}{d['row']:02d}"
+                        enc_entry = (loc, d['name'], d['id'],
+                                     d.get('hull_count', '?'),
+                                     d.get('hull_type', ''))
+                        if enc_entry not in acc['encounters']:
+                            acc['encounters'].append(enc_entry)
 
                 if step_result['finished']:
                     # Pop the order, flush accumulator to log
@@ -222,8 +237,22 @@ class TurnResolver:
                 # Non-MOVE: execute atomically, pop from queue
                 queues[ship_id].pop(0)
                 result = self._execute_order(state, order, rngs[ship_id])
-                logs[ship_id].append(result)
                 self._commit_ship_position(state)
+
+                # Automatic detection after non-move actions too
+                detected = self._detect_ships_at_location(state)
+                if detected:
+                    det_lines = []
+                    for d in detected:
+                        det_lines.append(
+                            f"        {d['name']} ({d['id']}) "
+                            f"- {{{d.get('hull_count', '?')} {d.get('hull_type', '')}}}"
+                        )
+                    result['message'] += (
+                        "\n    Detected:\n" + "\n".join(det_lines)
+                    )
+
+                logs[ship_id].append(result)
 
             # Re-insert into heap if more work remains
             if queues[ship_id]:
@@ -235,7 +264,7 @@ class TurnResolver:
                 # MOVE still in progress (shouldn't happen since finished
                 # pops, but guard against edge cases)
                 elapsed = state['start_tu'] - state['tu']
-                heapq.heappush(heap, (elapsed + TU_COSTS['MOVE'], counter, ship_id))
+                heapq.heappush(heap, (elapsed + state['move_cost'], counter, ship_id))
                 counter += 1
 
         # Flush any interrupted moves (ran out of TU mid-move)
@@ -289,13 +318,12 @@ class TurnResolver:
         return results
 
     def _estimate_next_cost(self, state, order):
-        """Estimate TU cost for priority ordering. MOVE = one step (2 TU)."""
+        """Estimate TU cost for priority ordering. MOVE = one step at ship's speed."""
         cmd = order['command']
         params = order['params']
 
         if cmd == 'MOVE':
-            # In interleaved mode, MOVE is per-square
-            return TU_COSTS['MOVE']
+            return state['move_cost']
         elif cmd == 'WAIT':
             if isinstance(params, (int, float)):
                 return min(int(params), state['tu'])
@@ -313,7 +341,7 @@ class TurnResolver:
         tu_before = acc['tu_before']
         orbit_msg = acc['orbit_msg']
         steps_taken = len(waypoints) - 1  # first entry is start position
-        total_cost = steps_taken * TU_COSTS['MOVE']
+        total_cost = steps_taken * state['move_cost']
 
         reached = (state['col'] == target_col and state['row'] == target_row)
         final_loc = f"{state['col']}{state['row']:02d}"
@@ -324,7 +352,7 @@ class TurnResolver:
             msg = "Cannot move while docked. UNDOCK first. Order queued as pending."
         elif steps_taken == 0 and final_step.get('out_of_tu'):
             msg = (f"Insufficient TU for move ({state['tu']} < "
-                   f"{TU_COSTS['MOVE']}). Order queued as pending.")
+                   f"{state['move_cost']}). Order queued as pending.")
             pendings_list.append({
                 'command': 'MOVE', 'params': target_str,
                 'reason': 'Insufficient TU'
@@ -349,6 +377,14 @@ class TurnResolver:
                 'reason': f"Ran out of TU at {final_loc}"
             })
 
+        # Append encounter detections during movement
+        encounters = acc.get('encounters', [])
+        if encounters and steps_taken > 0:
+            enc_lines = ["    Detected en route:"]
+            for loc, name, eid, hc, ht in encounters:
+                enc_lines.append(f"        {name} ({eid}) at {loc} - {{{hc} {ht}}}")
+            msg += "\n" + "\n".join(enc_lines)
+
         return {
             'command': 'MOVE', 'params': target_str,
             'tu_before': tu_before, 'tu_after': state['tu'],
@@ -364,6 +400,13 @@ class TurnResolver:
         return self.conn.execute(
             "SELECT * FROM games WHERE game_id = ?", (self.game_id,)
         ).fetchone()
+
+    def _get_market_cycle_week(self, game=None):
+        """Get the cycle start week for current market prices."""
+        from engine.game_setup import get_market_cycle_start
+        if game is None:
+            game = self.get_game()
+        return game['current_year'], get_market_cycle_start(game['current_week'])
 
     def get_ship(self, ship_id):
         """Get ship state."""
@@ -469,6 +512,7 @@ class TurnResolver:
             'col': ship['grid_col'],
             'row': ship['grid_row'],
             'tu': ship['tu_per_turn'],  # Reset TU at start of turn
+            'move_cost': TU_COSTS['MOVE'],  # per-ship; will vary by engines
             'docked_at': ship['docked_at_base_id'],
             'orbiting': ship['orbiting_body_id'],
             'start_col': ship['grid_col'],
@@ -534,6 +578,12 @@ class TurnResolver:
             return self._cmd_dock(state, params)
         elif cmd == 'UNDOCK':
             return self._cmd_undock(state)
+        elif cmd == 'BUY':
+            return self._cmd_buy(state, params)
+        elif cmd == 'SELL':
+            return self._cmd_sell(state, params)
+        elif cmd == 'GETMARKET':
+            return self._cmd_getmarket(state, params)
         else:
             return {
                 'command': cmd, 'params': params,
@@ -571,7 +621,7 @@ class TurnResolver:
         tu_before = state['tu']
         target_col = params['col']
         target_row = params['row']
-        cost_per_step = TU_COSTS['MOVE']
+        cost_per_step = state['move_cost']
 
         # Already there?
         if state['col'] == target_col and state['row'] == target_row:
@@ -997,6 +1047,368 @@ class TurnResolver:
             'message': f"Undocked from {base_name} ({base_id})."
         }
 
+    def _cmd_buy(self, state, params):
+        """BUY <base_id> <item_id> <quantity> - buy items from base market."""
+        tu_before = state['tu']
+        base_id = params['base_id']
+        item_id = params['item_id']
+        quantity = params['quantity']
+        params_str = f"{base_id} {item_id} {quantity}"
+
+        # Must be docked at this base
+        if state['docked_at'] != base_id:
+            return {
+                'command': 'BUY', 'params': params_str,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': False,
+                'message': f"Cannot buy: ship is not docked at base {base_id}."
+            }
+
+        # Look up item
+        item = self.conn.execute(
+            "SELECT * FROM trade_goods WHERE item_id = ? AND game_id = ?",
+            (item_id, self.game_id)
+        ).fetchone()
+        if not item:
+            return {
+                'command': 'BUY', 'params': params_str,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': False,
+                'message': f"Cannot buy: item {item_id} not found."
+            }
+
+        # Look up current price (keyed to market cycle start)
+        cycle_year, cycle_week = self._get_market_cycle_week()
+        price_row = self.conn.execute("""
+            SELECT * FROM market_prices
+            WHERE game_id = ? AND base_id = ? AND item_id = ?
+            AND turn_year = ? AND turn_week = ?
+        """, (self.game_id, base_id, item_id,
+              cycle_year, cycle_week)).fetchone()
+        if not price_row:
+            return {
+                'command': 'BUY', 'params': params_str,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': False,
+                'message': f"Cannot buy: no market data at this base for {item['name']}."
+            }
+
+        buy_price = price_row['buy_price']
+        available_stock = price_row['stock']
+
+        # Check stock
+        if available_stock <= 0:
+            return {
+                'command': 'BUY', 'params': params_str,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': False,
+                'message': f"Cannot buy: {item['name']} is out of stock at this base."
+            }
+
+        # Cap quantity to available stock
+        actual_qty = min(quantity, available_stock)
+        if actual_qty < quantity:
+            capped_msg = f" (only {available_stock} in stock, requested {quantity})"
+        else:
+            capped_msg = ""
+
+        total_cost_cr = buy_price * actual_qty
+        total_mass = item['mass_per_unit'] * actual_qty
+
+        # Check credits
+        ship = self.get_ship(state['ship_id'])
+        prefect = self.conn.execute(
+            "SELECT * FROM prefects WHERE prefect_id = ?",
+            (ship['owner_prefect_id'],)
+        ).fetchone()
+        if prefect['credits'] < total_cost_cr:
+            return {
+                'command': 'BUY', 'params': params_str,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': False,
+                'message': (f"Cannot buy: insufficient credits. "
+                            f"Need {total_cost_cr:,} cr, have {prefect['credits']:,.0f} cr.")
+            }
+
+        # Check cargo space
+        if ship['cargo_used'] + total_mass > ship['cargo_capacity']:
+            available = ship['cargo_capacity'] - ship['cargo_used']
+            return {
+                'command': 'BUY', 'params': params_str,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': False,
+                'message': (f"Cannot buy: insufficient cargo space. "
+                            f"Need {total_mass} MU, have {available} MU free.")
+            }
+
+        # Execute purchase
+        self.conn.execute(
+            "UPDATE prefects SET credits = credits - ? WHERE prefect_id = ?",
+            (total_cost_cr, prefect['prefect_id'])
+        )
+        self.conn.execute(
+            "UPDATE ships SET cargo_used = cargo_used + ? WHERE ship_id = ?",
+            (total_mass, state['ship_id'])
+        )
+
+        # Decrement base stock
+        self.conn.execute("""
+            UPDATE market_prices SET stock = stock - ?
+            WHERE price_id = ?
+        """, (actual_qty, price_row['price_id']))
+
+        # Add to cargo (merge with existing if same item)
+        existing = self.conn.execute(
+            "SELECT * FROM cargo_items WHERE ship_id = ? AND item_type_id = ?",
+            (state['ship_id'], item_id)
+        ).fetchone()
+        if existing:
+            self.conn.execute(
+                "UPDATE cargo_items SET quantity = quantity + ? WHERE cargo_id = ?",
+                (actual_qty, existing['cargo_id'])
+            )
+        else:
+            self.conn.execute("""
+                INSERT INTO cargo_items (ship_id, item_type_id, item_name, quantity, mass_per_unit)
+                VALUES (?, ?, ?, ?, ?)
+            """, (state['ship_id'], item_id, item['name'], actual_qty, item['mass_per_unit']))
+
+        self.conn.commit()
+
+        base = self.conn.execute(
+            "SELECT name FROM starbases WHERE base_id = ?", (base_id,)
+        ).fetchone()
+        base_name = base['name'] if base else str(base_id)
+
+        return {
+            'command': 'BUY', 'params': params_str,
+            'tu_before': tu_before, 'tu_after': state['tu'],
+            'tu_cost': 0, 'success': True,
+            'message': (f"Bought {actual_qty} {item['name']} ({item_id}) "
+                        f"at {buy_price} cr each = {total_cost_cr:,} cr total "
+                        f"from {base_name} ({base_id}). [{total_mass} MU]{capped_msg}")
+        }
+
+    def _cmd_sell(self, state, params):
+        """SELL <base_id> <item_id> <quantity> - sell items to base market."""
+        tu_before = state['tu']
+        base_id = params['base_id']
+        item_id = params['item_id']
+        quantity = params['quantity']
+        params_str = f"{base_id} {item_id} {quantity}"
+
+        # Must be docked at this base
+        if state['docked_at'] != base_id:
+            return {
+                'command': 'SELL', 'params': params_str,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': False,
+                'message': f"Cannot sell: ship is not docked at base {base_id}."
+            }
+
+        # Look up item
+        item = self.conn.execute(
+            "SELECT * FROM trade_goods WHERE item_id = ? AND game_id = ?",
+            (item_id, self.game_id)
+        ).fetchone()
+        if not item:
+            return {
+                'command': 'SELL', 'params': params_str,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': False,
+                'message': f"Cannot sell: item {item_id} not found."
+            }
+
+        # Check cargo
+        cargo = self.conn.execute(
+            "SELECT * FROM cargo_items WHERE ship_id = ? AND item_type_id = ?",
+            (state['ship_id'], item_id)
+        ).fetchone()
+        if not cargo or cargo['quantity'] < quantity:
+            have = cargo['quantity'] if cargo else 0
+            return {
+                'command': 'SELL', 'params': params_str,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': False,
+                'message': (f"Cannot sell: insufficient stock. "
+                            f"Have {have} {item['name']}, need {quantity}.")
+            }
+
+        # Look up current price (keyed to market cycle start)
+        cycle_year, cycle_week = self._get_market_cycle_week()
+        price_row = self.conn.execute("""
+            SELECT * FROM market_prices
+            WHERE game_id = ? AND base_id = ? AND item_id = ?
+            AND turn_year = ? AND turn_week = ?
+        """, (self.game_id, base_id, item_id,
+              cycle_year, cycle_week)).fetchone()
+        if not price_row:
+            return {
+                'command': 'SELL', 'params': params_str,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': False,
+                'message': f"Cannot sell: no market data at this base for {item['name']}."
+            }
+
+        sell_price = price_row['sell_price']
+        available_demand = price_row['demand']
+
+        # Check demand
+        if available_demand <= 0:
+            return {
+                'command': 'SELL', 'params': params_str,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': False,
+                'message': f"Cannot sell: no demand for {item['name']} at this base."
+            }
+
+        # Cap quantity to demand
+        actual_qty = min(quantity, available_demand)
+        if actual_qty < quantity:
+            capped_msg = f" (base only buying {available_demand}, requested {quantity})"
+        else:
+            capped_msg = ""
+
+        total_income = sell_price * actual_qty
+        total_mass = item['mass_per_unit'] * actual_qty
+
+        # Re-check cargo against actual_qty
+        if cargo['quantity'] < actual_qty:
+            return {
+                'command': 'SELL', 'params': params_str,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': False,
+                'message': (f"Cannot sell: insufficient stock. "
+                            f"Have {cargo['quantity']} {item['name']}, need {actual_qty}.")
+            }
+
+        # Execute sale
+        ship = self.get_ship(state['ship_id'])
+        self.conn.execute(
+            "UPDATE prefects SET credits = credits + ? WHERE prefect_id = ?",
+            (total_income, ship['owner_prefect_id'])
+        )
+        self.conn.execute(
+            "UPDATE ships SET cargo_used = cargo_used - ? WHERE ship_id = ?",
+            (total_mass, state['ship_id'])
+        )
+
+        # Decrement base demand
+        self.conn.execute("""
+            UPDATE market_prices SET demand = demand - ?
+            WHERE price_id = ?
+        """, (actual_qty, price_row['price_id']))
+
+        # Update cargo
+        new_qty = cargo['quantity'] - actual_qty
+        if new_qty <= 0:
+            self.conn.execute(
+                "DELETE FROM cargo_items WHERE cargo_id = ?", (cargo['cargo_id'],)
+            )
+        else:
+            self.conn.execute(
+                "UPDATE cargo_items SET quantity = ? WHERE cargo_id = ?",
+                (new_qty, cargo['cargo_id'])
+            )
+
+        self.conn.commit()
+
+        base = self.conn.execute(
+            "SELECT name FROM starbases WHERE base_id = ?", (base_id,)
+        ).fetchone()
+        base_name = base['name'] if base else str(base_id)
+
+        return {
+            'command': 'SELL', 'params': params_str,
+            'tu_before': tu_before, 'tu_after': state['tu'],
+            'tu_cost': 0, 'success': True,
+            'message': (f"Sold {actual_qty} {item['name']} ({item_id}) "
+                        f"at {sell_price} cr each = {total_income:,} cr total "
+                        f"to {base_name} ({base_id}). [{total_mass} MU freed]{capped_msg}")
+        }
+
+    def _cmd_getmarket(self, state, base_id):
+        """GETMARKET <base_id> - view market prices at a base."""
+        tu_before = state['tu']
+
+        # Must be docked at or at same grid location as base
+        base = self.conn.execute(
+            "SELECT * FROM starbases WHERE base_id = ? AND game_id = ?",
+            (base_id, self.game_id)
+        ).fetchone()
+        if not base:
+            return {
+                'command': 'GETMARKET', 'params': base_id,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': False,
+                'message': f"Cannot view market: base {base_id} not found."
+            }
+
+        at_base = (state['docked_at'] == base_id)
+        at_location = (state['col'] == base['grid_col'] and
+                       state['row'] == base['grid_row'])
+        if not at_base and not at_location:
+            return {
+                'command': 'GETMARKET', 'params': base_id,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': False,
+                'message': (f"Cannot view market: must be docked at or "
+                            f"in orbit near {base['name']} ({base_id}).")
+            }
+
+        # Get current prices (keyed to market cycle start)
+        from engine.game_setup import get_market_weeks_remaining
+        game = self.get_game()
+        cycle_year, cycle_week = self._get_market_cycle_week(game)
+        prices = self.conn.execute("""
+            SELECT mp.*, tg.name as item_name, tg.mass_per_unit,
+                   btc.trade_role
+            FROM market_prices mp
+            JOIN trade_goods tg ON mp.item_id = tg.item_id AND tg.game_id = mp.game_id
+            JOIN base_trade_config btc ON mp.base_id = btc.base_id
+                AND mp.item_id = btc.item_id AND btc.game_id = mp.game_id
+            WHERE mp.game_id = ? AND mp.base_id = ?
+            AND mp.turn_year = ? AND mp.turn_week = ?
+            ORDER BY mp.item_id
+        """, (self.game_id, base_id,
+              cycle_year, cycle_week)).fetchall()
+
+        if not prices:
+            return {
+                'command': 'GETMARKET', 'params': base_id,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': False,
+                'message': f"No market data available at {base['name']} ({base_id})."
+            }
+
+        # Build market report with cycle countdown
+        weeks_left = get_market_weeks_remaining(game['current_week'])
+        if weeks_left <= 1:
+            refresh_msg = "Market refreshes next week."
+        else:
+            refresh_msg = f"{weeks_left} weeks to market refresh."
+
+        role_labels = {'produces': 'Produces', 'average': 'Standard', 'demands': 'In Demand'}
+        lines = [f"Market at {base['name']} ({base_id}):"]
+        lines.append(f"    {'Item':<26} {'ID':>4} {'Buy':>6} {'Sell':>6} {'Stock':>5} {'Demand':>6} {'Status'}")
+        lines.append(f"    {'-'*26} {'----':>4} {'------':>6} {'------':>6} {'-----':>5} {'------':>6} {'--------'}")
+        for p in prices:
+            role_str = role_labels.get(p['trade_role'], '')
+            lines.append(
+                f"    {p['item_name']:<26} {p['item_id']:>4} "
+                f"{p['buy_price']:>5} cr {p['sell_price']:>5} cr "
+                f"{p['stock']:>5} {p['demand']:>6} "
+                f"{role_str}"
+            )
+        lines.append(f"    {refresh_msg}")
+
+        return {
+            'command': 'GETMARKET', 'params': base_id,
+            'tu_before': tu_before, 'tu_after': state['tu'],
+            'tu_cost': 0, 'success': True,
+            'message': '\n'.join(lines),
+        }
+
     def _scan_at_location(self, state):
         """Scan for objects at the ship's current location."""
         objects = self.get_system_objects(state['system_id'])
@@ -1008,6 +1420,43 @@ class TurnResolver:
                 at_location.append(obj)
                 self.contacts.append(obj)
         return at_location
+
+    def _detect_ships_at_location(self, state):
+        """
+        Detect other ships at the same grid square (automatic, p=1).
+        Returns list of detected ship dicts and adds them to contacts.
+        Only checks ships -- planets/bases are found by scans.
+        """
+        ships = self.conn.execute(
+            """SELECT s.*, pp.faction_id FROM ships s
+               JOIN prefects pp ON s.owner_prefect_id = pp.prefect_id
+               JOIN players p ON pp.player_id = p.player_id
+               WHERE s.system_id = ? AND s.game_id = ? AND p.status = 'active'
+               AND s.grid_col = ? AND s.grid_row = ?
+               AND s.ship_id != ?""",
+            (state['system_id'], self.game_id,
+             state['col'], state['row'], state['ship_id'])
+        ).fetchall()
+
+        detected = []
+        for s in ships:
+            faction = self._get_faction(s['faction_id'])
+            display_name = f"{faction['abbreviation']} {s['name']}"
+            loc = f"{s['grid_col']}{s['grid_row']:02d}"
+            contact = {
+                'type': 'ship', 'id': s['ship_id'],
+                'name': display_name,
+                'col': s['grid_col'], 'row': s['grid_row'],
+                'symbol': '^',
+                'hull_count': s['hull_count'],
+                'hull_type': s['hull_type'],
+            }
+            detected.append(contact)
+            # Add to contacts if not already known this turn
+            if not any(c['type'] == 'ship' and c['id'] == s['ship_id']
+                       for c in self.contacts):
+                self.contacts.append(contact)
+        return detected
 
     def _commit_ship_state(self, state):
         """Write final ship state back to database."""
@@ -1056,7 +1505,9 @@ class TurnResolver:
         self.conn.commit()
 
     def advance_turn(self):
-        """Advance the game turn (year.week)."""
+        """Advance the game turn (year.week) and generate new market prices if cycle boundary."""
+        from engine.game_setup import generate_market_prices, get_market_cycle_start, MARKET_CYCLE_WEEKS
+
         game = self.get_game()
         year = game['current_year']
         week = game['current_week']
@@ -1072,6 +1523,13 @@ class TurnResolver:
             WHERE game_id = ?
         """, (year, week, self.game_id))
         self.conn.commit()
+
+        # Generate new market prices only at start of a new cycle
+        old_cycle = get_market_cycle_start(week - 1 if week > 1 else 52)
+        new_cycle = get_market_cycle_start(week)
+        if new_cycle != old_cycle or week == 1:
+            generate_market_prices(self.conn, self.game_id, year, week)
+
         return year, week
 
     def close(self):

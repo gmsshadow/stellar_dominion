@@ -35,6 +35,96 @@ def generate_random_name():
     return f"{random.choice(FIRST_NAMES)} {random.choice(LAST_NAMES)}"
 
 
+# Trade role price modifiers
+TRADE_ROLE_MODIFIERS = {
+    'produces': 0.75,
+    'average': 1.00,
+    'demands': 1.50,
+}
+
+# Market cycle length in weeks (prices and stock reset every N weeks)
+MARKET_CYCLE_WEEKS = 4
+
+# Base stock/demand quantities by role per cycle (center value; fluctuates ±15%)
+TRADE_ROLE_STOCK = {
+    'produces': {'stock': 240, 'demand': 60},
+    'average':  {'stock': 120, 'demand': 120},
+    'demands':  {'stock': 60,  'demand': 240},
+}
+
+# Spread: buy costs more than sell (3% each side of effective price)
+BUY_SPREAD = 1.03
+SELL_SPREAD = 0.97
+
+
+def get_market_cycle_start(turn_week):
+    """Return the first week of the market cycle containing turn_week."""
+    return ((turn_week - 1) // MARKET_CYCLE_WEEKS) * MARKET_CYCLE_WEEKS + 1
+
+
+def get_market_weeks_remaining(turn_week):
+    """Return how many weeks remain in the current market cycle (including this week)."""
+    return MARKET_CYCLE_WEEKS - ((turn_week - 1) % MARKET_CYCLE_WEEKS)
+
+
+def generate_market_prices(conn, game_id, turn_year, turn_week):
+    """
+    Generate market prices for a new cycle.
+    
+    Prices are keyed to the cycle start week and persist for MARKET_CYCLE_WEEKS.
+    Stock and demand deplete over the cycle as players trade.
+    
+    Only call this at the start of a new cycle (or game setup).
+    """
+    import hashlib
+    cycle_start = get_market_cycle_start(turn_week)
+    seed_str = f"{game_id}-market-{turn_year}.{cycle_start}"
+    seed = int(hashlib.md5(seed_str.encode()).hexdigest()[:8], 16)
+    rng = random.Random(seed)
+
+    goods = conn.execute(
+        "SELECT * FROM trade_goods WHERE game_id = ?", (game_id,)
+    ).fetchall()
+
+    week_averages = {}
+    for g in goods:
+        fluctuation = rng.uniform(0.95, 1.05)
+        week_averages[g['item_id']] = g['base_price'] * fluctuation
+
+    configs = conn.execute(
+        "SELECT * FROM base_trade_config WHERE game_id = ?", (game_id,)
+    ).fetchall()
+
+    # Clear any existing prices for this cycle start (idempotent)
+    conn.execute("""
+        DELETE FROM market_prices
+        WHERE game_id = ? AND turn_year = ? AND turn_week = ?
+    """, (game_id, turn_year, cycle_start))
+
+    for cfg in configs:
+        avg = week_averages[cfg['item_id']]
+        modifier = TRADE_ROLE_MODIFIERS.get(cfg['trade_role'], 1.0)
+        effective = avg * modifier
+        buy_price = max(1, round(effective * BUY_SPREAD))
+        sell_price = max(1, round(effective * SELL_SPREAD))
+        if sell_price >= buy_price:
+            sell_price = buy_price - 1
+
+        role_qty = TRADE_ROLE_STOCK.get(cfg['trade_role'], {'stock': 120, 'demand': 120})
+        stock = max(1, round(role_qty['stock'] * rng.uniform(0.85, 1.15)))
+        demand = max(1, round(role_qty['demand'] * rng.uniform(0.85, 1.15)))
+
+        conn.execute("""
+            INSERT INTO market_prices
+            (game_id, base_id, item_id, turn_year, turn_week,
+             buy_price, sell_price, stock, demand)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (game_id, cfg['base_id'], cfg['item_id'],
+              turn_year, cycle_start, buy_price, sell_price, stock, demand))
+
+    conn.commit()
+
+
 def _generate_unique_id(conn, table, column, min_val=10000000, max_val=99999999):
     """Generate a unique random integer ID for the given table/column."""
     while True:
@@ -153,7 +243,46 @@ def create_game(db_path=None, game_id="OMICRON101", game_name="Stellar Dominion 
                 8, 150, 30, 1, 3)
     """, (game_id,))
 
+    # =============================================
+    # TRADE GOODS & MARKET CONFIGURATION
+    # =============================================
+    trade_goods = [
+        (101, game_id, 'Precious Metals', 20, 5),
+        (102, game_id, 'Advanced Computer Cores', 50, 2),
+        (103, game_id, 'Food Supplies', 30, 3),
+    ]
+    for item in trade_goods:
+        c.execute("""
+            INSERT INTO trade_goods (item_id, game_id, name, base_price, mass_per_unit)
+            VALUES (?, ?, ?, ?, ?)
+        """, item)
+
+    # Base trade roles: (base_id, item_id, role)
+    # Citadel:  produces Adv Computer Cores, average Food, demands Precious Metals
+    # Tartarus: produces Precious Metals, average Adv Computer Cores, demands Food
+    # Meridian: produces Food Supplies, average Precious Metals, demands Adv Computer Cores
+    base_trade = [
+        (45687590, 101, 'demands'),
+        (45687590, 102, 'produces'),
+        (45687590, 103, 'average'),
+        (12340001, 101, 'produces'),
+        (12340001, 102, 'average'),
+        (12340001, 103, 'demands'),
+        (78901234, 101, 'average'),
+        (78901234, 102, 'demands'),
+        (78901234, 103, 'produces'),
+    ]
+    for base_id, item_id, role in base_trade:
+        c.execute("""
+            INSERT INTO base_trade_config (base_id, game_id, item_id, trade_role)
+            VALUES (?, ?, ?, ?)
+        """, (base_id, game_id, item_id, role))
+
     conn.commit()
+
+    # Generate initial week's market prices
+    generate_market_prices(conn, game_id, 500, 1)
+
     conn.close()
 
     # Create turn folder skeleton
@@ -245,6 +374,15 @@ def generate_welcome_reports(db_path, game_id, account_number, prefect_id, ship_
         DOCK <base_id>     Dock at a starbase (must be at same location). Costs 30 TU.
         UNDOCK             Leave a starbase. Costs 10 TU.
         WAIT <tu>          Wait and do nothing for a number of TU.
+
+        TRADING (must be docked)
+        -------------------------
+        GETMARKET <base_id>                 View buy/sell prices at a base market.
+        BUY <base_id> <item_id> <qty>       Buy items from a base market.
+        SELL <base_id> <item_id> <qty>      Sell items to a base market.
+
+        Trade items:  101 Precious Metals  |  102 Adv Computer Cores  |  103 Food Supplies
+        YAML example: - BUY: "45687590 101 10"
 
         Your ship has 300 TU per turn. Unspent TU are lost at end of turn.
         Submit orders by email or file -- see your game moderator for details.

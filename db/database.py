@@ -233,6 +233,42 @@ def init_db(db_path=None):
         mass_per_unit INTEGER DEFAULT 1
     );
 
+    -- Trade goods (game-wide item definitions)
+    CREATE TABLE IF NOT EXISTS trade_goods (
+        item_id INTEGER PRIMARY KEY,
+        game_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        base_price INTEGER NOT NULL,
+        mass_per_unit INTEGER NOT NULL,
+        FOREIGN KEY (game_id) REFERENCES games(game_id)
+    );
+
+    -- Base trade configuration (what each base produces/demands)
+    CREATE TABLE IF NOT EXISTS base_trade_config (
+        config_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        base_id INTEGER NOT NULL,
+        game_id TEXT NOT NULL,
+        item_id INTEGER NOT NULL,
+        trade_role TEXT NOT NULL,
+        FOREIGN KEY (base_id) REFERENCES starbases(base_id),
+        FOREIGN KEY (item_id) REFERENCES trade_goods(item_id)
+    );
+
+    -- Weekly market prices per base per item
+    CREATE TABLE IF NOT EXISTS market_prices (
+        price_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        game_id TEXT NOT NULL,
+        base_id INTEGER NOT NULL,
+        item_id INTEGER NOT NULL,
+        turn_year INTEGER NOT NULL,
+        turn_week INTEGER NOT NULL,
+        buy_price INTEGER NOT NULL,
+        sell_price INTEGER NOT NULL,
+        stock INTEGER NOT NULL DEFAULT 0,
+        demand INTEGER NOT NULL DEFAULT 0,
+        FOREIGN KEY (game_id) REFERENCES games(game_id)
+    );
+
     -- Known contacts per prefect
     CREATE TABLE IF NOT EXISTS known_contacts (
         contact_id INTEGER PRIMARY KEY AUTOINCREMENT,
