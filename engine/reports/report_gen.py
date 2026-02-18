@@ -135,6 +135,13 @@ def generate_ship_report(turn_result, db_path=None, game_id="OMICRON101",
     faction_str = faction['name']
     display_name = faction_display_name(conn, ship_name, prefect['faction_id']) if prefect else ship_name
 
+    # Look up player account number
+    player = conn.execute(
+        "SELECT account_number FROM players WHERE player_id = ?",
+        (prefect['player_id'],)
+    ).fetchone() if prefect else None
+    account_number = player['account_number'] if player else '???'
+
     lines = []
 
     # ==========================================
@@ -146,6 +153,7 @@ def generate_ship_report(turn_result, db_path=None, game_id="OMICRON101",
     lines.append(center_text("PBEM Strategy Game"))
     lines.append("")
     lines.append(center_text(f"{faction['abbreviation']} SHIP {ship_name} ({ship_id})"))
+    lines.append(center_text(f"Account: {account_number}"))
     lines.append("")
     lines.append(f"Printed on {now.strftime('%d %B %Y')}, Star Date {turn_str}")
     lines.append("")
@@ -399,6 +407,7 @@ def generate_prefect_report(prefect_id, db_path=None, game_id="OMICRON101",
     lines.append(center_text("PBEM Strategy Game"))
     lines.append("")
     lines.append(center_text(f"{faction['abbreviation']} PREFECT {prefect['name']} ({prefect_id})"))
+    lines.append(center_text(f"Account: {player['account_number']}"))
     lines.append("")
     lines.append(f"Printed on {now.strftime('%d %B %Y')}, Star Date {turn_str}")
     lines.append("")
