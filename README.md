@@ -260,6 +260,7 @@ Turns follow `YEAR.WEEK` format: `500.1` through `500.52`, then `501.1`.
 | `register-player <form>` | Process a filled-in registration form |
 | `process-inbox --inbox <dir>` | Process orders + registrations from inbox |
 | `fetch-mail --credentials <json>` | Fetch from Gmail to staging inbox |
+| `send-turns --credentials <json>` | Email turn reports to players via Gmail |
 
 ### join-game details
 
@@ -379,6 +380,21 @@ them in place.
 You can also place files manually into the inbox directory (e.g. orders
 received by other means) and they will be processed the same way.
 
+**Stage 3 -- Send turn reports** (after running the turn):
+
+```bash
+python pbem.py run-turn
+python pbem.py send-turns --credentials credentials.json
+```
+
+Collects all report files from `processed/{turn}/{account}/` and emails
+them to each player as attachments. Each player receives a single email
+with all their reports (ship reports, prefect report) for the turn.
+
+Use `--dry-run` to preview what would be sent without actually sending
+(works without Gmail credentials). Use `--turn 500.1` to send reports
+for a specific turn rather than the current one.
+
 ### Gmail Setup
 
 Requires the Google API Python client:
@@ -400,6 +416,10 @@ pip install google-api-python-client google-auth-httplib2 google-auth-oauthlib
 - `--query QUERY` -- Override the Gmail search query
 - `--dry-run` -- Fetch and save but don't modify Gmail or send acks
 - `--max-results N` -- Max messages per run (default: 25)
+
+**`send-turns` options:**
+- `--turn TURN` -- Send a specific turn (default: current turn)
+- `--dry-run` -- Preview what would be sent (works without credentials)
 
 The label-based approach gives exactly-once fetching: even if a message
 is later marked unread, it won't be re-fetched unless the orders label

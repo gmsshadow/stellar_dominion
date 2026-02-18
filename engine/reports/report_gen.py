@@ -10,6 +10,9 @@ from db.database import get_connection, get_faction, faction_display_name, get_f
 REPORT_WIDTH = 78
 HEADER_CHAR = '-'
 SECTION_CHAR = '-'
+BOX_INNER = REPORT_WIDTH - 2  # chars between the | pipes
+CONTENT_WIDTH = BOX_INNER - 2 # usable content area (1-char margin each side)
+COL_LEFT = 35                  # two-column layout: left column width
 
 
 def center_text(text, width=REPORT_WIDTH):
@@ -18,15 +21,56 @@ def center_text(text, width=REPORT_WIDTH):
 
 
 def section_header(title, char=SECTION_CHAR, width=REPORT_WIDTH):
-    """Generate a section header bar."""
-    inner = f"{char} {title} "
-    return f"|{inner}{char * (width - len(inner) - 1)}|"
+    """Generate a centered section header bar: |---------- Title ----------|"""
+    inner_width = width - 2
+    centered = f" {title} ".center(inner_width, char)
+    return f"|{centered}|"
 
 
 def section_line(content="", width=REPORT_WIDTH):
-    """Generate a bordered line within a section."""
-    padded = f"| {content}"
-    return f"{padded}{' ' * (width - len(padded) - 1)}|"
+    """
+    Generate bordered line(s): | content                          |
+    
+    If content exceeds the available width, word-wraps onto continuation
+    lines with a 3-space indent. Returns a single string that may contain
+    embedded newlines.
+    """
+    max_content = width - 4  # 1 margin + 1 pipe each side
+
+    if len(content) <= max_content:
+        return f"| {content}{' ' * (max_content - len(content))} |"
+
+    # Word-wrap: split into lines that fit
+    indent = "   "  # continuation indent
+    result_lines = []
+    words = content.split()
+    current = ""
+
+    for word in words:
+        test = f"{current} {word}".strip() if current else word
+        limit = max_content if not result_lines else max_content - len(indent)
+        if len(test) <= limit:
+            current = test
+        else:
+            # Flush current line
+            if current:
+                pad = max_content - len(current) if not result_lines else max_content - len(indent) - len(current)
+                if result_lines:
+                    result_lines.append(f"| {indent}{current}{' ' * max(0, pad)} |")
+                else:
+                    result_lines.append(f"| {current}{' ' * max(0, pad)} |")
+            current = word
+
+    # Flush last line
+    if current:
+        if result_lines:
+            pad = max_content - len(indent) - len(current)
+            result_lines.append(f"| {indent}{current}{' ' * max(0, pad)} |")
+        else:
+            pad = max_content - len(current)
+            result_lines.append(f"| {current}{' ' * max(0, pad)} |")
+
+    return "\n".join(result_lines)
 
 
 def section_close(width=REPORT_WIDTH):
@@ -88,7 +132,7 @@ def generate_ship_report(turn_result, db_path=None, game_id="OMICRON101",
     start_loc = f"{turn_result['start_col']}{turn_result['start_row']:02d}"
     final_loc = f"{turn_result['final_col']}{turn_result['final_row']:02d}"
     faction = get_faction(conn, prefect['faction_id']) if prefect else {'abbreviation': 'IND', 'name': 'Independent'}
-    faction_str = f"{faction['abbreviation']} - {faction['name']}"
+    faction_str = faction['name']
     display_name = faction_display_name(conn, ship_name, prefect['faction_id']) if prefect else ship_name
 
     lines = []
@@ -173,19 +217,18 @@ def generate_ship_report(turn_result, db_path=None, game_id="OMICRON101",
     # ==========================================
     lines.append(section_header("Command Report"))
     lines.append(section_line())
-    lines.append(section_line(f"Name: {display_name} ({ship_id})".ljust(38) +
+    lines.append(section_line(f"Name: {display_name} ({ship_id})".ljust(COL_LEFT) +
                                f"Faction: {faction_str}"))
-    lines.append(section_line(f"Wealth: {prefect['credits']:,.0f} Credits".ljust(38) +
+    lines.append(section_line(f"Wealth: {prefect['credits']:,.0f} Credits".ljust(COL_LEFT) +
                                "Ownership: Player owned"))
-    lines.append(section_line(f"Efficiency: {ship['efficiency']:.0f}%".ljust(38) +
+    lines.append(section_line(f"Efficiency: {ship['efficiency']:.0f}%".ljust(COL_LEFT) +
                                f"TUs left: {turn_result['final_tu']} tus"))
     lines.append(section_line())
 
-    hull_info = f"Hulls: {ship['hull_count']} ({ship['hull_type']})"
-    dmg_info = f"Hull Damage: {ship['hull_damage_pct']:.0f}%"
-    lines.append(section_line(f"Design: {ship['design']} Class {ship['ship_class']}"))
-    lines.append(section_line(f"{hull_info}".ljust(38) + dmg_info))
-    lines.append(section_line(f"Integrity: {ship['integrity']:.0f}%"))
+    hull_info = f"Size: {ship['hull_count']} ({ship['hull_type']})"
+    lines.append(section_line(f"Design: {ship['design']}"))
+    lines.append(section_line(f"{hull_info}".ljust(COL_LEFT) +
+                               f"Integrity: {ship['integrity']:.0f}%"))
     lines.append(section_line())
 
     # ==========================================
@@ -204,7 +247,7 @@ def generate_ship_report(turn_result, db_path=None, game_id="OMICRON101",
 
     lines.append(section_line(f"{system['name']} ({system_id}) - {{{final_loc}}}"))
     lines.append(section_line())
-    lines.append(section_line(f"Sensor Rating: {ship['sensor_rating']}%".ljust(38) +
+    lines.append(section_line(f"Sensor Rating: {ship['sensor_rating']}%".ljust(COL_LEFT) +
                                f"Cargo: {ship['cargo_used']}/{ship['cargo_capacity']}"))
     lines.append(section_line())
 
@@ -216,16 +259,21 @@ def generate_ship_report(turn_result, db_path=None, game_id="OMICRON101",
     lines.append(section_line("OFFICERS"))
     if officers:
         for off in officers:
+            rank_info = f"[ {off['specialty']} {off['experience']} Xp ] +{off['crew_factors']} CF"
             lines.append(section_line(
-                f"{off['name']}".ljust(50) +
-                f"[ {off['rank']} ({off['specialty']}) {off['experience']} Xp ]"
+                f"[{off['crew_number']}] {off['rank']} {off['name']}".ljust(45) + rank_info
             ))
-            lines.append(section_line(f"   |-Crew Factors                +{off['crew_factors']} CF"))
     else:
         lines.append(section_line("No officers assigned."))
     lines.append(section_line())
 
-    crew_line = f"Crew: {ship['crew_count']}".ljust(38) + f"Required: {ship['crew_required']}"
+    # Prefect (not an officer -- listed separately)
+    if prefect:
+        lines.append(section_line("PREFECT"))
+        lines.append(section_line(f"{prefect['name']} ({prefect['prefect_id']})"))
+        lines.append(section_line())
+
+    crew_line = f"Crew: {ship['crew_count']}".ljust(COL_LEFT) + f"Required: {ship['crew_required']}"
     lines.append(section_line(crew_line))
     lines.append(section_line())
 
@@ -238,8 +286,7 @@ def generate_ship_report(turn_result, db_path=None, game_id="OMICRON101",
     if cargo:
         for item in cargo:
             lines.append(section_line(
-                f"{item['quantity']:>8}  {item['item_name']} ({item['item_type_id']}) "
-                f"- {item['mass_per_unit']} mus"
+                f"{item['quantity']:>8}  {item['item_name']} - {item['mass_per_unit']} mus"
             ))
     else:
         lines.append(section_line("Cargo hold empty."))
@@ -260,10 +307,8 @@ def generate_ship_report(turn_result, db_path=None, game_id="OMICRON101",
     lines.append(section_line())
     if installed:
         for item in installed:
-            total_mass = item['quantity'] * item['mass_per_unit']
             lines.append(section_line(
-                f"{item['quantity']:>8}  {item['item_name']} ({item['item_type_id']}) "
-                f"- {item['mass_per_unit']} mus"
+                f"{item['quantity']:>8}  {item['item_name']} - {item['mass_per_unit']} mus"
             ))
     else:
         lines.append(section_line("No items installed."))
@@ -306,7 +351,7 @@ def generate_ship_report(turn_result, db_path=None, game_id="OMICRON101",
     # ==========================================
     lines.append(section_close())
     lines.append("")
-    lines.append("=== END REPORT ===")
+    lines.append(center_text("=== END REPORT ==="))
 
     conn.close()
     return "\n".join(lines)
@@ -345,10 +390,10 @@ def generate_prefect_report(prefect_id, db_path=None, game_id="OMICRON101",
     now = datetime.now()
     turn_str = f"{game['current_year']}.{game['current_week']}"
     faction = get_faction(conn, prefect['faction_id'])
-    faction_str = f"{faction['abbreviation']} - {faction['name']}"
+    faction_str = faction['name']
 
     lines = []
-    lines.append("=== BEGIN REPORT ===")
+    lines.append(center_text("=== BEGIN REPORT ==="))
     lines.append("")
     lines.append(center_text("Stellar Dominion"))
     lines.append(center_text("PBEM Strategy Game"))
@@ -389,11 +434,11 @@ def generate_prefect_report(prefect_id, db_path=None, game_id="OMICRON101",
     lines.append(section_header("Prefect Report"))
     lines.append(section_line())
     lines.append(section_line(
-        f"Name: {prefect['name']} ({prefect_id})".ljust(38) +
+        f"Name: {prefect['name']} ({prefect_id})".ljust(COL_LEFT) +
         f"Faction: {faction_str}"
     ))
     lines.append(section_line(
-        f"Rank: {prefect['rank']}".ljust(38) +
+        f"Rank: {prefect['rank']}".ljust(COL_LEFT) +
         f"Influence: {prefect['influence']}"
     ))
     lines.append(section_line(
@@ -432,7 +477,7 @@ def generate_prefect_report(prefect_id, db_path=None, game_id="OMICRON101",
     lines.append(section_header("Financial Report"))
     lines.append(section_line())
     lines.append(section_line(
-        f"{'POSITION':<40} {'INCOME':>8}  {'EXPENSES':>8}  {'NET':>8}"
+        f"{'POSITION':<38} {'INCOME':>8}  {'EXPENSES':>8}  {'NET':>8}"
     ))
 
     total_income = 0
@@ -445,15 +490,15 @@ def generate_prefect_report(prefect_id, db_path=None, game_id="OMICRON101",
         total_expenses += expenses
         ship_display = faction_display_name(conn, s['name'], prefect['faction_id'])
         lines.append(section_line(
-            f"{ship_display} ({s['ship_id']})".ljust(40) +
+            f"{ship_display} ({s['ship_id']})".ljust(38) +
             f"{income:>8}  {expenses:>8}  {net:>8}"
         ))
 
     lines.append(section_line(
-        f"{'':40} {'-------':>8}  {'-------':>8}  {'-------':>8}"
+        f"{'':38} {'-------':>8}  {'-------':>8}  {'-------':>8}"
     ))
     lines.append(section_line(
-        f"{'':40} {total_income:>8}  {total_expenses:>8}  "
+        f"{'':38} {total_income:>8}  {total_expenses:>8}  "
         f"{total_income - total_expenses:>8}"
     ))
     lines.append(section_line())
@@ -475,13 +520,13 @@ def generate_prefect_report(prefect_id, db_path=None, game_id="OMICRON101",
             dock_info = f" [Docked at {base['name']}]" if base else " [Docked]"
 
         lines.append(section_line(
-            f"{ship_display} ({s['ship_id']})".ljust(35) +
+            f"{ship_display} ({s['ship_id']})".ljust(COL_LEFT) +
             f"{s['system_name']} ({s['system_id']}) {loc}{dock_info}"
         ))
         lines.append(section_line(
-            f"   {s['design']} Class {s['ship_class']}".ljust(35) +
+            f"   {s['design']}".ljust(COL_LEFT) +
             f"TU: {s['tu_remaining']}/{s['tu_per_turn']}  "
-            f"Hull: {s['hull_count']} ({s['hull_type']})"
+            f"Size: {s['hull_count']} ({s['hull_type']})"
         ))
         lines.append(section_line())
 
@@ -511,7 +556,7 @@ def generate_prefect_report(prefect_id, db_path=None, game_id="OMICRON101",
 
     lines.append(section_close())
     lines.append("")
-    lines.append("=== END REPORT ===")
+    lines.append(center_text("=== END REPORT ==="))
 
     conn.close()
     return "\n".join(lines)

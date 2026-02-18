@@ -11,6 +11,30 @@ from engine.reports.report_gen import generate_ship_report, generate_prefect_rep
 from engine.turn_folders import TurnFolders
 
 
+# Name pools for random crew generation
+FIRST_NAMES = [
+    "Marcus", "Elena", "Darius", "Katya", "Ravi", "Ingrid", "Tobias", "Yara",
+    "Felix", "Maren", "Lukas", "Senna", "Orin", "Hana", "Cassius", "Petra",
+    "Nikolai", "Ayla", "Dorian", "Freya", "Idris", "Zara", "Cyrus", "Lina",
+    "Otto", "Jena", "Tariq", "Mila", "Soren", "Elsa", "Voss", "Anya",
+    "Jalen", "Rhea", "Kiran", "Thea", "Henrik", "Nadia", "Brennan", "Lyra",
+]
+
+LAST_NAMES = [
+    "Webb", "Kessler", "Okafor", "Strand", "Varga", "Reeves", "Navarro",
+    "Lindqvist", "Holt", "Szabo", "Ortega", "Falk", "Mitra", "Graves",
+    "Tanaka", "Eriksen", "Moreau", "Shah", "Voronova", "Cruz", "Decker",
+    "Jansen", "Calloway", "Petrov", "Ashworth", "Torres", "Grimm", "Sato",
+    "Brennan", "Larsson", "Osei", "Richter", "Vasquez", "Nolan", "Ivarsson",
+    "Chen", "Kowalski", "Adeyemi", "Bergstrom", "Novak",
+]
+
+
+def generate_random_name():
+    """Generate a random first + last name for crew."""
+    return f"{random.choice(FIRST_NAMES)} {random.choice(LAST_NAMES)}"
+
+
 def _generate_unique_id(conn, table, column, min_val=10000000, max_val=99999999):
     """Generate a unique random integer ID for the given table/column."""
     while True:
@@ -358,26 +382,27 @@ def add_player(db_path=None, game_id="OMICRON101", player_name="Player 1",
         (ship_id, game_id, owner_prefect_id, name, ship_class, design, hull_type,
          hull_count, grid_col, grid_row, system_id, docked_at_base_id, orbiting_body_id,
          tu_per_turn, tu_remaining, sensor_rating, cargo_capacity, crew_count, crew_required)
-        VALUES (?, ?, ?, ?, 'Scout', 'Explorer Mk I', 'Light Hull', 50,
+        VALUES (?, ?, ?, ?, 'Trader', 'Light Trader MK I', 'Commercial', 50,
                 ?, ?, ?, ?, ?, 300, 300, 20, 500, 15, 10)
     """, (ship_id, game_id, prefect_id, ship_name,
           ship_start_col, ship_start_row, ship_system_id, docked_at, orbiting_body))
 
-    # Add a starting officer
+    # Add a starting captain (randomly generated)
+    captain_name = generate_random_name()
     c.execute("""
-        INSERT INTO officers (ship_id, name, rank, specialty, experience, crew_factors)
-        VALUES (?, ?, 'Captain', 'Navigation', 0, 8)
-    """, (ship_id, prefect_name))
+        INSERT INTO officers (ship_id, crew_number, name, rank, specialty, experience, crew_factors)
+        VALUES (?, 1, ?, 'Captain', 'Navigation', 0, 8)
+    """, (ship_id, captain_name))
 
     # Add starting installed items
     starting_items = [
-        (ship_id, 100, 'Bridge', 1, 50),
-        (ship_id, 103, 'Sensor', 1, 10),
-        (ship_id, 155, 'ISR Type 2 Engines', 3, 10),
-        (ship_id, 174, 'Jump Drive - Basic', 1, 50),
-        (ship_id, 160, 'Thrust Engine', 2, 20),
-        (ship_id, 131, 'Quarters', 2, 25),
-        (ship_id, 180, 'Cargo Hold', 5, 100),
+        (ship_id, 100, 'Bridge', 1, 5),
+        (ship_id, 103, 'Sensor', 1, 1),
+        (ship_id, 155, 'Sublight Engines', 3, 1),
+        (ship_id, 174, 'Jump Drive - Basic', 1, 5),
+        (ship_id, 160, 'Thrust Engine', 2, 2),
+        (ship_id, 131, 'Quarters', 2, 3),
+        (ship_id, 180, 'Cargo Hold', 5, 10),
     ]
     for sid, item_type, item_name, qty, mass in starting_items:
         c.execute("""
@@ -393,7 +418,7 @@ def add_player(db_path=None, game_id="OMICRON101", player_name="Player 1",
     print(f"Player '{player_name}' added to game {game_id}:")
     print(f"  Account Number: {account_number}  ** KEEP THIS SECRET **")
     print(f"  Prefect: {prefect_name} (ID: {prefect_id})")
-    print(f"  Faction: STA - Stellar Training Academy")
+    print(f"  Faction: Stellar Training Academy")
     print(f"  Ship: STA {ship_name} (ID: {ship_id}) at {ship_start_col}{ship_start_row:02d}{dock_info}{orbit_info}")
     print(f"  Starting Credits: 10,000")
 

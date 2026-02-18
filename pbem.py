@@ -367,6 +367,126 @@ def cmd_run_turn(args):
 
 
 # ======================================================================
+# SEND TURNS
+# ======================================================================
+
+def cmd_send_turns(args):
+    """
+    Email processed turn reports to all players via Gmail.
+
+    For each active player, collects all report files from the processed
+    folder (ship reports, prefect reports) and sends them as attachments
+    in a single email.
+
+    Requires Gmail API credentials (same as fetch-mail).
+    """
+    db_path = Path(args.db) if args.db else None
+    folders = TurnFolders(db_path=db_path, game_id=args.game)
+
+    # Determine which turn to send
+    if args.turn:
+        turn_str = args.turn
+    else:
+        turn_str = folders.get_current_turn_str()
+
+    # Get all processed reports for the turn
+    processed = folders.list_processed(turn_str)
+    if not processed:
+        print(f"No processed reports found for turn {turn_str}.")
+        return
+
+    print(f"=== Send Turn Reports - Game {args.game}, Turn {turn_str} ===\n")
+
+    # Build the send list
+    send_list = []
+    for account_number, report_files in processed.items():
+        email = folders.get_email_for_account(account_number)
+        if not email:
+            print(f"  [{account_number}] WARNING: no email found, skipping")
+            continue
+        send_list.append((account_number, email, report_files))
+
+    if not send_list:
+        print("No players to send to.")
+        return
+
+    # Show what will be sent
+    print(f"  Reports to send: {len(send_list)} players\n")
+    for account_number, email, report_files in send_list:
+        file_list = ', '.join(f.name for f in report_files)
+        print(f"  {account_number} -> {email}")
+        print(f"    Files: {file_list}")
+    print()
+
+    if args.dry_run:
+        print("  (Dry run - no emails sent)")
+        return
+
+    # Only check Gmail deps when we're actually going to send
+    from engine.gmail import check_dependencies
+    ok, error_msg = check_dependencies()
+    if not ok:
+        print(f"Error: {error_msg}")
+        return
+
+    from engine.gmail import get_gmail_service, send_with_attachments
+
+    if not args.credentials:
+        print("Error: --credentials is required when sending (omit --dry-run, or provide credentials).")
+        return
+
+    credentials_path = Path(args.credentials)
+    token_path = Path(args.token)
+
+    if not credentials_path.exists():
+        print(f"Error: credentials file '{credentials_path}' not found.")
+        return
+
+    # Connect to Gmail
+    print("Connecting to Gmail...")
+    try:
+        service = get_gmail_service(credentials_path, token_path, port=args.port)
+    except Exception as e:
+        print(f"Error connecting to Gmail: {e}")
+        return
+
+    sent = 0
+    errors = 0
+
+    for account_number, email, report_files in send_list:
+        # Build subject and body
+        subject = f"Stellar Dominion - {args.game} Turn {turn_str} Reports"
+
+        body_lines = [
+            f"Stellar Dominion - Turn Reports",
+            f"=" * 32,
+            f"",
+            f"Game:   {args.game}",
+            f"Turn:   {turn_str}",
+            f"",
+            f"Your turn reports are attached ({len(report_files)} file{'s' if len(report_files) != 1 else ''}):",
+            f"",
+        ]
+        for f in report_files:
+            body_lines.append(f"  - {f.name}")
+        body_lines.append("")
+        body_lines.append("-- Stellar Dominion Game Engine")
+        body_text = "\n".join(body_lines)
+
+        try:
+            msg_id = send_with_attachments(
+                service, email, subject, body_text, report_files
+            )
+            print(f"  SENT to {email} ({len(report_files)} files) [{msg_id}]")
+            sent += 1
+        except Exception as e:
+            print(f"  ERROR sending to {email}: {e}")
+            errors += 1
+
+    print(f"\n  Summary: {sent} sent, {errors} errors")
+
+
+# ======================================================================
 # TURN STATUS
 # ======================================================================
 
@@ -1144,6 +1264,7 @@ Batch processing:
 Gmail integration (two-stage workflow):
   fetch-mail --credentials creds.json        Fetch from Gmail -> staging inbox
   process-inbox --inbox ./inbox              Validate and file all submissions
+  send-turns --credentials creds.json        Email turn reports to players
         """
     )
     parser.add_argument('--db', help='Database file path', default=None)
@@ -1272,6 +1393,21 @@ Gmail integration (two-stage workflow):
     sp.add_argument('--reply', action='store_true',
                     help='Send received acknowledgement reply to each sender')
 
+    # --- send-turns ---
+    sp = subparsers.add_parser('send-turns',
+                               help='Email processed turn reports to players via Gmail')
+    sp.add_argument('--credentials', default=None,
+                    help='Path to OAuth client secrets JSON (required unless --dry-run)')
+    sp.add_argument('--token', default='./token.json',
+                    help='Token cache path (default: ./token.json)')
+    sp.add_argument('--game', default='OMICRON101', help='Game ID')
+    sp.add_argument('--turn', default=None,
+                    help='Turn to send (default: current turn)')
+    sp.add_argument('--port', type=int, default=0,
+                    help='OAuth local server port (0 = auto)')
+    sp.add_argument('--dry-run', action='store_true',
+                    help='Show what would be sent without sending')
+
     args = parser.parse_args()
 
     if not args.command:
@@ -1297,6 +1433,7 @@ Gmail integration (two-stage workflow):
         'register-player': cmd_register_player,
         'process-inbox': cmd_process_inbox,
         'fetch-mail': cmd_fetch_mail,
+        'send-turns': cmd_send_turns,
     }
 
     if args.command in commands:

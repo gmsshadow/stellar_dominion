@@ -154,9 +154,9 @@ def init_db(db_path=None):
         game_id TEXT NOT NULL,
         owner_prefect_id INTEGER NOT NULL,
         name TEXT NOT NULL,
-        ship_class TEXT DEFAULT 'Scout',
-        design TEXT DEFAULT 'Explorer',
-        hull_type TEXT DEFAULT 'Normal Hull',
+        ship_class TEXT DEFAULT 'Trader',
+        design TEXT DEFAULT 'Light Trader MK I',
+        hull_type TEXT DEFAULT 'Commercial',
         hull_count INTEGER DEFAULT 50,
         hull_damage_pct REAL DEFAULT 0.0,
         grid_col TEXT NOT NULL,
@@ -198,11 +198,12 @@ def init_db(db_path=None):
         FOREIGN KEY (system_id) REFERENCES star_systems(system_id)
     );
 
-    -- Ship officers
+    -- Ship officers / crew
     CREATE TABLE IF NOT EXISTS officers (
         officer_id INTEGER PRIMARY KEY AUTOINCREMENT,
         ship_id INTEGER,
         base_id INTEGER,
+        crew_number INTEGER DEFAULT 1,
         name TEXT NOT NULL,
         rank TEXT DEFAULT 'Ensign',
         specialty TEXT DEFAULT 'General',

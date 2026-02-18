@@ -297,3 +297,51 @@ def send_reply(service, original_metadata: dict, reply_body: str) -> str:
     ).execute()
 
     return sent.get("id", "")
+
+
+def send_with_attachments(
+    service,
+    to_email: str,
+    subject: str,
+    body_text: str,
+    attachment_paths: List[Path],
+) -> str:
+    """
+    Send an email with text file attachments.
+    
+    to_email: recipient address
+    subject: email subject line
+    body_text: plain text body
+    attachment_paths: list of Path objects to attach
+    
+    Returns the sent message ID.
+    """
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+    from email.mime.base import MIMEBase
+    from email import encoders
+
+    msg = MIMEMultipart()
+    msg["To"] = to_email
+    msg["Subject"] = subject
+
+    # Body
+    msg.attach(MIMEText(body_text, "plain", "utf-8"))
+
+    # Attachments
+    for path in attachment_paths:
+        part = MIMEBase("text", "plain")
+        part.set_payload(path.read_bytes())
+        encoders.encode_base64(part)
+        part.add_header(
+            "Content-Disposition",
+            f'attachment; filename="{path.name}"',
+        )
+        msg.attach(part)
+
+    raw = base64.urlsafe_b64encode(msg.as_bytes()).decode("utf-8")
+    sent = service.users().messages().send(
+        userId="me", body={"raw": raw}
+    ).execute()
+
+    return sent.get("id", "")
