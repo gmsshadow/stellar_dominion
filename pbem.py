@@ -223,10 +223,10 @@ def cmd_run_turn(args):
     Resolve turn for all ships (or a specific ship).
     
     Flow:
-    1. Gather stored orders from database
-    2. Resolve each ship's orders sequentially
+    1. Gather stored orders from database for all ships
+    2. Resolve interleaved by TU cost (cheapest actions first across all ships)
     3. Generate ship and prefect reports
-    4. Store reports in processed/{turn}/{prefect_id}/
+    4. Store reports in processed/{turn}/{account_number}/
     """
     db_path = Path(args.db) if args.db else None
     resolver = TurnResolver(db_path, game_id=args.game)
@@ -262,22 +262,22 @@ def cmd_run_turn(args):
 
     print(f"=== Resolving Turn {turn_str} for game {args.game} ===\n")
 
+    # Phase 1: Gather all ships' orders
+    ship_orders_map = {}
+    ship_meta = {}  # display_name, account_number per ship
+
     for ship in ships:
         ship_id = ship['ship_id']
         prefect_id = ship['owner_prefect_id']
 
-        # Look up faction for display name
         prefect = conn.execute(
             "SELECT faction_id FROM prefects WHERE prefect_id = ?",
             (prefect_id,)
         ).fetchone()
         faction = get_faction(conn, prefect['faction_id']) if prefect else {'abbreviation': 'IND'}
         display_name = f"{faction['abbreviation']} {ship['name']}"
-
-        # Look up account number for this ship's owner
         account_number = folders.get_account_for_prefect(prefect_id)
 
-        # Get stored orders for this ship/turn
         stored_orders = conn.execute("""
             SELECT * FROM turn_orders 
             WHERE game_id = ? AND turn_year = ? AND turn_week = ?
@@ -289,7 +289,6 @@ def cmd_run_turn(args):
             print(f"  {display_name} ({ship_id}): No orders this turn.")
             continue
 
-        # Build orders list from stored orders
         order_list = []
         for so in stored_orders:
             params = json.loads(so['parameters']) if so['parameters'] else None
@@ -299,11 +298,28 @@ def cmd_run_turn(args):
                 'params': params,
             })
 
-        print(f"  Resolving {display_name} ({ship_id}) - {len(order_list)} orders...")
-        result = resolver.resolve_ship_turn(ship_id, order_list)
+        ship_orders_map[ship_id] = order_list
+        ship_meta[ship_id] = {
+            'display_name': display_name,
+            'account_number': account_number,
+        }
+        print(f"  {display_name} ({ship_id}): {len(order_list)} orders queued")
+
+    # Phase 2: Interleaved resolution (cheapest TU actions first)
+    if ship_orders_map:
+        print(f"\n  Resolving {len(ship_orders_map)} ships interleaved by TU cost...")
+        results = resolver.resolve_turn_interleaved(ship_orders_map)
+    else:
+        results = {}
+
+    # Phase 3: Generate reports and mark orders resolved
+    for ship_id, result in results.items():
+        meta = ship_meta[ship_id]
+        display_name = meta['display_name']
+        account_number = meta['account_number']
 
         if result.get('error'):
-            print(f"    Error: {result['error']}")
+            print(f"    Error for {display_name}: {result['error']}")
             continue
 
         # Mark stored orders as resolved
@@ -316,12 +332,9 @@ def cmd_run_turn(args):
 
         # Generate ship report
         report = generate_ship_report(result, db_path, args.game)
-
-        # Store in processed/{turn}/{account_number}/
         report_file = folders.store_ship_report(turn_str, account_number, ship_id, report)
         print(f"    Ship report:      {report_file}")
 
-        # Print to console if verbose
         if args.verbose:
             print()
             print(report)

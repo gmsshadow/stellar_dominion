@@ -5,6 +5,7 @@ Resolves orders for ships, deducting TU and updating game state.
 
 import random
 import hashlib
+import heapq
 from datetime import datetime
 from db.database import get_connection, get_faction
 from engine.maps.system_map import (
@@ -25,7 +26,7 @@ TU_COSTS = {
 
 
 class TurnResolver:
-    """Resolves a turn for a single ship."""
+    """Resolves turns for ships, supporting interleaved multi-ship resolution."""
 
     def __init__(self, db_path=None, game_id="OMICRON101"):
         self.db_path = db_path
@@ -34,6 +35,329 @@ class TurnResolver:
         self.log = []  # Turn execution log
         self.pending = []  # Failed orders carried forward
         self.contacts = []  # Contacts discovered during turn
+
+    def _commit_ship_position(self, state):
+        """Lightweight mid-turn position update so scans see current positions."""
+        self.conn.execute("""
+            UPDATE ships SET
+                grid_col = ?, grid_row = ?,
+                docked_at_base_id = ?, orbiting_body_id = ?
+            WHERE ship_id = ? AND game_id = ?
+        """, (
+            state['col'], state['row'],
+            state['docked_at'], state['orbiting'],
+            state['ship_id'], self.game_id
+        ))
+        self.conn.commit()
+
+    def _cmd_move_step(self, state, target_col, target_row):
+        """
+        Move exactly one square toward target.
+        Returns dict: moved (bool), finished (bool), step (col, row),
+                      orbit_msg (str), error_msg (str or None).
+        """
+        cost = TU_COSTS['MOVE']
+
+        # Already there
+        if state['col'] == target_col and state['row'] == target_row:
+            return {'moved': False, 'finished': True, 'already_there': True}
+
+        # Can't afford
+        if state['tu'] < cost:
+            return {'moved': False, 'finished': True, 'out_of_tu': True}
+
+        # Docked -- can't move
+        if state['docked_at']:
+            return {'moved': False, 'finished': True, 'blocked_docked': True}
+
+        # Leave orbit on first step
+        orbit_msg = ""
+        if state['orbiting']:
+            body = self.conn.execute(
+                "SELECT name FROM celestial_bodies WHERE body_id = ?",
+                (state['orbiting'],)
+            ).fetchone()
+            body_name = body['name'] if body else str(state['orbiting'])
+            orbit_msg = f"Leaving orbit of {body_name}.\n    "
+            state['orbiting'] = None
+
+        # Take one step
+        path = self._generate_path(
+            state['col'], state['row'], target_col, target_row
+        )
+        if not path:
+            return {'moved': False, 'finished': True, 'already_there': True}
+
+        step_col, step_row = path[0]
+        state['col'] = step_col
+        state['row'] = step_row
+        state['tu'] -= cost
+
+        reached = (step_col == target_col and step_row == target_row)
+        return {
+            'moved': True,
+            'finished': reached,
+            'step': (step_col, step_row),
+            'orbit_msg': orbit_msg,
+        }
+
+    def resolve_turn_interleaved(self, ship_orders_map):
+        """
+        Resolve all ships' orders interleaved by TU cost (priority queue).
+        
+        MOVE orders are broken into individual square steps (2 TU each)
+        so ships can see each other's positions mid-move. After every
+        action, the ship's position is committed to the database, making
+        it visible to other ships' scans.
+        
+        ship_orders_map: dict of {ship_id: [order_dicts]}
+        Returns: dict of {ship_id: turn_result_dict}
+        """
+        game = self.get_game()
+
+        # Per-ship state tracking
+        states = {}
+        logs = {}
+        pendings = {}
+        contacts_map = {}
+        rngs = {}
+        queues = {}
+        ship_rows = {}
+
+        # Move accumulators: track multi-step moves for combined log entries
+        # {ship_id: {target, tu_before, start_loc, waypoints, orbit_msg}}
+        move_acc = {}
+
+        for ship_id, orders in ship_orders_map.items():
+            ship = self.get_ship(ship_id)
+            if not ship:
+                continue
+
+            ship_rows[ship_id] = ship
+            seed_str = (f"{self.game_id}-{game['current_year']}."
+                        f"{game['current_week']}-{ship_id}")
+            seed = int(hashlib.md5(seed_str.encode()).hexdigest()[:8], 16)
+
+            states[ship_id] = {
+                'ship_id': ship_id,
+                'name': ship['name'],
+                'system_id': ship['system_id'],
+                'col': ship['grid_col'],
+                'row': ship['grid_row'],
+                'tu': ship['tu_per_turn'],
+                'docked_at': ship['docked_at_base_id'],
+                'orbiting': ship['orbiting_body_id'],
+                'start_col': ship['grid_col'],
+                'start_row': ship['grid_row'],
+                'start_tu': ship['tu_per_turn'],
+            }
+            logs[ship_id] = []
+            pendings[ship_id] = []
+            contacts_map[ship_id] = []
+            rngs[ship_id] = random.Random(seed)
+            queues[ship_id] = list(orders)
+
+        # Build initial priority queue: (completion_time, tiebreaker, ship_id)
+        heap = []
+        counter = 0
+        for ship_id in states:
+            if queues[ship_id]:
+                est = self._estimate_next_cost(states[ship_id], queues[ship_id][0])
+                heapq.heappush(heap, (est, counter, ship_id))
+                counter += 1
+
+        # === Main interleaved loop ===
+        while heap:
+            _, _, ship_id = heapq.heappop(heap)
+
+            if not queues[ship_id]:
+                continue
+
+            state = states[ship_id]
+            order = queues[ship_id][0]  # peek, don't pop yet
+
+            # Swap per-ship tracking into instance vars
+            self.log = logs[ship_id]
+            self.pending = pendings[ship_id]
+            self.contacts = contacts_map[ship_id]
+
+            if order['command'] == 'MOVE':
+                params = order['params']
+                target_col = params['col']
+                target_row = params['row']
+                target_str = f"{target_col}{target_row:02d}"
+
+                # Start a new move accumulator if needed
+                if ship_id not in move_acc:
+                    move_acc[ship_id] = {
+                        'target_col': target_col,
+                        'target_row': target_row,
+                        'tu_before': state['tu'],
+                        'waypoints': [f"{state['col']}{state['row']:02d}"],
+                        'orbit_msg': '',
+                    }
+
+                acc = move_acc[ship_id]
+                step_result = self._cmd_move_step(state, target_col, target_row)
+
+                if step_result.get('orbit_msg'):
+                    acc['orbit_msg'] = step_result['orbit_msg']
+
+                if step_result['moved']:
+                    sc, sr = step_result['step']
+                    acc['waypoints'].append(f"{sc}{sr:02d}")
+                    self._commit_ship_position(state)
+
+                if step_result['finished']:
+                    # Pop the order, flush accumulator to log
+                    queues[ship_id].pop(0)
+                    log_entry = self._build_move_log_entry(
+                        acc, state, step_result, pendings[ship_id]
+                    )
+                    logs[ship_id].append(log_entry)
+                    del move_acc[ship_id]
+                # else: leave order in queue for next step
+
+            else:
+                # Non-MOVE: execute atomically, pop from queue
+                queues[ship_id].pop(0)
+                result = self._execute_order(state, order, rngs[ship_id])
+                logs[ship_id].append(result)
+                self._commit_ship_position(state)
+
+            # Re-insert into heap if more work remains
+            if queues[ship_id]:
+                elapsed = state['start_tu'] - state['tu']
+                next_est = self._estimate_next_cost(state, queues[ship_id][0])
+                heapq.heappush(heap, (elapsed + next_est, counter, ship_id))
+                counter += 1
+            elif ship_id in move_acc:
+                # MOVE still in progress (shouldn't happen since finished
+                # pops, but guard against edge cases)
+                elapsed = state['start_tu'] - state['tu']
+                heapq.heappush(heap, (elapsed + TU_COSTS['MOVE'], counter, ship_id))
+                counter += 1
+
+        # Flush any interrupted moves (ran out of TU mid-move)
+        for ship_id, acc in list(move_acc.items()):
+            state = states[ship_id]
+            self.pending = pendings[ship_id]
+            log_entry = self._build_move_log_entry(
+                acc, state, {'moved': False, 'finished': True, 'out_of_tu': True},
+                pendings[ship_id]
+            )
+            logs[ship_id].append(log_entry)
+
+        # === Commit final states and build results ===
+        results = {}
+        for ship_id in states:
+            state = states[ship_id]
+            ship = ship_rows[ship_id]
+
+            self.log = logs[ship_id]
+            self.pending = pendings[ship_id]
+            self.contacts = contacts_map[ship_id]
+
+            self._commit_ship_state(state)
+            self._update_contacts(ship['owner_prefect_id'], state['system_id'])
+
+            seed_str = (f"{self.game_id}-{game['current_year']}."
+                        f"{game['current_week']}-{ship_id}")
+
+            results[ship_id] = {
+                'ship_id': ship_id,
+                'ship_name': ship['name'],
+                'system_id': state['system_id'],
+                'start_col': state['start_col'],
+                'start_row': state['start_row'],
+                'start_tu': state['start_tu'],
+                'start_orbiting': ship['orbiting_body_id'],
+                'start_docked': ship['docked_at_base_id'],
+                'final_col': state['col'],
+                'final_row': state['row'],
+                'final_tu': state['tu'],
+                'docked_at': state['docked_at'],
+                'orbiting': state['orbiting'],
+                'log': logs[ship_id],
+                'pending': pendings[ship_id],
+                'contacts': contacts_map[ship_id],
+                'rng_seed': seed_str,
+                'turn_year': game['current_year'],
+                'turn_week': game['current_week'],
+            }
+
+        return results
+
+    def _estimate_next_cost(self, state, order):
+        """Estimate TU cost for priority ordering. MOVE = one step (2 TU)."""
+        cmd = order['command']
+        params = order['params']
+
+        if cmd == 'MOVE':
+            # In interleaved mode, MOVE is per-square
+            return TU_COSTS['MOVE']
+        elif cmd == 'WAIT':
+            if isinstance(params, (int, float)):
+                return min(int(params), state['tu'])
+            return state['tu']
+        elif cmd in TU_COSTS:
+            return TU_COSTS[cmd]
+        return 0
+
+    def _build_move_log_entry(self, acc, state, final_step, pendings_list):
+        """Build a combined MOVE log entry from accumulated steps."""
+        target_col = acc['target_col']
+        target_row = acc['target_row']
+        target_str = f"{target_col}{target_row:02d}"
+        waypoints = acc['waypoints']
+        tu_before = acc['tu_before']
+        orbit_msg = acc['orbit_msg']
+        steps_taken = len(waypoints) - 1  # first entry is start position
+        total_cost = steps_taken * TU_COSTS['MOVE']
+
+        reached = (state['col'] == target_col and state['row'] == target_row)
+        final_loc = f"{state['col']}{state['row']:02d}"
+
+        if final_step.get('already_there'):
+            msg = f"Already at {target_str}."
+        elif final_step.get('blocked_docked'):
+            msg = "Cannot move while docked. UNDOCK first. Order queued as pending."
+        elif steps_taken == 0 and final_step.get('out_of_tu'):
+            msg = (f"Insufficient TU for move ({state['tu']} < "
+                   f"{TU_COSTS['MOVE']}). Order queued as pending.")
+            pendings_list.append({
+                'command': 'MOVE', 'params': target_str,
+                'reason': 'Insufficient TU'
+            })
+        elif reached:
+            if steps_taken <= 4:
+                path_str = " -> ".join(waypoints)
+            else:
+                path_str = f"{waypoints[0]} -> {waypoints[1]} -> ... -> {waypoints[-1]}"
+            msg = f"{orbit_msg}Moved {steps_taken} squares to {final_loc}. ({path_str})"
+        else:
+            # Partial move
+            if steps_taken <= 4:
+                path_str = " -> ".join(waypoints)
+            else:
+                path_str = f"{waypoints[0]} -> {waypoints[1]} -> ... -> {waypoints[-1]}"
+            remaining = grid_distance(state['col'], state['row'], target_col, target_row)
+            msg = (f"{orbit_msg}Moved {steps_taken} squares toward {target_str}, "
+                   f"stopped at {final_loc} ({remaining} squares remaining). ({path_str})")
+            pendings_list.append({
+                'command': 'MOVE', 'params': target_str,
+                'reason': f"Ran out of TU at {final_loc}"
+            })
+
+        return {
+            'command': 'MOVE', 'params': target_str,
+            'tu_before': tu_before, 'tu_after': state['tu'],
+            'tu_cost': total_cost,
+            'success': reached,
+            'message': msg,
+            'steps': steps_taken,
+            'waypoints': waypoints,
+        }
 
     def get_game(self):
         """Get current game state."""
