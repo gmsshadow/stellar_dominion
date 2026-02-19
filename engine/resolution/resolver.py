@@ -1390,14 +1390,17 @@ class TurnResolver:
 
         role_labels = {'produces': 'Produces', 'average': 'Standard', 'demands': 'In Demand'}
         lines = [f"Market at {base['name']} ({base_id}):"]
-        lines.append(f"    {'Item':<26} {'ID':>4} {'Buy':>6} {'Sell':>6} {'Stock':>5} {'Demand':>6} {'Status'}")
-        lines.append(f"    {'-'*26} {'----':>4} {'------':>6} {'------':>6} {'-----':>5} {'------':>6} {'--------'}")
+        # Format: Item(28) ID(4) Buy(7) Sell(7) Stock(6) Demand(7) Status
+        lines.append(f"    {'Item':<28} {'ID':>3}  {'Buy':>7}  {'Sell':>7}  {'Stock':>5}  {'Demand':>6}  Status")
+        lines.append(f"    {'-'*28} {'---':>3}  {'-------':>7}  {'-------':>7}  {'-----':>5}  {'------':>6}  ---------")
         for p in prices:
             role_str = role_labels.get(p['trade_role'], '')
+            buy_str = f"{p['buy_price']} cr"
+            sell_str = f"{p['sell_price']} cr"
             lines.append(
-                f"    {p['item_name']:<26} {p['item_id']:>4} "
-                f"{p['buy_price']:>5} cr {p['sell_price']:>5} cr "
-                f"{p['stock']:>5} {p['demand']:>6} "
+                f"    {p['item_name']:<28} {p['item_id']:>3}  "
+                f"{buy_str:>7}  {sell_str:>7}  "
+                f"{p['stock']:>5}  {p['demand']:>6}  "
                 f"{role_str}"
             )
         lines.append(f"    {refresh_msg}")
