@@ -164,8 +164,11 @@ def parse_yaml_orders(yaml_content):
                         'params': parsed_params,
                     })
         elif isinstance(order, str):
-            # Simple command with no params like "UNDOCK"
-            command, parsed_params, error = parse_order(order, None)
+            # String item: could be "UNDOCK" or "GETMARKET 45687590" or "BUY 45687590 102 1"
+            parts = order.strip().split(None, 1)
+            cmd_str = parts[0]
+            params_str = parts[1] if len(parts) > 1 else None
+            command, parsed_params, error = parse_order(cmd_str, params_str)
             if error:
                 result['errors'].append(f"Order {i + 1}: {error}")
             else:

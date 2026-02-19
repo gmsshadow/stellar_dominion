@@ -1,4 +1,4 @@
-# Stellar Dominion -- PBEM Strategy Game Engine v1.0
+# Stellar Dominion -- PBEM Strategy Game Engine v1.2
 
 A play-by-email (PBEM) grand strategy game engine inspired by Phoenix-BSE style games.
 Deterministic turn resolution, ASCII reports, persistent SQLite universe.
@@ -167,17 +167,17 @@ folder, looks up the email from the database, and sends everything in the folder
 
 The demo game creates the **Omicron** star system -- a 25x25 grid:
 
-| Object              | Type       | Location | Notes                      |
-|---------------------|------------|----------|----------------------------|
-| Omicron Prime       | Star       | M13      | Central star               |
-| Orion (247985)      | Planet     | H04      | 0.9g, Standard atmosphere  |
-| Tartarus (301442)   | Planet     | R08      | 1.2g, Dense atmosphere     |
-| Leviathan (155230)  | Gas Giant  | E18      | 2.5g, Hydrogen             |
-| Callyx (88341)      | Moon       | F19      | Moon of Leviathan, 0.3g    |
-| Meridian (412003)   | Planet     | T20      | 0.7g, Thin atmosphere      |
-| Citadel Station     | Starbase   | H04      | Market, 5 docking slots    |
-| Tartarus Depot      | Outpost    | R08      | Market, 3 docking slots    |
-| Meridian Waystation | Outpost    | T20      | Market, 3 docking slots    |
+| Object              | Type       | Location | Notes                              |
+|---------------------|------------|----------|------------------------------------|
+| Omicron Prime       | Star       | M13      | Central star                       |
+| Orion (247985)      | Planet     | H04      | 0.9g, Standard atmosphere          |
+| Tartarus (301442)   | Planet     | R08      | 1.2g, Dense atmosphere             |
+| Leviathan (155230)  | Gas Giant  | E18      | 2.5g, Hydrogen                     |
+| Callyx (88341)      | Moon       | F19      | Moon of Leviathan, 0.3g            |
+| Meridian (412003)   | Planet     | T20      | 0.7g, Thin atmosphere              |
+| Citadel Station     | Starbase   | H04      | Produces Comp Cores, demands Metals |
+| Tartarus Depot      | Outpost    | R08      | Produces Metals, demands Food       |
+| Meridian Waystation | Outpost    | T20      | Produces Food, demands Comp Cores   |
 
 ### Map Symbols
 ```
@@ -191,6 +191,7 @@ O  Planet        o  Moon            G  Gas Giant
 ### YAML (preferred)
 ```yaml
 game: OMICRON101
+account: 35846634
 ship: 12345678
 orders:
   - WAIT: 50
@@ -199,11 +200,15 @@ orders:
   - MOVE: H04
   - ORBIT: 247985
   - DOCK: 45687590
+  - GETMARKET: 45687590
+  - BUY: "45687590 101 20"
+  - SELL: "45687590 103 10"
 ```
 
 ### Plain Text
 ```
 GAME OMICRON101
+ACCOUNT 35846634
 SHIP 12345678
 WAIT 50
 MOVE M13
@@ -211,9 +216,14 @@ LOCATIONSCAN
 MOVE H04
 ORBIT 247985
 DOCK 45687590
+GETMARKET 45687590
+BUY 45687590 101 20
+SELL 45687590 103 10
 ```
 
-## Supported Commands (v1)
+## Supported Commands (v1.2)
+
+### Movement & Scanning
 
 | Command          | TU Cost | Description                      |
 |------------------|---------|----------------------------------|
@@ -222,17 +232,41 @@ DOCK 45687590
 | `LOCATIONSCAN`   | 20      | Scan nearby cells for objects    |
 | `SYSTEMSCAN`     | 20      | Produce full system ASCII map    |
 | `ORBIT {bodyId}` | 10      | Enter orbit of a celestial body  |
-| `DOCK {baseId}`  | 30      | Dock at a starbase (must ORBIT first if base is in orbit) |
+| `DOCK {baseId}`  | 30      | Dock at a starbase (must be at same location) |
 | `UNDOCK`          | 10      | Leave docked starbase            |
+
+### Trading (must be docked)
+
+| Command                          | TU Cost | Description                      |
+|----------------------------------|---------|----------------------------------|
+| `GETMARKET {baseId}`             | 0       | View buy/sell prices, stock, and demand. Works docked or in orbit. |
+| `BUY {baseId} {itemId} {qty}`   | 0       | Buy items from the base market   |
+| `SELL {baseId} {itemId} {qty}`   | 0       | Sell items to the base market    |
+
+Trade item IDs: `101` Precious Metals, `102` Advanced Computer Cores, `103` Food Supplies.
+
+In YAML, trade parameters are passed as a quoted string:
+```yaml
+- BUY: "45687590 101 20"
+- SELL: "45687590 103 10"
+```
 
 ## Turn Resolution Rules
 
 - Each ship starts each turn with a fixed TU allowance (default: 300)
-- Orders execute **sequentially** in the order listed
+- Orders are resolved **interleaved** across all ships using a priority queue
+- The ship whose next action completes earliest goes first (Phoenix BSE-style)
+- MOVE orders are broken into **per-square steps** (2 TU each), so ships can
+  see each other mid-move -- a scan will detect ships at their current position,
+  not just their starting or ending locations
+- Ship positions are **committed to the database after every action**, making
+  them visible to other ships' scans in real time during the turn
 - If a ship has insufficient TU, the order is skipped and added to **pending**
 - Failed orders (wrong location, etc.) are logged and added to pending
 - Failed orders do **not** deduct TU
 - Resolution is **deterministic** using a seeded RNG
+- Movement costs are per-ship (currently 2 TU/square for all ships, but the
+  engine supports variable speeds for future ship designs)
 
 ## Turn Number Format
 
@@ -434,10 +468,11 @@ re-authenticate.
 Ship turn reports include:
 - **Between Turn Report** -- passive events between turns
 - **Turn Report** -- order-by-order execution log with TU tracking
+  (includes GETMARKET output, BUY/SELL confirmations with prices and quantities)
 - **Command Report** -- ship identity, faction, efficiency, TU remaining
-- **Navigation Report** -- current location, docked/orbiting status
+- **Navigation Report** -- current location, docked/orbiting status, cargo capacity
 - **Crew Report** -- officers and crew complement
-- **Cargo Report** -- cargo hold contents
+- **Cargo Report** -- cargo hold contents with per-item MU breakdown
 - **Space Combat Report** -- combat status (placeholder for v1)
 - **Installed Items** -- ship modules and equipment
 - **Contacts** -- known objects in the system
@@ -465,7 +500,7 @@ Every player has one prefect that:
 ### Credits
 - Starting amount: 10,000
 - Game owner can adjust via `edit-credits`
-- Will be used for trading and base operations (future)
+- Used for buying and selling trade goods at base markets
 
 ### Information Asymmetry
 - Players only see what their ships scan
@@ -473,12 +508,79 @@ Every player has one prefect that:
 - SYSTEMSCAN produces a full system map
 - Contact information persists between turns
 
+## Trading Economy
+
+Starbases have markets where players can buy and sell trade goods. The economy
+is designed around circular trade routes where buying cheap at one base and
+selling at another is profitable.
+
+### Trade Goods
+
+| ID  | Item                    | Base Price | MU/unit |
+|-----|-------------------------|------------|---------|
+| 101 | Precious Metals         | 20 cr      | 5       |
+| 102 | Advanced Computer Cores | 50 cr      | 2       |
+| 103 | Food Supplies           | 30 cr      | 3       |
+
+### Base Specialisation
+
+Each base permanently produces one item (75% of average price), trades one at
+average price, and demands one (150% of average price). This creates profitable
+routes between any pair of bases:
+
+| Base                | Produces (cheap)          | Average            | Demands (expensive)       |
+|---------------------|---------------------------|--------------------|---------------------------|
+| Citadel Station     | Advanced Computer Cores   | Food Supplies      | Precious Metals           |
+| Tartarus Depot      | Precious Metals           | Advanced Comp Cores| Food Supplies             |
+| Meridian Waystation | Food Supplies             | Precious Metals    | Advanced Computer Cores   |
+
+### Price Fluctuation
+
+Each market cycle, a weekly average is generated per item (base price ±5%).
+The base's role modifier is then applied (0.75× / 1.0× / 1.5×), and a ±3%
+buy/sell spread ensures you always lose money buying and reselling at the same
+base. Prices are deterministic per cycle (seeded RNG).
+
+### Market Cycles (4 weeks)
+
+Markets refresh every 4 weeks. Prices, stock, and demand are generated at the
+start of each cycle and **persist across turns** within the cycle. Stock
+depletes as players buy, demand depletes as players sell. The GETMARKET command
+shows a countdown: "3 weeks to market refresh" or "Market refreshes next week."
+
+This means market intelligence stays useful for several turns -- if you scan
+a market on week 1 of a cycle, those prices are still valid on week 3. But
+the stock may have been bought out by other players.
+
+### Stock & Demand Limits
+
+Bases have finite quantities that vary by role (±15% fluctuation per cycle):
+
+| Role     | Stock (units to sell) | Demand (units to buy) |
+|----------|-----------------------|-----------------------|
+| Produces | ~204-276              | ~51-69                |
+| Average  | ~102-138              | ~102-138              |
+| Demands  | ~51-69                | ~204-276              |
+
+If you request more than available, the order is **capped** to what's available
+(not rejected). The report tells you: "(only 56 in stock, requested 100)".
+Once stock or demand hits zero, further trades of that type fail until the next
+cycle.
+
+### Cargo Capacity
+
+Ships have a cargo hold measured in Mass Units (MU). The starting Light Trader
+MK I has 500 MU capacity across 5 Cargo Hold modules. Each trade good has a
+per-unit MU cost, so heavier goods (Precious Metals at 5 MU) fill up faster
+than lighter ones (Advanced Computer Cores at 2 MU).
+
 ## Future Roadmap
 
-- [ ] Email ingest (IMAP) and send (SMTP)
+- [x] Email ingest (Gmail API) and send (Gmail API)
+- [x] Trading between bases (buy/sell cargo with market cycles)
+- [x] Interleaved turn resolution (Phoenix BSE-style priority queue)
 - [ ] Inter-system jump travel
 - [ ] Combat system (naval, ground, boarding)
-- [ ] Trading between bases (buy/sell cargo)
 - [ ] Base complex management and production
 - [ ] Crew wages and morale
 - [ ] Faction diplomacy and shared knowledge

@@ -336,7 +336,7 @@ def init_db(db_path=None):
     return conn
 
 
-CURRENT_SCHEMA_VERSION = 1
+CURRENT_SCHEMA_VERSION = 2
 
 
 def migrate_db(db_path=None):
@@ -373,13 +373,20 @@ def migrate_db(db_path=None):
         print(f"  Migration: v0 -> v1 (added player status, factions, prefect faction_id)")
         version = 1
 
+    if version < 2:
+        _migrate_v1_to_v2(conn)
+        conn.execute("UPDATE games SET schema_version = 2")
+        conn.commit()
+        print(f"  Migration: v1 -> v2 (added trade system: trade_goods, base_trade_config, market_prices)")
+        version = 2
+
     # Future migrations slot in here:
-    # if version < 2:
-    #     _migrate_v1_to_v2(conn)
-    #     conn.execute("UPDATE games SET schema_version = 2")
+    # if version < 3:
+    #     _migrate_v2_to_v3(conn)
+    #     conn.execute("UPDATE games SET schema_version = 3")
     #     conn.commit()
-    #     print(f"  Migration: v1 -> v2 (description)")
-    #     version = 2
+    #     print(f"  Migration: v2 -> v3 (description)")
+    #     version = 3
 
     conn.close()
 
@@ -412,3 +419,86 @@ def _migrate_v0_to_v1(conn):
         conn.execute("UPDATE prefects SET faction_id = 11 WHERE faction_id IS NULL")
 
     conn.commit()
+
+
+def _migrate_v1_to_v2(conn):
+    """Migration from v1 to v2: add trade system."""
+    from engine.game_setup import generate_market_prices, get_market_cycle_start
+
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS trade_goods (
+            item_id INTEGER PRIMARY KEY,
+            game_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            base_price INTEGER NOT NULL,
+            mass_per_unit INTEGER NOT NULL,
+            FOREIGN KEY (game_id) REFERENCES games(game_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS base_trade_config (
+            config_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            base_id INTEGER NOT NULL,
+            game_id TEXT NOT NULL,
+            item_id INTEGER NOT NULL,
+            trade_role TEXT NOT NULL,
+            FOREIGN KEY (base_id) REFERENCES starbases(base_id),
+            FOREIGN KEY (item_id) REFERENCES trade_goods(item_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS market_prices (
+            price_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            game_id TEXT NOT NULL,
+            base_id INTEGER NOT NULL,
+            item_id INTEGER NOT NULL,
+            turn_year INTEGER NOT NULL,
+            turn_week INTEGER NOT NULL,
+            buy_price INTEGER NOT NULL,
+            sell_price INTEGER NOT NULL,
+            stock INTEGER NOT NULL DEFAULT 0,
+            demand INTEGER NOT NULL DEFAULT 0,
+            FOREIGN KEY (game_id) REFERENCES games(game_id)
+        );
+    """)
+
+    # Get all games and populate trade data for each
+    games = conn.execute("SELECT * FROM games").fetchall()
+    for game in games:
+        game_id = game['game_id']
+
+        # Trade goods
+        for item in [
+            (101, game_id, 'Precious Metals', 20, 5),
+            (102, game_id, 'Advanced Computer Cores', 50, 2),
+            (103, game_id, 'Food Supplies', 30, 3),
+        ]:
+            conn.execute("""
+                INSERT OR IGNORE INTO trade_goods (item_id, game_id, name, base_price, mass_per_unit)
+                VALUES (?, ?, ?, ?, ?)
+            """, item)
+
+        # Base trade config (standard layout for existing bases)
+        bases = conn.execute(
+            "SELECT base_id FROM starbases WHERE game_id = ? ORDER BY base_id",
+            (game_id,)
+        ).fetchall()
+
+        # Rotate roles across bases: each base produces one, demands one, averages one
+        role_rotations = [
+            [('produces', 101), ('average', 102), ('demands', 103)],
+            [('demands', 101), ('produces', 102), ('average', 103)],
+            [('average', 101), ('demands', 102), ('produces', 103)],
+        ]
+        for i, base in enumerate(bases):
+            roles = role_rotations[i % 3]
+            for role, item_id in roles:
+                conn.execute("""
+                    INSERT INTO base_trade_config (base_id, game_id, item_id, trade_role)
+                    VALUES (?, ?, ?, ?)
+                """, (base['base_id'], game_id, item_id, role))
+
+        conn.commit()
+
+        # Generate market prices for current cycle
+        generate_market_prices(conn, game_id,
+                               game['current_year'],
+                               game['current_week'])
