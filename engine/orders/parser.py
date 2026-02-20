@@ -17,6 +17,9 @@ VALID_COMMANDS = {
     'ORBIT': {'params': 'body_id', 'description': 'Orbit a celestial body'},
     'DOCK': {'params': 'base_id', 'description': 'Dock at a starbase'},
     'UNDOCK': {'params': 'none', 'description': 'Leave docked starbase'},
+    'LAND': {'params': 'land_order', 'description': 'Land on a planet or moon at coordinates'},
+    'TAKEOFF': {'params': 'none', 'description': 'Take off from planet surface to orbit'},
+    'SURFACESCAN': {'params': 'none', 'description': 'Scan the surface of the planet you are landed on'},
     'BUY': {'params': 'trade_order', 'description': 'Buy items from base market'},
     'SELL': {'params': 'trade_order', 'description': 'Sell items to base market'},
     'GETMARKET': {'params': 'base_id', 'description': 'View base market prices'},
@@ -107,6 +110,50 @@ def parse_order(command_str, params):
             except ValueError:
                 return command, params, f"{command}: expected numeric values, got '{params}'"
         return command, params, f"{command}: expected trade parameters (base_id item_id quantity)"
+
+    elif spec['params'] == 'land_order':
+        # LAND: needs body_id x y
+        # YAML: {body: 247985, x: 5, y: 10} or "247985 5 10"
+        # Text: LAND 247985 5 10
+        if isinstance(params, dict):
+            try:
+                body_id = int(params.get('body', params.get('body_id', 0)))
+                x = int(params.get('x', 1))
+                y = int(params.get('y', 1))
+                if body_id <= 0:
+                    return command, params, f"{command}: body_id must be a positive integer"
+                if not (1 <= x <= 31) or not (1 <= y <= 31):
+                    return command, params, f"{command}: coordinates must be 1-31, got ({x},{y})"
+                return command, {'body_id': body_id, 'x': x, 'y': y}, None
+            except (ValueError, TypeError):
+                return command, params, f"{command}: invalid land parameters"
+        elif isinstance(params, (int, float)):
+            # Just a body_id with no coordinates - default to (1,1)
+            return command, {'body_id': int(params), 'x': 1, 'y': 1}, None
+        elif isinstance(params, str):
+            parts = params.strip().split()
+            if len(parts) == 1:
+                # Just body_id, default coords
+                try:
+                    body_id = int(parts[0])
+                    return command, {'body_id': body_id, 'x': 1, 'y': 1}, None
+                except ValueError:
+                    return command, params, f"{command}: expected numeric body_id, got '{params}'"
+            elif len(parts) == 3:
+                try:
+                    body_id = int(parts[0])
+                    x = int(parts[1])
+                    y = int(parts[2])
+                    if body_id <= 0:
+                        return command, params, f"{command}: body_id must be a positive integer"
+                    if not (1 <= x <= 31) or not (1 <= y <= 31):
+                        return command, params, f"{command}: coordinates must be 1-31, got ({x},{y})"
+                    return command, {'body_id': body_id, 'x': x, 'y': y}, None
+                except ValueError:
+                    return command, params, f"{command}: expected 'body_id x y', got '{params}'"
+            else:
+                return command, params, f"{command}: expected 'body_id x y', got '{params}'"
+        return command, params, f"{command}: expected land parameters (body_id x y)"
 
     return command, params, f"Unknown parameter type for {command}"
 

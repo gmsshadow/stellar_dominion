@@ -22,6 +22,9 @@ TU_COSTS = {
     'ORBIT': 10,
     'DOCK': 30,
     'UNDOCK': 10,
+    'LAND': 20,
+    'TAKEOFF': 20,
+    'SURFACESCAN': 20,
     'BUY': 0,          # trading while docked is free
     'SELL': 0,
     'GETMARKET': 0,
@@ -44,11 +47,13 @@ class TurnResolver:
         self.conn.execute("""
             UPDATE ships SET
                 grid_col = ?, grid_row = ?,
-                docked_at_base_id = ?, orbiting_body_id = ?
+                docked_at_base_id = ?, orbiting_body_id = ?,
+                landed_body_id = ?, landed_x = ?, landed_y = ?
             WHERE ship_id = ? AND game_id = ?
         """, (
             state['col'], state['row'],
             state['docked_at'], state['orbiting'],
+            state['landed'], state['landed_x'], state['landed_y'],
             state['ship_id'], self.game_id
         ))
         self.conn.commit()
@@ -72,6 +77,10 @@ class TurnResolver:
         # Docked -- can't move
         if state['docked_at']:
             return {'moved': False, 'finished': True, 'blocked_docked': True}
+
+        # Landed -- can't move
+        if state['landed']:
+            return {'moved': False, 'finished': True, 'blocked_landed': True}
 
         # Leave orbit on first step
         orbit_msg = ""
@@ -151,6 +160,9 @@ class TurnResolver:
                 'move_cost': TU_COSTS['MOVE'],  # per-ship; will vary by engines
                 'docked_at': ship['docked_at_base_id'],
                 'orbiting': ship['orbiting_body_id'],
+                'landed': ship['landed_body_id'] if 'landed_body_id' in ship.keys() else None,
+                'landed_x': ship['landed_x'] if 'landed_x' in ship.keys() else 1,
+                'landed_y': ship['landed_y'] if 'landed_y' in ship.keys() else 1,
                 'start_col': ship['grid_col'],
                 'start_row': ship['grid_row'],
                 'start_tu': ship['tu_per_turn'],
@@ -302,11 +314,17 @@ class TurnResolver:
                 'start_tu': state['start_tu'],
                 'start_orbiting': ship['orbiting_body_id'],
                 'start_docked': ship['docked_at_base_id'],
+                'start_landed': ship['landed_body_id'] if 'landed_body_id' in ship.keys() else None,
+                'start_landed_x': ship['landed_x'] if 'landed_x' in ship.keys() else 1,
+                'start_landed_y': ship['landed_y'] if 'landed_y' in ship.keys() else 1,
                 'final_col': state['col'],
                 'final_row': state['row'],
                 'final_tu': state['tu'],
                 'docked_at': state['docked_at'],
                 'orbiting': state['orbiting'],
+                'landed': state['landed'],
+                'landed_x': state['landed_x'],
+                'landed_y': state['landed_y'],
                 'log': logs[ship_id],
                 'pending': pendings[ship_id],
                 'contacts': contacts_map[ship_id],
@@ -350,6 +368,8 @@ class TurnResolver:
             msg = f"Already at {target_str}."
         elif final_step.get('blocked_docked'):
             msg = "Cannot move while docked. UNDOCK first. Order queued as pending."
+        elif final_step.get('blocked_landed'):
+            msg = "Cannot move while landed. TAKEOFF first. Order queued as pending."
         elif steps_taken == 0 and final_step.get('out_of_tu'):
             msg = (f"Insufficient TU for move ({state['tu']} < "
                    f"{state['move_cost']}). Order queued as pending.")
@@ -515,6 +535,9 @@ class TurnResolver:
             'move_cost': TU_COSTS['MOVE'],  # per-ship; will vary by engines
             'docked_at': ship['docked_at_base_id'],
             'orbiting': ship['orbiting_body_id'],
+            'landed': ship['landed_body_id'] if 'landed_body_id' in ship.keys() else None,
+            'landed_x': ship['landed_x'] if 'landed_x' in ship.keys() else 1,
+            'landed_y': ship['landed_y'] if 'landed_y' in ship.keys() else 1,
             'start_col': ship['grid_col'],
             'start_row': ship['grid_row'],
             'start_tu': ship['tu_per_turn'],
@@ -545,11 +568,17 @@ class TurnResolver:
             'start_tu': state['start_tu'],
             'start_orbiting': ship['orbiting_body_id'],
             'start_docked': ship['docked_at_base_id'],
+            'start_landed': ship['landed_body_id'] if 'landed_body_id' in ship.keys() else None,
+            'start_landed_x': ship['landed_x'] if 'landed_x' in ship.keys() else 1,
+            'start_landed_y': ship['landed_y'] if 'landed_y' in ship.keys() else 1,
             'final_col': state['col'],
             'final_row': state['row'],
             'final_tu': state['tu'],
             'docked_at': state['docked_at'],
             'orbiting': state['orbiting'],
+            'landed': state['landed'],
+            'landed_x': state['landed_x'],
+            'landed_y': state['landed_y'],
             'log': self.log,
             'pending': self.pending,
             'contacts': self.contacts,
@@ -578,6 +607,12 @@ class TurnResolver:
             return self._cmd_dock(state, params)
         elif cmd == 'UNDOCK':
             return self._cmd_undock(state)
+        elif cmd == 'LAND':
+            return self._cmd_land(state, params)
+        elif cmd == 'TAKEOFF':
+            return self._cmd_takeoff(state)
+        elif cmd == 'SURFACESCAN':
+            return self._cmd_surfacescan(state)
         elif cmd == 'BUY':
             return self._cmd_buy(state, params)
         elif cmd == 'SELL':
@@ -1047,6 +1082,213 @@ class TurnResolver:
             'message': f"Undocked from {base_name} ({base_id})."
         }
 
+    def _cmd_land(self, state, params):
+        """LAND <body_id> <x> <y> - land on a planet or moon surface at coordinates."""
+        from engine.maps.surface_gen import get_or_generate_surface, TERRAIN_SYMBOLS
+        tu_before = state['tu']
+        cost = TU_COSTS['LAND']
+
+        body_id = params['body_id']
+        land_x = params['x']
+        land_y = params['y']
+        params_str = f"{body_id} {land_x} {land_y}"
+
+        # Must be orbiting the target body
+        if state['orbiting'] != body_id:
+            if state['landed']:
+                msg = "Cannot land: ship is already landed on a surface. TAKEOFF first."
+            elif state['docked_at']:
+                msg = f"Cannot land: ship is docked at a base. UNDOCK and ORBIT the body first."
+            else:
+                msg = f"Cannot land: ship must be orbiting body {body_id}. Use ORBIT first."
+            return {
+                'command': 'LAND', 'params': params_str,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': False,
+                'message': msg
+            }
+
+        # Look up the body
+        body = self.conn.execute(
+            "SELECT * FROM celestial_bodies WHERE body_id = ?", (body_id,)
+        ).fetchone()
+        if not body:
+            return {
+                'command': 'LAND', 'params': params_str,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': False,
+                'message': f"Cannot land: body {body_id} not found."
+            }
+
+        # Can't land on gas giants
+        if body['body_type'] == 'gas_giant':
+            return {
+                'command': 'LAND', 'params': params_str,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': False,
+                'message': f"Cannot land: {body['name']} is a gas giant."
+            }
+
+        # Validate coordinates
+        if not (1 <= land_x <= 31) or not (1 <= land_y <= 31):
+            return {
+                'command': 'LAND', 'params': params_str,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': False,
+                'message': f"Cannot land: coordinates ({land_x},{land_y}) out of range (1-31)."
+            }
+
+        # Check TU
+        if state['tu'] < cost:
+            self.pending.append({
+                'command': 'LAND', 'params': params_str,
+                'reason': 'Insufficient TU'
+            })
+            return {
+                'command': 'LAND', 'params': params_str,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': False,
+                'message': f"Insufficient TU to land ({state['tu']} < {cost}). Order queued as pending."
+            }
+
+        # Future: gravity check would go here
+        # ship_gravity_rating = state.get('gravity_rating', 1.5)
+        # if body['gravity'] > ship_gravity_rating:
+        #     return error...
+
+        # Generate/fetch surface to look up terrain at landing site
+        tiles = get_or_generate_surface(self.conn, body)
+        terrain_map = {(t[0], t[1]): t[2] for t in tiles}
+        terrain = terrain_map.get((land_x, land_y), 'Unknown')
+
+        # Execute landing
+        state['orbiting'] = None
+        state['landed'] = body_id
+        state['landed_x'] = land_x
+        state['landed_y'] = land_y
+        state['tu'] -= cost
+
+        gravity_str = f"{body['gravity']}g" if body['gravity'] else ""
+        return {
+            'command': 'LAND', 'params': params_str,
+            'tu_before': tu_before, 'tu_after': state['tu'],
+            'tu_cost': cost, 'success': True,
+            'message': (f"Landed on {body['body_type'].title()} {body['name']} ({body_id}) "
+                        f"[{gravity_str}] at ({land_x},{land_y}) - {terrain}.")
+        }
+
+    def _cmd_takeoff(self, state):
+        """TAKEOFF - lift off from planet surface, return to orbit."""
+        tu_before = state['tu']
+        cost = TU_COSTS['TAKEOFF']
+
+        if not state['landed']:
+            return {
+                'command': 'TAKEOFF', 'params': None,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': False,
+                'message': "Cannot take off: ship is not landed on any surface."
+            }
+
+        if state['tu'] < cost:
+            self.pending.append({
+                'command': 'TAKEOFF', 'params': None,
+                'reason': 'Insufficient TU'
+            })
+            return {
+                'command': 'TAKEOFF', 'params': None,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': False,
+                'message': f"Insufficient TU to take off ({state['tu']} < {cost}). Order queued as pending."
+            }
+
+        body_id = state['landed']
+        body = self.conn.execute(
+            "SELECT * FROM celestial_bodies WHERE body_id = ?", (body_id,)
+        ).fetchone()
+        body_name = body['name'] if body else str(body_id)
+
+        # Return to orbit around the body we were landed on
+        state['landed'] = None
+        state['orbiting'] = body_id
+        state['tu'] -= cost
+
+        return {
+            'command': 'TAKEOFF', 'params': None,
+            'tu_before': tu_before, 'tu_after': state['tu'],
+            'tu_cost': cost, 'success': True,
+            'message': f"Launched from {body_name} ({body_id}). Ship is now in orbit."
+        }
+
+    def _cmd_surfacescan(self, state):
+        """SURFACESCAN - produce a terrain map of the planet the ship is orbiting or landed on."""
+        from engine.maps.surface_gen import get_or_generate_surface, render_surface_map
+        tu_before = state['tu']
+        cost = TU_COSTS['SURFACESCAN']
+
+        # Determine which body to scan - landed takes priority, then orbiting
+        body_id = state['landed'] or state['orbiting']
+        if not body_id:
+            return {
+                'command': 'SURFACESCAN', 'params': None,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': False,
+                'message': "Cannot scan surface: ship must be orbiting or landed on a planet or moon."
+            }
+
+        if state['tu'] < cost:
+            self.pending.append({
+                'command': 'SURFACESCAN', 'params': None,
+                'reason': 'Insufficient TU'
+            })
+            return {
+                'command': 'SURFACESCAN', 'params': None,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': False,
+                'message': f"Insufficient TU for surface scan ({state['tu']} < {cost}). Order queued as pending."
+            }
+
+        body = self.conn.execute(
+            "SELECT * FROM celestial_bodies WHERE body_id = ?", (body_id,)
+        ).fetchone()
+        if not body:
+            return {
+                'command': 'SURFACESCAN', 'params': None,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': False,
+                'message': f"Cannot scan surface: body {body_id} not found."
+            }
+
+        state['tu'] -= cost
+
+        tiles = get_or_generate_surface(self.conn, body)
+        planetary_data = {
+            'gravity': body['gravity'],
+            'temperature': body['temperature'],
+            'atmosphere': body['atmosphere'],
+            'tectonic_activity': body['tectonic_activity'],
+            'hydrosphere': body['hydrosphere'],
+            'life': body['life'],
+        }
+
+        # Show ship position on map if landed
+        ship_pos = None
+        if state['landed']:
+            ship_pos = (state.get('landed_x', 1), state.get('landed_y', 1))
+
+        map_lines = render_surface_map(
+            tiles, body['name'], body_id, planetary_data, ship_pos=ship_pos
+        )
+        message = '\n'.join(f"    {line}" for line in map_lines)
+
+        scan_type = "landed on" if state['landed'] else "orbiting"
+        return {
+            'command': 'SURFACESCAN', 'params': None,
+            'tu_before': tu_before, 'tu_after': state['tu'],
+            'tu_cost': cost, 'success': True,
+            'message': message,
+        }
+
     def _cmd_buy(self, state, params):
         """BUY <base_id> <item_id> <quantity> - buy items from base market."""
         tu_before = state['tu']
@@ -1466,11 +1708,13 @@ class TurnResolver:
         self.conn.execute("""
             UPDATE ships SET
                 grid_col = ?, grid_row = ?, tu_remaining = ?,
-                docked_at_base_id = ?, orbiting_body_id = ?
+                docked_at_base_id = ?, orbiting_body_id = ?,
+                landed_body_id = ?, landed_x = ?, landed_y = ?
             WHERE ship_id = ? AND game_id = ?
         """, (
             state['col'], state['row'], state['tu'],
             state['docked_at'], state['orbiting'],
+            state['landed'], state['landed_x'], state['landed_y'],
             state['ship_id'], self.game_id
         ))
         self.conn.commit()

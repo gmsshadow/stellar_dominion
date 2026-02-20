@@ -177,18 +177,22 @@ def create_game(db_path=None, game_id="OMICRON101", game_name="Stellar Dominion 
     # CELESTIAL BODIES in Omicron System
     # =============================================
 
-    # Planet: Orion at H04
+    # Planet: Orion at H04 -- temperate, habitable, Earth-like
     c.execute("""
         INSERT INTO celestial_bodies 
-        (body_id, system_id, name, body_type, grid_col, grid_row, gravity, temperature, atmosphere, map_symbol)
-        VALUES (247985, 101, 'Orion', 'planet', 'H', 4, 0.9, 295, 'Standard', 'O')
+        (body_id, system_id, name, body_type, grid_col, grid_row, gravity, temperature, atmosphere, 
+         tectonic_activity, hydrosphere, life, map_symbol)
+        VALUES (247985, 101, 'Orion', 'planet', 'H', 4, 0.9, 295, 'Standard',
+                4, 65, 'Sentient', 'O')
     """)
 
-    # Planet: Tartarus at R08
+    # Planet: Tartarus at R08 -- hot, volcanic, dense atmosphere
     c.execute("""
         INSERT INTO celestial_bodies 
-        (body_id, system_id, name, body_type, grid_col, grid_row, gravity, temperature, atmosphere, map_symbol)
-        VALUES (301442, 101, 'Tartarus', 'planet', 'R', 8, 1.2, 340, 'Dense', 'O')
+        (body_id, system_id, name, body_type, grid_col, grid_row, gravity, temperature, atmosphere,
+         tectonic_activity, hydrosphere, life, map_symbol)
+        VALUES (301442, 101, 'Tartarus', 'planet', 'R', 8, 1.2, 340, 'Dense',
+                7, 15, 'Microbial', 'O')
     """)
 
     # Gas Giant: Leviathan at E18
@@ -198,18 +202,22 @@ def create_game(db_path=None, game_id="OMICRON101", game_name="Stellar Dominion 
         VALUES (155230, 101, 'Leviathan', 'gas_giant', 'E', 18, 2.5, 120, 'Hydrogen', 'G')
     """)
 
-    # Moon: Callyx at F19 (moon of Leviathan)
+    # Moon: Callyx at F19 (moon of Leviathan) -- cold, barren, icy
     c.execute("""
         INSERT INTO celestial_bodies 
-        (body_id, system_id, name, body_type, parent_body_id, grid_col, grid_row, gravity, temperature, atmosphere, map_symbol)
-        VALUES (88341, 101, 'Callyx', 'moon', 155230, 'F', 19, 0.3, 95, 'Thin', 'o')
+        (body_id, system_id, name, body_type, parent_body_id, grid_col, grid_row, gravity, temperature, atmosphere,
+         tectonic_activity, hydrosphere, life, map_symbol)
+        VALUES (88341, 101, 'Callyx', 'moon', 155230, 'F', 19, 0.3, 95, 'Thin',
+                1, 40, 'None', 'o')
     """)
 
-    # Planet: Meridian at T20
+    # Planet: Meridian at T20 -- cold, arid, thin atmosphere, sparse life
     c.execute("""
         INSERT INTO celestial_bodies 
-        (body_id, system_id, name, body_type, grid_col, grid_row, gravity, temperature, atmosphere, map_symbol)
-        VALUES (412003, 101, 'Meridian', 'planet', 'T', 20, 0.7, 210, 'Thin', 'O')
+        (body_id, system_id, name, body_type, grid_col, grid_row, gravity, temperature, atmosphere,
+         tectonic_activity, hydrosphere, life, map_symbol)
+        VALUES (412003, 101, 'Meridian', 'planet', 'T', 20, 0.7, 210, 'Thin',
+                2, 10, 'Plant', 'O')
     """)
 
     # =============================================
@@ -373,6 +381,9 @@ def generate_welcome_reports(db_path, game_id, account_number, prefect_id, ship_
         ORBIT <body_id>    Enter orbit of a planet, moon, or gas giant. Costs 10 TU.
         DOCK <base_id>     Dock at a starbase (must be at same location). Costs 30 TU.
         UNDOCK             Leave a starbase. Costs 10 TU.
+        LAND <body_id> <x> <y>  Land at surface coordinates (must be orbiting). Costs 20 TU.
+        TAKEOFF            Take off from planet surface to orbit. Costs 20 TU.
+        SURFACESCAN        Produce a terrain map (must be orbiting or landed). Costs 20 TU.
         WAIT <tu>          Wait and do nothing for a number of TU.
 
         TRADING (must be docked)

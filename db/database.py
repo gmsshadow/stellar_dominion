@@ -61,7 +61,7 @@ def init_db(db_path=None):
         game_name TEXT NOT NULL,
         current_year INTEGER NOT NULL DEFAULT 500,
         current_week INTEGER NOT NULL DEFAULT 1,
-        schema_version INTEGER NOT NULL DEFAULT 1,
+        schema_version INTEGER NOT NULL DEFAULT 3,
         rng_seed TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
@@ -100,9 +100,22 @@ def init_db(db_path=None):
         gravity REAL DEFAULT 1.0,
         temperature INTEGER DEFAULT 300,
         atmosphere TEXT DEFAULT 'Standard',
+        tectonic_activity INTEGER DEFAULT 0,
+        hydrosphere INTEGER DEFAULT 0,
+        life TEXT DEFAULT 'None',
         map_symbol TEXT NOT NULL DEFAULT 'O',
         FOREIGN KEY (system_id) REFERENCES star_systems(system_id),
         FOREIGN KEY (parent_body_id) REFERENCES celestial_bodies(body_id)
+    );
+
+    -- Planet surface grid (31x31 terrain tiles)
+    CREATE TABLE IF NOT EXISTS planet_surface (
+        body_id INTEGER NOT NULL,
+        x INTEGER NOT NULL,
+        y INTEGER NOT NULL,
+        terrain_type TEXT NOT NULL,
+        PRIMARY KEY (body_id, x, y),
+        FOREIGN KEY (body_id) REFERENCES celestial_bodies(body_id)
     );
 
     -- Factions (2-digit code, 3-letter abbreviation, long name)
@@ -164,6 +177,10 @@ def init_db(db_path=None):
         system_id INTEGER NOT NULL,
         docked_at_base_id INTEGER,
         orbiting_body_id INTEGER,
+        landed_body_id INTEGER,
+        landed_x INTEGER DEFAULT 1,
+        landed_y INTEGER DEFAULT 1,
+        gravity_rating REAL DEFAULT 1.5,
         tu_per_turn INTEGER NOT NULL DEFAULT 300,
         tu_remaining INTEGER NOT NULL DEFAULT 300,
         sensor_rating INTEGER DEFAULT 20,
@@ -336,7 +353,7 @@ def init_db(db_path=None):
     return conn
 
 
-CURRENT_SCHEMA_VERSION = 2
+CURRENT_SCHEMA_VERSION = 3
 
 
 def migrate_db(db_path=None):
@@ -380,6 +397,13 @@ def migrate_db(db_path=None):
         print(f"  Migration: v1 -> v2 (added trade system: trade_goods, base_trade_config, market_prices)")
         version = 2
 
+    if version < 3:
+        _migrate_v2_to_v3(conn)
+        conn.execute("UPDATE games SET schema_version = 3")
+        conn.commit()
+        print(f"  Migration: v2 -> v3 (added planet surfaces: tectonic/hydro/life, planet_surface table)")
+        version = 3
+
     # Future migrations slot in here:
     # if version < 3:
     #     _migrate_v2_to_v3(conn)
@@ -422,8 +446,20 @@ def _migrate_v0_to_v1(conn):
 
 
 def _migrate_v1_to_v2(conn):
-    """Migration from v1 to v2: add trade system."""
+    """Migration from v1 to v2: add trade system + landing support."""
     from engine.game_setup import generate_market_prices, get_market_cycle_start
+
+    # Add landing and gravity columns to ships if missing
+    ship_cols = [row[1] for row in conn.execute("PRAGMA table_info(ships)").fetchall()]
+    if 'landed_body_id' not in ship_cols:
+        conn.execute("ALTER TABLE ships ADD COLUMN landed_body_id INTEGER")
+    if 'landed_x' not in ship_cols:
+        conn.execute("ALTER TABLE ships ADD COLUMN landed_x INTEGER DEFAULT 1")
+    if 'landed_y' not in ship_cols:
+        conn.execute("ALTER TABLE ships ADD COLUMN landed_y INTEGER DEFAULT 1")
+    if 'gravity_rating' not in ship_cols:
+        conn.execute("ALTER TABLE ships ADD COLUMN gravity_rating REAL DEFAULT 1.5")
+    conn.commit()
 
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS trade_goods (
@@ -465,6 +501,13 @@ def _migrate_v1_to_v2(conn):
     for game in games:
         game_id = game['game_id']
 
+        # Skip if trade data already exists (e.g. setup-game already created it)
+        existing = conn.execute(
+            "SELECT COUNT(*) FROM base_trade_config WHERE game_id = ?", (game_id,)
+        ).fetchone()[0]
+        if existing > 0:
+            continue
+
         # Trade goods
         for item in [
             (101, game_id, 'Precious Metals', 20, 5),
@@ -502,3 +545,79 @@ def _migrate_v1_to_v2(conn):
         generate_market_prices(conn, game_id,
                                game['current_year'],
                                game['current_week'])
+
+
+def _migrate_v2_to_v3(conn):
+    """Migration from v2 to v3: add planet surface system."""
+    # Add landed_x/landed_y to ships if missing (in case v1->v2 was run before these existed)
+    ship_cols = [row[1] for row in conn.execute("PRAGMA table_info(ships)").fetchall()]
+    if 'landed_x' not in ship_cols:
+        conn.execute("ALTER TABLE ships ADD COLUMN landed_x INTEGER DEFAULT 1")
+    if 'landed_y' not in ship_cols:
+        conn.execute("ALTER TABLE ships ADD COLUMN landed_y INTEGER DEFAULT 1")
+
+    # Add new columns to celestial_bodies if missing
+    cb_cols = [row[1] for row in conn.execute("PRAGMA table_info(celestial_bodies)").fetchall()]
+    if 'tectonic_activity' not in cb_cols:
+        conn.execute("ALTER TABLE celestial_bodies ADD COLUMN tectonic_activity INTEGER DEFAULT 0")
+    if 'hydrosphere' not in cb_cols:
+        conn.execute("ALTER TABLE celestial_bodies ADD COLUMN hydrosphere INTEGER DEFAULT 0")
+    if 'life' not in cb_cols:
+        conn.execute("ALTER TABLE celestial_bodies ADD COLUMN life TEXT DEFAULT 'None'")
+
+    # Create planet_surface table
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS planet_surface (
+            body_id INTEGER NOT NULL,
+            x INTEGER NOT NULL,
+            y INTEGER NOT NULL,
+            terrain_type TEXT NOT NULL,
+            PRIMARY KEY (body_id, x, y),
+            FOREIGN KEY (body_id) REFERENCES celestial_bodies(body_id)
+        )
+    """)
+
+    # Set reasonable defaults for existing bodies based on their properties
+    bodies = conn.execute("""
+        SELECT body_id, name, body_type, temperature, atmosphere, gravity
+        FROM celestial_bodies
+    """).fetchall()
+
+    for body in bodies:
+        temp = body['temperature'] or 300
+        atmo = (body['atmosphere'] or 'None').lower()
+        btype = body['body_type']
+
+        # Skip gas giants
+        if btype == 'gas_giant':
+            continue
+
+        # Estimate tectonic, hydrosphere, life from existing properties
+        if atmo in ('standard',) and 230 <= temp <= 310:
+            tectonic = 4
+            hydro = 60
+            life = 'Sentient'
+        elif atmo in ('dense',) and temp > 310:
+            tectonic = 7
+            hydro = 15
+            life = 'Microbial'
+        elif atmo in ('thin',) and temp < 230:
+            tectonic = 1 if btype == 'moon' else 2
+            hydro = 40 if temp < 150 else 10
+            life = 'None' if btype == 'moon' else 'Plant'
+        elif atmo in ('thin',):
+            tectonic = 2
+            hydro = 10
+            life = 'Plant'
+        else:
+            tectonic = 1
+            hydro = 0
+            life = 'None'
+
+        conn.execute("""
+            UPDATE celestial_bodies
+            SET tectonic_activity = ?, hydrosphere = ?, life = ?
+            WHERE body_id = ? AND tectonic_activity = 0 AND hydrosphere = 0
+        """, (tectonic, hydro, life, body['body_id']))
+
+    conn.commit()

@@ -127,6 +127,25 @@ def generate_ship_report(turn_result, db_path=None, game_id="OMICRON101",
         if body:
             orbiting_name = f"{body['name']} ({body['body_id']}) [{body['gravity']}g]"
 
+    # Get landed body name with coordinates and terrain
+    landed_name = None
+    if turn_result.get('landed'):
+        body = conn.execute(
+            "SELECT * FROM celestial_bodies WHERE body_id = ?",
+            (turn_result['landed'],)
+        ).fetchone()
+        if body:
+            lx = turn_result.get('landed_x', 1)
+            ly = turn_result.get('landed_y', 1)
+            # Look up terrain at landing site
+            terrain_row = conn.execute(
+                "SELECT terrain_type FROM planet_surface WHERE body_id = ? AND x = ? AND y = ?",
+                (turn_result['landed'], lx, ly)
+            ).fetchone()
+            terrain_str = f" - {terrain_row['terrain_type']}" if terrain_row else ""
+            landed_name = (f"{body['body_type'].title()} {body['name']} ({body['body_id']}) "
+                          f"[{body['gravity']}g] at ({lx},{ly}){terrain_str}")
+
     now = datetime.now()
     turn_str = f"{turn_result['turn_year']}.{turn_result['turn_week']}"
     start_loc = f"{turn_result['start_col']}{turn_result['start_row']:02d}"
@@ -184,12 +203,29 @@ def generate_ship_report(turn_result, db_path=None, game_id="OMICRON101",
     # Check starting orbit/dock state (from before turn resolution)
     start_orbiting = turn_result.get('start_orbiting')
     start_docked = turn_result.get('start_docked')
+    start_landed = turn_result.get('start_landed')
     if start_docked:
         start_base = conn.execute("SELECT * FROM starbases WHERE base_id = ?",
                                    (start_docked,)).fetchone()
         if start_base:
             lines.append(f"    Docked at {start_base['base_type']} {start_base['name']} "
                           f"({start_base['base_id']}) - {system['name']} System ({system_id})")
+        else:
+            lines.append(f"    {start_loc} - {system['name']} System ({system_id})")
+    elif start_landed:
+        start_body = conn.execute("SELECT * FROM celestial_bodies WHERE body_id = ?",
+                                   (start_landed,)).fetchone()
+        if start_body:
+            slx = turn_result.get('start_landed_x', 1)
+            sly = turn_result.get('start_landed_y', 1)
+            terrain_row = conn.execute(
+                "SELECT terrain_type FROM planet_surface WHERE body_id = ? AND x = ? AND y = ?",
+                (start_landed, slx, sly)
+            ).fetchone()
+            terrain_str = f" - {terrain_row['terrain_type']}" if terrain_row else ""
+            lines.append(f"    Landed on {start_body['body_type'].title()} {start_body['name']} "
+                          f"({start_body['body_id']}) [{start_body['gravity']}g] "
+                          f"at ({slx},{sly}){terrain_str} - {system['name']} System ({system_id})")
         else:
             lines.append(f"    {start_loc} - {system['name']} System ({system_id})")
     elif start_orbiting:
@@ -248,6 +284,8 @@ def generate_ship_report(turn_result, db_path=None, game_id="OMICRON101",
 
     if docked_name:
         lines.append(section_line(f"Docked at {docked_name} - {system['name']} System ({system_id})"))
+    elif landed_name:
+        lines.append(section_line(f"Landed on {landed_name} - {system['name']} System ({system_id})"))
     elif orbiting_name:
         lines.append(section_line(f"Orbiting {orbiting_name} - {system['name']} System ({system_id})"))
     else:

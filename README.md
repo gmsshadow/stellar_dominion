@@ -203,6 +203,10 @@ orders:
   - GETMARKET: 45687590
   - BUY: "45687590 101 20"
   - SELL: "45687590 103 10"
+  - UNDOCK
+  - LAND: "247985 15 20"
+  - SURFACESCAN
+  - TAKEOFF
 ```
 
 ### Plain Text
@@ -219,6 +223,11 @@ DOCK 45687590
 GETMARKET 45687590
 BUY 45687590 101 20
 SELL 45687590 103 10
+UNDOCK
+SURFACESCAN
+LAND 247985 15 20
+SURFACESCAN
+TAKEOFF
 ```
 
 ## Supported Commands (v1.2)
@@ -234,6 +243,9 @@ SELL 45687590 103 10
 | `ORBIT {bodyId}` | 10      | Enter orbit of a celestial body  |
 | `DOCK {baseId}`  | 30      | Dock at a starbase (must be at same location) |
 | `UNDOCK`          | 10      | Leave docked starbase            |
+| `LAND {bodyId} {x} {y}` | 20 | Land at surface coordinates (must be in orbit) |
+| `TAKEOFF`        | 20      | Take off from surface, return to orbit |
+| `SURFACESCAN`    | 20      | Produce terrain map (must be orbiting or landed) |
 
 ### Trading (must be docked)
 
@@ -508,6 +520,29 @@ Every player has one prefect that:
 - SYSTEMSCAN produces a full system map
 - Contact information persists between turns
 
+### Planet Surfaces
+Ships can land on planets and moons using the LAND command (requires orbiting the
+body first). Specify landing coordinates: `LAND 247985 15 20` lands at grid position
+(15,20). Omitting coordinates defaults to (1,1). The turn report shows the terrain
+type at your landing site. Ships cannot move while landed; use TAKEOFF to return to
+orbit. Gas giants cannot be landed on. Each ship has a gravity rating (default
+1.5g) which will be checked against the planet's gravity in a future update.
+
+Use SURFACESCAN while orbiting or landed to produce a 31x31 ASCII terrain map.
+When landed, the ship's position is marked with X on the map. Terrain is
+procedurally generated from planetary properties (temperature, atmosphere,
+tectonic activity, hydrosphere, life level) and deterministic per body.
+
+**21 Terrain Types:**
+| Symbol | Terrain     | Symbol | Terrain     | Symbol | Terrain     | Symbol | Terrain     |
+|--------|-------------|--------|-------------|--------|-------------|--------|-------------|
+| `~`    | Shallows    | `≈`    | Sea         | `#`    | Ice         | `:`    | Tundra      |
+| `"`    | Grassland   | `.`    | Plains      | `T`    | Forest      | `&`    | Jungle      |
+| `%`    | Swamp       | `;`    | Marsh       | `^`    | Hills       | `A`    | Mountains   |
+| `_`    | Rock        | `,`    | Dust        | `o`    | Crater      | `!`    | Volcanic    |
+| `=`    | Desert      | `+`    | Cultivated  | `?`    | Ruin        | `@`    | Urban       |
+| `*`    | Gas         |        |             |        |             |        |             |
+
 ## Trading Economy
 
 Starbases have markets where players can buy and sell trade goods. The economy
@@ -579,6 +614,9 @@ than lighter ones (Advanced Computer Cores at 2 MU).
 - [x] Email ingest (Gmail API) and send (Gmail API)
 - [x] Trading between bases (buy/sell cargo with market cycles)
 - [x] Interleaved turn resolution (Phoenix BSE-style priority queue)
+- [x] Planetary landing (LAND/TAKEOFF with surface locations)
+- [x] Planet surface terrain generation (20 terrain types, SURFACESCAN)
+- [ ] Gravity check for landing (ship gravity rating vs planet gravity)
 - [ ] Inter-system jump travel
 - [ ] Combat system (naval, ground, boarding)
 - [ ] Base complex management and production
