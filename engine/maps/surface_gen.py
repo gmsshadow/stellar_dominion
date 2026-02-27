@@ -414,6 +414,10 @@ def render_surface_map(tiles, body_name, body_id, planetary_data=None, ship_pos=
                      f"    Hydrosphere: {pd.get('hydrosphere', '?')}%"
                      f"        Life: {pd.get('life', '?')}")
         lines.append(f"  Surface Size: {GS}x{GS}")
+        res = pd.get('resource_name')
+        res_id = pd.get('resource_id')
+        if res:
+            lines.append(f"  Natural Resource: {res} ({res_id})")
 
     # Ship position
     if ship_pos:

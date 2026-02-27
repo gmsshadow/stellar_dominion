@@ -31,6 +31,13 @@ TU_COSTS = {
     'JUMP': 60,        # hyperspace jump between systems
 }
 
+# Jump drive configuration (scope to make per-ship via installed items later)
+JUMP_CONFIG = {
+    'min_star_distance': 10,   # minimum squares from star to initiate jump
+    'max_jump_range': 1,       # max systems away (1 = adjacent only, up to 4 planned)
+    'tu_per_hop': 60,          # TU cost per system jumped (for multi-hop: cost * hops)
+}
+
 
 class TurnResolver:
     """Resolves turns for ships, supporting interleaved multi-ship resolution."""
@@ -1280,6 +1287,15 @@ class TurnResolver:
             'life': body['life'],
         }
 
+        # Add resource info if the body has one
+        res_id = body['resource_id'] if 'resource_id' in body.keys() else None
+        if res_id:
+            res = self.conn.execute(
+                "SELECT name FROM trade_goods WHERE item_id = ?", (res_id,)
+            ).fetchone()
+            planetary_data['resource_id'] = res_id
+            planetary_data['resource_name'] = res['name'] if res else f"Unknown ({res_id})"
+
         # Show ship position on map if landed
         ship_pos = None
         if state['landed']:
@@ -1682,10 +1698,45 @@ class TurnResolver:
             'message': '\n'.join(lines),
         }
 
+    def _find_jump_route(self, from_system, to_system, max_hops):
+        """
+        BFS across system_links to find shortest route between two systems.
+        Returns number of hops if reachable within max_hops, or None if not.
+        For max_hops=1 this is a simple adjacency check.
+        """
+        if from_system == to_system:
+            return 0
+
+        # Load all links into adjacency map
+        links = self.conn.execute("SELECT system_a, system_b FROM system_links").fetchall()
+        adj = {}
+        for link in links:
+            a, b = link['system_a'], link['system_b']
+            adj.setdefault(a, set()).add(b)
+            adj.setdefault(b, set()).add(a)
+
+        # BFS
+        visited = {from_system}
+        frontier = [from_system]
+        for depth in range(1, max_hops + 1):
+            next_frontier = []
+            for sys_id in frontier:
+                for neighbor in adj.get(sys_id, set()):
+                    if neighbor == to_system:
+                        return depth
+                    if neighbor not in visited:
+                        visited.add(neighbor)
+                        next_frontier.append(neighbor)
+            frontier = next_frontier
+
+        return None  # Not reachable within max_hops
+
     def _cmd_jump(self, state, target_system_id):
         """JUMP <system_id> - hyperspace jump to a linked star system."""
         tu_before = state['tu']
-        cost = TU_COSTS['JUMP']
+        cost = JUMP_CONFIG['tu_per_hop']
+        min_star_dist = JUMP_CONFIG['min_star_distance']
+        max_range = JUMP_CONFIG['max_jump_range']
         params_str = str(target_system_id)
 
         # Must not be docked
@@ -1725,11 +1776,9 @@ class TurnResolver:
             }
 
         # Check distance from primary star (M13)
-        # The star is always at M13 in a 25x25 grid
         star_col, star_row = 'M', 13
         dist_from_star = grid_distance(state['col'], state['row'], star_col, star_row)
-        min_jump_distance = 10
-        if dist_from_star < min_jump_distance:
+        if dist_from_star < min_star_dist:
             current_loc = f"{state['col']}{state['row']:02d}"
             return {
                 'command': 'JUMP', 'params': params_str,
@@ -1737,7 +1786,7 @@ class TurnResolver:
                 'tu_cost': 0, 'success': False,
                 'message': (f"Cannot jump: too close to the star. "
                             f"Ship at {current_loc} is {dist_from_star} squares from the star "
-                            f"(minimum {min_jump_distance} required).")
+                            f"(minimum {min_star_dist} required).")
             }
 
         # Check target system exists
@@ -1753,22 +1802,26 @@ class TurnResolver:
                 'message': f"Cannot jump: system {target_system_id} not found."
             }
 
-        # Check system link exists
-        a, b = min(state['system_id'], target_system_id), max(state['system_id'], target_system_id)
-        link = self.conn.execute(
-            "SELECT * FROM system_links WHERE system_a = ? AND system_b = ?",
-            (a, b)
-        ).fetchone()
-        if not link:
+        # Find route: BFS across system_links up to max_jump_range hops
+        jump_hops = self._find_jump_route(state['system_id'], target_system_id, max_range)
+        if jump_hops is None:
+            if max_range == 1:
+                msg = f"Cannot jump: no known hyperspace link to {target['name']} ({target_system_id})."
+            else:
+                msg = (f"Cannot jump: {target['name']} ({target_system_id}) is beyond "
+                       f"jump range ({max_range} system{'s' if max_range > 1 else ''} max).")
             return {
                 'command': 'JUMP', 'params': params_str,
                 'tu_before': tu_before, 'tu_after': state['tu'],
                 'tu_cost': 0, 'success': False,
-                'message': f"Cannot jump: no known hyperspace link to {target['name']} ({target_system_id})."
+                'message': msg
             }
 
+        # Total cost scales with hops
+        total_cost = cost * jump_hops
+
         # Check TU
-        if state['tu'] < cost:
+        if state['tu'] < total_cost:
             self.pending.append({
                 'command': 'JUMP', 'params': params_str,
                 'reason': 'Insufficient TU'
@@ -1777,7 +1830,7 @@ class TurnResolver:
                 'command': 'JUMP', 'params': params_str,
                 'tu_before': tu_before, 'tu_after': state['tu'],
                 'tu_cost': 0, 'success': False,
-                'message': (f"Insufficient TU for jump ({state['tu']} < {cost}). "
+                'message': (f"Insufficient TU for jump ({state['tu']} < {total_cost}). "
                             f"Order queued as pending.")
             }
 
@@ -1787,21 +1840,23 @@ class TurnResolver:
             (state['system_id'],)
         ).fetchone()
         origin_name = origin_system['name'] if origin_system else str(state['system_id'])
+        origin_id = state['system_id']
 
         state['system_id'] = target_system_id
-        state['tu'] -= cost
+        state['tu'] -= total_cost
 
         # Commit position immediately so subsequent commands see the new system
         self._commit_ship_position(state)
 
         arrival_loc = f"{state['col']}{state['row']:02d}"
+        hop_str = f" ({jump_hops} hops)" if jump_hops > 1 else ""
         return {
             'command': 'JUMP', 'params': params_str,
             'tu_before': tu_before, 'tu_after': state['tu'],
-            'tu_cost': cost, 'success': True,
-            'message': (f"Hyperspace jump from {origin_name} ({a if state['system_id'] == b else b}) "
-                        f"to {target['name']} ({target_system_id}). "
-                        f"Arrived at {arrival_loc}. [{cost} TU]")
+            'tu_cost': total_cost, 'success': True,
+            'message': (f"Hyperspace jump from {origin_name} ({origin_id}) "
+                        f"to {target['name']} ({target_system_id}){hop_str}. "
+                        f"Arrived at {arrival_loc}. [{total_cost} TU]")
         }
 
     def _scan_at_location(self, state):

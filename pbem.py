@@ -1389,6 +1389,7 @@ def cmd_add_body(args):
         hydrosphere=args.hydrosphere or 0,
         life=args.life or 'None',
         surface_size=args.surface_size,
+        resource_id=args.resource_id,
         created_turn=created_turn,
     )
 
@@ -1622,6 +1623,8 @@ Gmail integration (two-stage workflow):
     sp.add_argument('--life', default='None', help='Life level (None/Microbial/Plant/Animal/Sentient)')
     sp.add_argument('--surface-size', type=int, default=None,
                     help='Surface grid size 5-50 (default: planet=31, moon=15, gas_giant=50, asteroid=11)')
+    sp.add_argument('--resource-id', type=int, default=None,
+                    help='Trade good ID that can be gathered from this body (e.g. 100101)')
     sp.add_argument('--no-turn-stamp', action='store_true', help='Skip created_turn provenance')
 
     # --- add-link ---

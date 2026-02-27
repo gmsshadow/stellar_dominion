@@ -47,9 +47,9 @@ MARKET_CYCLE_WEEKS = 4
 
 # Base stock/demand quantities by role per cycle (center value; fluctuates ±15%)
 TRADE_ROLE_STOCK = {
-    'produces': {'stock': 240, 'demand': 60},
+    'produces': {'stock': 2400, 'demand': 60},
     'average':  {'stock': 120, 'demand': 120},
-    'demands':  {'stock': 60,  'demand': 240},
+    'demands':  {'stock': 60,  'demand': 2400},
 }
 
 # Spread: buy costs more than sell (3% each side of effective price)
@@ -181,18 +181,18 @@ def create_game(db_path=None, game_id="OMICRON101", game_name="Stellar Dominion 
     c.execute("""
         INSERT INTO celestial_bodies 
         (body_id, system_id, name, body_type, grid_col, grid_row, gravity, temperature, atmosphere, 
-         tectonic_activity, hydrosphere, life, map_symbol, surface_size)
+         tectonic_activity, hydrosphere, life, map_symbol, surface_size, resource_id)
         VALUES (247985, 101, 'Orion', 'planet', 'H', 4, 0.9, 295, 'Standard',
-                4, 65, 'Sentient', 'O', 31)
+                4, 65, 'Sentient', 'O', 31, 100102)
     """)
 
     # Planet: Tartarus at R08 -- hot, volcanic, dense atmosphere
     c.execute("""
         INSERT INTO celestial_bodies 
         (body_id, system_id, name, body_type, grid_col, grid_row, gravity, temperature, atmosphere,
-         tectonic_activity, hydrosphere, life, map_symbol, surface_size)
+         tectonic_activity, hydrosphere, life, map_symbol, surface_size, resource_id)
         VALUES (301442, 101, 'Tartarus', 'planet', 'R', 8, 1.2, 340, 'Dense',
-                7, 15, 'Microbial', 'O', 25)
+                7, 15, 'Microbial', 'O', 25, 100101)
     """)
 
     # Gas Giant: Leviathan at E18
@@ -215,9 +215,9 @@ def create_game(db_path=None, game_id="OMICRON101", game_name="Stellar Dominion 
     c.execute("""
         INSERT INTO celestial_bodies 
         (body_id, system_id, name, body_type, grid_col, grid_row, gravity, temperature, atmosphere,
-         tectonic_activity, hydrosphere, life, map_symbol, surface_size)
+         tectonic_activity, hydrosphere, life, map_symbol, surface_size, resource_id)
         VALUES (412003, 101, 'Meridian', 'planet', 'T', 20, 0.7, 210, 'Thin',
-                2, 10, 'Plant', 'O', 21)
+                2, 10, 'Plant', 'O', 21, 100103)
     """)
 
     # =============================================
@@ -238,7 +238,7 @@ def create_game(db_path=None, game_id="OMICRON101", game_name="Stellar Dominion 
         INSERT INTO starbases 
         (base_id, game_id, name, base_type, system_id, grid_col, grid_row, orbiting_body_id,
          complexes, workers, troops, has_market, docking_capacity)
-        VALUES (12340001, ?, 'Tartarus Depot', 'Outpost', 101, 'R', 8, 301442,
+        VALUES (12340001, ?, 'Tartarus Depot', 'Starbase', 101, 'R', 8, 301442,
                 10, 200, 50, 1, 3)
     """, (game_id,))
 
@@ -247,7 +247,7 @@ def create_game(db_path=None, game_id="OMICRON101", game_name="Stellar Dominion 
         INSERT INTO starbases 
         (base_id, game_id, name, base_type, system_id, grid_col, grid_row, orbiting_body_id,
          complexes, workers, troops, has_market, docking_capacity)
-        VALUES (78901234, ?, 'Meridian Waystation', 'Outpost', 101, 'T', 20, 412003,
+        VALUES (78901234, ?, 'Meridian Waystation', 'Starbase', 101, 'T', 20, 412003,
                 8, 150, 30, 1, 3)
     """, (game_id,))
 
@@ -255,14 +255,14 @@ def create_game(db_path=None, game_id="OMICRON101", game_name="Stellar Dominion 
     # TRADE GOODS & MARKET CONFIGURATION
     # =============================================
     trade_goods = [
-        (100101, 'Tartarus Precious Metals', 20, 5),
-        (100102, 'Orion Computer Cores', 50, 2),
-        (100103, 'Meridian Food Supplies', 30, 3),
+        (100101, 'Tartarus Precious Metals', 20, 5, 101),
+        (100102, 'Orion Computer Cores', 50, 2, 101),
+        (100103, 'Meridian Food Supplies', 30, 3, 101),
     ]
     for item in trade_goods:
         c.execute("""
-            INSERT OR IGNORE INTO trade_goods (item_id, name, base_price, mass_per_unit)
-            VALUES (?, ?, ?, ?)
+            INSERT OR IGNORE INTO trade_goods (item_id, name, base_price, mass_per_unit, origin_system_id)
+            VALUES (?, ?, ?, ?, ?)
         """, item)
 
     # Base trade roles: (base_id, item_id, role)

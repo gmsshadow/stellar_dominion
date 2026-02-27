@@ -46,6 +46,16 @@ def get_connection(state_db_path=None, universe_db_path=None):
     # ATTACH universe.db if it exists and is a separate file
     if uni_path.exists() and uni_path.resolve() != state_path.resolve():
         conn.execute("ATTACH DATABASE ? AS universe", (str(uni_path),))
+        # Migrate universe.db: add origin_system_id to trade_goods if missing
+        tg_cols = [r[1] for r in conn.execute("PRAGMA universe.table_info(trade_goods)").fetchall()]
+        if 'origin_system_id' not in tg_cols:
+            conn.execute("ALTER TABLE trade_goods ADD COLUMN origin_system_id INTEGER DEFAULT NULL")
+            conn.commit()
+        # Migrate universe.db: add resource_id to celestial_bodies if missing
+        cb_cols = [r[1] for r in conn.execute("PRAGMA universe.table_info(celestial_bodies)").fetchall()]
+        if 'resource_id' not in cb_cols:
+            conn.execute("ALTER TABLE celestial_bodies ADD COLUMN resource_id INTEGER DEFAULT NULL")
+            conn.commit()
 
     return conn
 
@@ -111,6 +121,7 @@ CREATE TABLE IF NOT EXISTS celestial_bodies (
     life TEXT DEFAULT 'None',
     map_symbol TEXT NOT NULL DEFAULT 'O',
     surface_size INTEGER NOT NULL DEFAULT 31,
+    resource_id INTEGER DEFAULT NULL,
     created_turn TEXT,
     FOREIGN KEY (system_id) REFERENCES star_systems(system_id),
     FOREIGN KEY (parent_body_id) REFERENCES celestial_bodies(body_id)
@@ -129,7 +140,8 @@ CREATE TABLE IF NOT EXISTS trade_goods (
     item_id INTEGER PRIMARY KEY,
     name TEXT NOT NULL,
     base_price INTEGER NOT NULL,
-    mass_per_unit INTEGER NOT NULL
+    mass_per_unit INTEGER NOT NULL,
+    origin_system_id INTEGER DEFAULT NULL
 );
 
 -- Seed default faction
@@ -243,7 +255,7 @@ CREATE TABLE IF NOT EXISTS starbases (
     game_id TEXT NOT NULL,
     owner_prefect_id INTEGER,
     name TEXT NOT NULL,
-    base_type TEXT DEFAULT 'Outpost',
+    base_type TEXT DEFAULT 'Starbase',
     system_id INTEGER NOT NULL,
     grid_col TEXT NOT NULL,
     grid_row INTEGER NOT NULL,

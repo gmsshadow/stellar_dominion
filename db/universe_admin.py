@@ -45,7 +45,8 @@ def add_body(universe_db_path=None, body_id=None, system_id=None, name=None,
              grid_col='M', grid_row=13,
              gravity=1.0, temperature=300, atmosphere='Standard',
              tectonic_activity=0, hydrosphere=0, life='None',
-             map_symbol=None, surface_size=None, created_turn=None):
+             map_symbol=None, surface_size=None, resource_id=None,
+             created_turn=None):
     """
     Add a celestial body to a system in the universe.
     
@@ -81,11 +82,13 @@ def add_body(universe_db_path=None, body_id=None, system_id=None, name=None,
         INSERT INTO celestial_bodies
         (body_id, system_id, name, body_type, parent_body_id,
          grid_col, grid_row, gravity, temperature, atmosphere,
-         tectonic_activity, hydrosphere, life, map_symbol, surface_size, created_turn)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         tectonic_activity, hydrosphere, life, map_symbol, surface_size,
+         resource_id, created_turn)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (body_id, system_id, name, body_type, parent_body_id,
           grid_col, grid_row, gravity, temperature, atmosphere,
-          tectonic_activity, hydrosphere, life, map_symbol, surface_size, created_turn))
+          tectonic_activity, hydrosphere, life, map_symbol, surface_size,
+          resource_id, created_turn))
     conn.commit()
     conn.close()
 
@@ -93,6 +96,8 @@ def add_body(universe_db_path=None, body_id=None, system_id=None, name=None,
     print(f"  Added {body_type}: {name} ({body_id}) at {loc} in {sys['name']}")
     print(f"    {gravity}g, {temperature}K, {atmosphere}, tec={tectonic_activity}, hydro={hydrosphere}%, life={life}")
     print(f"    Surface: {surface_size}x{surface_size}")
+    if resource_id:
+        print(f"    Resource: {resource_id}")
     return body_id
 
 
@@ -179,8 +184,10 @@ def list_universe(universe_db_path=None):
         for b in bodies:
             loc = f"{b['grid_col']}{b['grid_row']:02d}"
             parent = f" (moon of {b['parent_body_id']})" if b['parent_body_id'] else ""
+            res_id = b['resource_id'] if 'resource_id' in b.keys() and b['resource_id'] else None
+            res_str = f"  res={res_id}" if res_id else ""
             print(f"         {b['body_id']:>6d}  {b['name']:<16s} {b['body_type']:<10s} at {loc}"
-                  f"  {b['gravity']}g {b['temperature']}K {b['atmosphere']}  [{b['surface_size']}x{b['surface_size']}]{parent}")
+                  f"  {b['gravity']}g {b['temperature']}K {b['atmosphere']}  [{b['surface_size']}x{b['surface_size']}]{parent}{res_str}")
 
     # Links
     links = conn.execute("""
@@ -201,7 +208,9 @@ def list_universe(universe_db_path=None):
     if goods:
         print(f"\nTrade Goods ({len(goods)}):")
         for g in goods:
-            print(f"  {g['item_id']:>4d}  {g['name']:<30s}  base={g['base_price']}cr  mass={g['mass_per_unit']}MU")
+            origin = g['origin_system_id'] if 'origin_system_id' in g.keys() and g['origin_system_id'] else None
+            origin_str = f"  origin={origin}" if origin else ""
+            print(f"  {g['item_id']:>6d}  {g['name']:<30s}  base={g['base_price']}cr  mass={g['mass_per_unit']}MU{origin_str}")
 
     # Factions
     factions = conn.execute("SELECT * FROM factions ORDER BY faction_id").fetchall()

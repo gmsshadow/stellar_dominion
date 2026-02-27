@@ -1,4 +1,4 @@
-# Stellar Dominion -- PBEM Strategy Game Engine v1.2
+# Stellar Dominion -- PBEM Strategy Game Engine v1.3
 
 A play-by-email (PBEM) grand strategy game engine inspired by Phoenix-BSE style games.
 Deterministic turn resolution, ASCII reports, persistent SQLite universe.
@@ -55,7 +55,7 @@ stellar_dominion/
 |   |-- turn_folders.py              # Turn folder manager (incoming/processed)
 |   |-- maps/
 |   |   |-- system_map.py            # 25x25 ASCII grid renderer
-|   |   +-- surface_gen.py           # 31x31 planet surface terrain generator
+|   |   +-- surface_gen.py           # Variable-size planet surface terrain generator
 |   |-- orders/
 |   |   +-- parser.py                # YAML & text order parser
 |   |-- resolution/
@@ -297,7 +297,7 @@ TAKEOFF
 | `BUY {baseId} {itemId} {qty}`   | 0       | Buy items from the base market   |
 | `SELL {baseId} {itemId} {qty}`   | 0       | Sell items to the base market    |
 
-Trade item IDs: `101` Precious Metals, `102` Advanced Computer Cores, `103` Food Supplies.
+Trade item IDs: `100101` Tartarus Precious Metals, `100102` Orion Computer Cores, `100103` Meridian Food Supplies.
 
 In YAML, trade parameters are passed as a quoted string:
 ```yaml
@@ -584,10 +584,12 @@ type at your landing site. Ships cannot move while landed; use TAKEOFF to return
 orbit. Gas giants cannot be landed on. Each ship has a gravity rating (default
 1.5g) which will be checked against the planet's gravity in a future update.
 
-Use SURFACESCAN while orbiting or landed to produce a 31x31 ASCII terrain map.
-When landed, the ship's position is marked with X on the map. Terrain is
-procedurally generated from planetary properties (temperature, atmosphere,
-tectonic activity, hydrosphere, life level) and deterministic per body.
+Use SURFACESCAN while orbiting or landed to produce an ASCII terrain map (size
+varies by body type: planets 31×31, moons 15×15, gas giants 50×50, asteroids
+11×11, or custom via `--surface-size`). When landed, the ship's position is
+marked with X on the map. Terrain is procedurally generated from planetary
+properties (temperature, atmosphere, tectonic activity, hydrosphere, life
+level) and deterministic per body.
 
 **21 Terrain Types:**
 | Symbol | Terrain     | Symbol | Terrain     | Symbol | Terrain     | Symbol | Terrain     |
@@ -599,6 +601,16 @@ tectonic activity, hydrosphere, life level) and deterministic per body.
 | `=`    | Desert      | `+`    | Cultivated  | `?`    | Ruin        | `@`    | Urban       |
 | `*`    | Gas         |        |             |        |             |        |             |
 
+### Inter-System Travel
+
+Ships can jump between linked star systems using the JUMP command:
+`JUMP 102` jumps to system 102. Costs 60 TU. Requirements: ship must not be
+docked, landed, or orbiting (leave orbit by MOVEing first), must be at least
+10 squares from the primary star (Chebyshev distance from M13), and a
+hyperspace link must exist between the current and target systems. The ship
+arrives at the same grid coordinates in the destination system and can
+continue issuing orders (MOVE, SYSTEMSCAN, etc.) with remaining TU.
+
 ## Trading Economy
 
 Starbases have markets where players can buy and sell trade goods. The economy
@@ -607,11 +619,14 @@ selling at another is profitable.
 
 ### Trade Goods
 
-| ID  | Item                    | Base Price | MU/unit |
-|-----|-------------------------|------------|---------|
-| 101 | Precious Metals         | 20 cr      | 5       |
-| 102 | Advanced Computer Cores | 50 cr      | 2       |
-| 103 | Food Supplies           | 30 cr      | 3       |
+| ID     | Item                      | Base Price | MU/unit |
+|--------|---------------------------|------------|---------|
+| 100101 | Tartarus Precious Metals  | 20 cr      | 5       |
+| 100102 | Orion Computer Cores      | 50 cr      | 2       |
+| 100103 | Meridian Food Supplies    | 30 cr      | 3       |
+
+Item IDs use a 6-digit `1xxxxx` range for planet-origin trade goods, keeping
+lower ranges available for core items (ship components, equipment, etc.).
 
 ### Base Specialisation
 
@@ -619,11 +634,11 @@ Each base permanently produces one item (75% of average price), trades one at
 average price, and demands one (150% of average price). This creates profitable
 routes between any pair of bases:
 
-| Base                | Produces (cheap)          | Average            | Demands (expensive)       |
-|---------------------|---------------------------|--------------------|---------------------------|
-| Citadel Station     | Advanced Computer Cores   | Food Supplies      | Precious Metals           |
-| Tartarus Depot      | Precious Metals           | Advanced Comp Cores| Food Supplies             |
-| Meridian Waystation | Food Supplies             | Precious Metals    | Advanced Computer Cores   |
+| Base                | Produces (cheap)          | Average              | Demands (expensive)       |
+|---------------------|---------------------------|----------------------|---------------------------|
+| Citadel Station     | Orion Computer Cores      | Meridian Food        | Tartarus Precious Metals  |
+| Tartarus Depot      | Tartarus Precious Metals  | Orion Comp Cores     | Meridian Food Supplies    |
+| Meridian Waystation | Meridian Food Supplies    | Tartarus Metals      | Orion Computer Cores      |
 
 ### Price Fluctuation
 
@@ -645,13 +660,15 @@ the stock may have been bought out by other players.
 
 ### Stock & Demand Limits
 
-Bases have finite quantities that vary by role (±15% fluctuation per cycle):
+Bases have finite quantities that vary by role (±15% fluctuation per cycle).
+Specialist roles (produces/demands) hold 10× the quantity to make trade routes
+more rewarding:
 
 | Role     | Stock (units to sell) | Demand (units to buy) |
 |----------|-----------------------|-----------------------|
-| Produces | ~204-276              | ~51-69                |
+| Produces | ~2040-2760            | ~51-69                |
 | Average  | ~102-138              | ~102-138              |
-| Demands  | ~51-69                | ~204-276              |
+| Demands  | ~51-69                | ~2040-2760            |
 
 If you request more than available, the order is **capped** to what's available
 (not rejected). The report tells you: "(only 56 in stock, requested 100)".
@@ -662,10 +679,12 @@ cycle.
 
 Ships have a cargo hold measured in Mass Units (MU). The starting Light Trader
 MK I has 500 MU capacity across 5 Cargo Hold modules. Each trade good has a
-per-unit MU cost, so heavier goods (Precious Metals at 5 MU) fill up faster
-than lighter ones (Advanced Computer Cores at 2 MU).
+per-unit MU cost, so heavier goods (Tartarus Precious Metals at 5 MU) fill up
+faster than lighter ones (Orion Computer Cores at 2 MU).
 
 ## Future Roadmap
+
+### Completed
 
 - [x] Email ingest (Gmail API) and send (Gmail API)
 - [x] Trading between bases (buy/sell cargo with market cycles)
@@ -676,11 +695,77 @@ than lighter ones (Advanced Computer Cores at 2 MU).
 - [x] Universe expansion CLI (add-system, add-body, add-link)
 - [x] Turn backups (auto snapshot after each run-turn)
 - [x] Legacy DB migration (split-db command)
+- [x] Financial reports (per-ship income/expenses in prefect reports)
+- [x] PDF export (A4 monospace reports with map auto-sizing)
+- [x] Configurable planet surface sizes (5-50 grid, per body type)
+- [x] Trade quantity capping (BUY/SELL cap to available instead of failing)
+- [x] Inter-system JUMP command (60 TU, star proximity check, link validation)
+- [x] 6-digit trade item IDs with planet-of-origin naming
+
+### Backlog (prioritised)
+
+Ordered by game design dependencies and implementation complexity — quickest
+and simplest changes first, architectural changes last.
+
+**Tier 1 — Quick data/config changes** ✅ All complete
+
+- [x] **Rename orbital outposts as Starbases.** All base_type labels now
+      "Starbase". Docking capacity remains as-is; future updates will derive
+      it from starbase composition rather than type label.
+- [x] **Increase trade stock/demand x10 for specialists.** Produces role now
+      holds ~2400 stock, demands role holds ~2400 demand (was ~240 each).
+- [x] **Add system of origin to trade goods.** `origin_system_id` column on
+      `trade_goods` in universe.db. Scope for future distance-based pricing.
+- [x] **Jump distance config.** `JUMP_CONFIG` dict with `max_jump_range`
+      (default 1), `min_star_distance` (10), `tu_per_hop` (60). BFS
+      pathfinding ready for multi-hop jumps up to 4 systems.
+
+**Tier 2 — New entity types (moderate code, DB schema additions)**
+
+- [x] **Add planetary resources.** `resource_id` column on `celestial_bodies`
+      referencing a trade good that can be gathered from that planet. Shown in
+      SURFACESCAN planetary data and `list-universe`. CLI: `--resource-id`.
+      No gathering mechanics yet — data model for future surface port mining.
+- [ ] **Create Surface Port position.** A surface-based facility that links
+      to an orbital Starbase. Generate one per planet during setup. In the
+      future, a Surface Port must be built before an orbital Starbase can be
+      constructed. Needs: new entity in DB, surface coordinates, link to
+      parent starbase.
+- [ ] **Create Outpost position.** A lighter surface base with fewer
+      abilities than a Surface Port. Placeholder implementation for future
+      proofing — define the DB schema and entity type now, full mechanics
+      later.
+
+**Tier 3 — New game mechanics (significant code, new order types)**
+
+- [ ] **Crew as tradeable items with wages.** Create "Human Crew" as a
+      buyable/sellable item at starbases. Crew wages cost 1 credit per crew
+      member per turn, deducted automatically during turn processing. Ties
+      into ship operating costs and economic pressure.
+- [ ] **Inter-position messaging.** New MESSAGE order allowing ships and
+      prefects to send free-text messages to other positions by target
+      position number. Messages delivered in the recipient's next turn
+      report.
+- [ ] **Faction change system.** Allow players to request a faction change,
+      moderated by the game owner. Needs design work on: request submission
+      flow, GM approval/rejection CLI, faction transfer mechanics (does the
+      ship change livery? do contacts update?).
+
+**Tier 4 — Architecture changes (turn pipeline restructuring)**
+
+- [ ] **Moderator Action orders.** A new order type where the player submits
+      a free-text question/request to the game owner. Requires restructuring
+      the turn pipeline: turns without Moderator Actions resolve and send
+      normally, turns with them go into a holding queue. The GM reviews held
+      turns, writes responses, then releases them for final processing and
+      delivery. Needs: order parsing, hold/release states, GM review CLI,
+      partial turn sending.
+
+### Other future items
+
 - [ ] Gravity check for landing (ship gravity rating vs planet gravity)
-- [ ] Inter-system jump travel
 - [ ] Combat system (naval, ground, boarding)
 - [ ] Base complex management and production
-- [ ] Crew wages and morale
 - [ ] Faction diplomacy and shared knowledge
 - [ ] Web portal for turn upload/display
 - [ ] Standing orders
