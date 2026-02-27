@@ -90,11 +90,13 @@ def generate_ship_report(turn_result, db_path=None, game_id="OMICRON101",
 
     ship_id = turn_result['ship_id']
     ship_name = turn_result['ship_name']
-    system_id = turn_result['system_id']
+    start_system_id = turn_result['system_id']
+    system_id = turn_result.get('final_system_id', start_system_id)
 
     # Fetch additional data
     ship = conn.execute("SELECT * FROM ships WHERE ship_id = ?", (ship_id,)).fetchone()
     system = conn.execute("SELECT * FROM star_systems WHERE system_id = ?", (system_id,)).fetchone()
+    start_system = conn.execute("SELECT * FROM star_systems WHERE system_id = ?", (start_system_id,)).fetchone()
     prefect = conn.execute(
         "SELECT * FROM prefects WHERE prefect_id = ?",
         (ship['owner_prefect_id'],)
@@ -204,14 +206,16 @@ def generate_ship_report(turn_result, db_path=None, game_id="OMICRON101",
     start_orbiting = turn_result.get('start_orbiting')
     start_docked = turn_result.get('start_docked')
     start_landed = turn_result.get('start_landed')
+    ss_name = start_system['name'] if start_system else system['name']
+    ss_id = start_system_id
     if start_docked:
         start_base = conn.execute("SELECT * FROM starbases WHERE base_id = ?",
                                    (start_docked,)).fetchone()
         if start_base:
             lines.append(f"    Docked at {start_base['base_type']} {start_base['name']} "
-                          f"({start_base['base_id']}) - {system['name']} System ({system_id})")
+                          f"({start_base['base_id']}) - {ss_name} System ({ss_id})")
         else:
-            lines.append(f"    {start_loc} - {system['name']} System ({system_id})")
+            lines.append(f"    {start_loc} - {ss_name} System ({ss_id})")
     elif start_landed:
         start_body = conn.execute("SELECT * FROM celestial_bodies WHERE body_id = ?",
                                    (start_landed,)).fetchone()
@@ -225,19 +229,19 @@ def generate_ship_report(turn_result, db_path=None, game_id="OMICRON101",
             terrain_str = f" - {terrain_row['terrain_type']}" if terrain_row else ""
             lines.append(f"    Landed on {start_body['body_type'].title()} {start_body['name']} "
                           f"({start_body['body_id']}) [{start_body['gravity']}g] "
-                          f"at ({slx},{sly}){terrain_str} - {system['name']} System ({system_id})")
+                          f"at ({slx},{sly}){terrain_str} - {ss_name} System ({ss_id})")
         else:
-            lines.append(f"    {start_loc} - {system['name']} System ({system_id})")
+            lines.append(f"    {start_loc} - {ss_name} System ({ss_id})")
     elif start_orbiting:
         start_body = conn.execute("SELECT * FROM celestial_bodies WHERE body_id = ?",
                                    (start_orbiting,)).fetchone()
         if start_body:
             lines.append(f"    {start_body['name']} ({start_body['body_id']}) [{start_body['gravity']}g] "
-                          f"Orbit - {system['name']} System ({system_id})")
+                          f"Orbit - {ss_name} System ({ss_id})")
         else:
-            lines.append(f"    {start_loc} - {system['name']} System ({system_id})")
+            lines.append(f"    {start_loc} - {ss_name} System ({ss_id})")
     else:
-        lines.append(f"    {start_loc} - {system['name']} System ({system_id})")
+        lines.append(f"    {start_loc} - {ss_name} System ({ss_id})")
     lines.append("")
 
     # Turn execution log

@@ -23,6 +23,7 @@ VALID_COMMANDS = {
     'BUY': {'params': 'trade_order', 'description': 'Buy items from base market'},
     'SELL': {'params': 'trade_order', 'description': 'Sell items to base market'},
     'GETMARKET': {'params': 'base_id', 'description': 'View base market prices'},
+    'JUMP': {'params': 'system_id', 'description': 'Jump to a linked star system'},
 }
 
 # Grid coordinate pattern: A-Y followed by 01-25
@@ -75,7 +76,7 @@ def parse_order(command_str, params):
             return command, {'col': col, 'row': row}, None
         return command, params, f"{command}: expected coordinate string"
 
-    elif spec['params'] in ('body_id', 'base_id'):
+    elif spec['params'] in ('body_id', 'base_id', 'system_id'):
         try:
             value = int(params)
             return command, value, None

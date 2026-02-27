@@ -28,6 +28,7 @@ TU_COSTS = {
     'BUY': 0,          # trading while docked is free
     'SELL': 0,
     'GETMARKET': 0,
+    'JUMP': 60,        # hyperspace jump between systems
 }
 
 
@@ -46,11 +47,13 @@ class TurnResolver:
         """Lightweight mid-turn position update so scans see current positions."""
         self.conn.execute("""
             UPDATE ships SET
+                system_id = ?,
                 grid_col = ?, grid_row = ?,
                 docked_at_base_id = ?, orbiting_body_id = ?,
                 landed_body_id = ?, landed_x = ?, landed_y = ?
             WHERE ship_id = ? AND game_id = ?
         """, (
+            state['system_id'],
             state['col'], state['row'],
             state['docked_at'], state['orbiting'],
             state['landed'], state['landed_x'], state['landed_y'],
@@ -154,6 +157,7 @@ class TurnResolver:
                 'ship_id': ship_id,
                 'name': ship['name'],
                 'system_id': ship['system_id'],
+                'start_system_id': ship['system_id'],
                 'col': ship['grid_col'],
                 'row': ship['grid_row'],
                 'tu': ship['tu_per_turn'],
@@ -308,7 +312,8 @@ class TurnResolver:
             results[ship_id] = {
                 'ship_id': ship_id,
                 'ship_name': ship['name'],
-                'system_id': state['system_id'],
+                'system_id': state['start_system_id'],
+                'final_system_id': state['system_id'],
                 'start_col': state['start_col'],
                 'start_row': state['start_row'],
                 'start_tu': state['start_tu'],
@@ -557,12 +562,13 @@ class TurnResolver:
 
         # Update known contacts
         prefect_id = ship['owner_prefect_id']
-        self._update_contacts(prefect_id, system_id)
+        self._update_contacts(prefect_id, state['system_id'])
 
         return {
             'ship_id': ship_id,
             'ship_name': ship['name'],
             'system_id': system_id,
+            'final_system_id': state['system_id'],
             'start_col': state['start_col'],
             'start_row': state['start_row'],
             'start_tu': state['start_tu'],
@@ -619,6 +625,8 @@ class TurnResolver:
             return self._cmd_sell(state, params)
         elif cmd == 'GETMARKET':
             return self._cmd_getmarket(state, params)
+        elif cmd == 'JUMP':
+            return self._cmd_jump(state, params)
         else:
             return {
                 'command': cmd, 'params': params,
@@ -1674,6 +1682,128 @@ class TurnResolver:
             'message': '\n'.join(lines),
         }
 
+    def _cmd_jump(self, state, target_system_id):
+        """JUMP <system_id> - hyperspace jump to a linked star system."""
+        tu_before = state['tu']
+        cost = TU_COSTS['JUMP']
+        params_str = str(target_system_id)
+
+        # Must not be docked
+        if state['docked_at']:
+            return {
+                'command': 'JUMP', 'params': params_str,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': False,
+                'message': "Cannot jump: ship is docked. UNDOCK first."
+            }
+
+        # Must not be landed
+        if state['landed']:
+            return {
+                'command': 'JUMP', 'params': params_str,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': False,
+                'message': "Cannot jump: ship is landed. TAKEOFF first."
+            }
+
+        # Must not be orbiting
+        if state['orbiting']:
+            return {
+                'command': 'JUMP', 'params': params_str,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': False,
+                'message': "Cannot jump: ship is in orbit. Leave orbit first (MOVE to a square)."
+            }
+
+        # Can't jump to current system
+        if target_system_id == state['system_id']:
+            return {
+                'command': 'JUMP', 'params': params_str,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': False,
+                'message': "Cannot jump: you are already in that system."
+            }
+
+        # Check distance from primary star (M13)
+        # The star is always at M13 in a 25x25 grid
+        star_col, star_row = 'M', 13
+        dist_from_star = grid_distance(state['col'], state['row'], star_col, star_row)
+        min_jump_distance = 10
+        if dist_from_star < min_jump_distance:
+            current_loc = f"{state['col']}{state['row']:02d}"
+            return {
+                'command': 'JUMP', 'params': params_str,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': False,
+                'message': (f"Cannot jump: too close to the star. "
+                            f"Ship at {current_loc} is {dist_from_star} squares from the star "
+                            f"(minimum {min_jump_distance} required).")
+            }
+
+        # Check target system exists
+        target = self.conn.execute(
+            "SELECT * FROM star_systems WHERE system_id = ?",
+            (target_system_id,)
+        ).fetchone()
+        if not target:
+            return {
+                'command': 'JUMP', 'params': params_str,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': False,
+                'message': f"Cannot jump: system {target_system_id} not found."
+            }
+
+        # Check system link exists
+        a, b = min(state['system_id'], target_system_id), max(state['system_id'], target_system_id)
+        link = self.conn.execute(
+            "SELECT * FROM system_links WHERE system_a = ? AND system_b = ?",
+            (a, b)
+        ).fetchone()
+        if not link:
+            return {
+                'command': 'JUMP', 'params': params_str,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': False,
+                'message': f"Cannot jump: no known hyperspace link to {target['name']} ({target_system_id})."
+            }
+
+        # Check TU
+        if state['tu'] < cost:
+            self.pending.append({
+                'command': 'JUMP', 'params': params_str,
+                'reason': 'Insufficient TU'
+            })
+            return {
+                'command': 'JUMP', 'params': params_str,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': False,
+                'message': (f"Insufficient TU for jump ({state['tu']} < {cost}). "
+                            f"Order queued as pending.")
+            }
+
+        # Execute jump
+        origin_system = self.conn.execute(
+            "SELECT name FROM star_systems WHERE system_id = ?",
+            (state['system_id'],)
+        ).fetchone()
+        origin_name = origin_system['name'] if origin_system else str(state['system_id'])
+
+        state['system_id'] = target_system_id
+        state['tu'] -= cost
+
+        # Commit position immediately so subsequent commands see the new system
+        self._commit_ship_position(state)
+
+        arrival_loc = f"{state['col']}{state['row']:02d}"
+        return {
+            'command': 'JUMP', 'params': params_str,
+            'tu_before': tu_before, 'tu_after': state['tu'],
+            'tu_cost': cost, 'success': True,
+            'message': (f"Hyperspace jump from {origin_name} ({a if state['system_id'] == b else b}) "
+                        f"to {target['name']} ({target_system_id}). "
+                        f"Arrived at {arrival_loc}. [{cost} TU]")
+        }
+
     def _scan_at_location(self, state):
         """Scan for objects at the ship's current location."""
         objects = self.get_system_objects(state['system_id'])
@@ -1727,11 +1857,13 @@ class TurnResolver:
         """Write final ship state back to database."""
         self.conn.execute("""
             UPDATE ships SET
+                system_id = ?,
                 grid_col = ?, grid_row = ?, tu_remaining = ?,
                 docked_at_base_id = ?, orbiting_body_id = ?,
                 landed_body_id = ?, landed_x = ?, landed_y = ?
             WHERE ship_id = ? AND game_id = ?
         """, (
+            state['system_id'],
             state['col'], state['row'], state['tu'],
             state['docked_at'], state['orbiting'],
             state['landed'], state['landed_x'], state['landed_y'],
