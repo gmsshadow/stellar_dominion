@@ -255,9 +255,9 @@ def create_game(db_path=None, game_id="OMICRON101", game_name="Stellar Dominion 
     # TRADE GOODS & MARKET CONFIGURATION
     # =============================================
     trade_goods = [
-        (101, 'Precious Metals', 20, 5),
-        (102, 'Advanced Computer Cores', 50, 2),
-        (103, 'Food Supplies', 30, 3),
+        (100101, 'Tartarus Precious Metals', 20, 5),
+        (100102, 'Orion Computer Cores', 50, 2),
+        (100103, 'Meridian Food Supplies', 30, 3),
     ]
     for item in trade_goods:
         c.execute("""
@@ -266,19 +266,19 @@ def create_game(db_path=None, game_id="OMICRON101", game_name="Stellar Dominion 
         """, item)
 
     # Base trade roles: (base_id, item_id, role)
-    # Citadel:  produces Adv Computer Cores, average Food, demands Precious Metals
-    # Tartarus: produces Precious Metals, average Adv Computer Cores, demands Food
-    # Meridian: produces Food Supplies, average Precious Metals, demands Adv Computer Cores
+    # Citadel:  produces Orion Computer Cores, average Food, demands Precious Metals
+    # Tartarus: produces Tartarus Precious Metals, average Computer Cores, demands Food
+    # Meridian: produces Meridian Food Supplies, average Precious Metals, demands Computer Cores
     base_trade = [
-        (45687590, 101, 'demands'),
-        (45687590, 102, 'produces'),
-        (45687590, 103, 'average'),
-        (12340001, 101, 'produces'),
-        (12340001, 102, 'average'),
-        (12340001, 103, 'demands'),
-        (78901234, 101, 'average'),
-        (78901234, 102, 'demands'),
-        (78901234, 103, 'produces'),
+        (45687590, 100101, 'demands'),
+        (45687590, 100102, 'produces'),
+        (45687590, 100103, 'average'),
+        (12340001, 100101, 'produces'),
+        (12340001, 100102, 'average'),
+        (12340001, 100103, 'demands'),
+        (78901234, 100101, 'average'),
+        (78901234, 100102, 'demands'),
+        (78901234, 100103, 'produces'),
     ]
     for base_id, item_id, role in base_trade:
         c.execute("""
@@ -385,6 +385,7 @@ def generate_welcome_reports(db_path, game_id, account_number, prefect_id, ship_
         TAKEOFF            Take off from planet surface to orbit. Costs 20 TU.
         SURFACESCAN        Produce a terrain map (must be orbiting or landed). Costs 20 TU.
         WAIT <tu>          Wait and do nothing for a number of TU.
+        JUMP <system_id>   Jump to a linked star system. Costs 60 TU. Must be 10+ squares from star.
 
         TRADING (must be docked)
         -------------------------
@@ -392,8 +393,8 @@ def generate_welcome_reports(db_path, game_id, account_number, prefect_id, ship_
         BUY <base_id> <item_id> <qty>       Buy items from a base market.
         SELL <base_id> <item_id> <qty>      Sell items to a base market.
 
-        Trade items:  101 Precious Metals  |  102 Adv Computer Cores  |  103 Food Supplies
-        YAML example: - BUY: "45687590 101 10"
+        Trade items:  100101 Tartarus Precious Metals  |  100102 Orion Computer Cores  |  100103 Meridian Food Supplies
+        YAML example: - BUY: "45687590 100101 10"
 
         Your ship has 300 TU per turn. Unspent TU are lost at end of turn.
         Submit orders by email or file -- see your game moderator for details.
