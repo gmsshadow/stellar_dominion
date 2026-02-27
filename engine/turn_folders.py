@@ -216,7 +216,7 @@ class TurnFolders:
             account_number = acct_dir.name
             reports = []
             for f in sorted(acct_dir.iterdir()):
-                if f.suffix == ".txt":
+                if f.suffix in (".txt", ".pdf"):
                     reports.append(f)
             if reports:
                 results[account_number] = reports
@@ -227,7 +227,7 @@ class TurnFolders:
         folder = self.processed_dir / turn_str / str(account_number)
         if not folder.exists():
             return []
-        return sorted(folder.glob("*.txt"))
+        return sorted([f for f in folder.iterdir() if f.suffix in (".txt", ".pdf")])
 
     # ------------------------------------------------------------------
     # Routing lookups

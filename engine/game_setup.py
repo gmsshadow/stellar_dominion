@@ -83,7 +83,7 @@ def generate_market_prices(conn, game_id, turn_year, turn_week):
     rng = random.Random(seed)
 
     goods = conn.execute(
-        "SELECT * FROM trade_goods WHERE game_id = ?", (game_id,)
+        "SELECT * FROM trade_goods"
     ).fetchall()
 
     week_averages = {}
@@ -169,9 +169,9 @@ def create_game(db_path=None, game_id="OMICRON101", game_name="Stellar Dominion 
     # STAR SYSTEM: Omicron (101)
     # =============================================
     c.execute("""
-        INSERT INTO star_systems (system_id, game_id, name, star_name, star_spectral_type)
-        VALUES (101, ?, 'Omicron', 'Omicron Prime', 'G2V')
-    """, (game_id,))
+        INSERT INTO star_systems (system_id, name, star_name, star_spectral_type, created_turn)
+        VALUES (101, 'Omicron', 'Omicron Prime', 'G2V', '500.1')
+    """)
 
     # =============================================
     # CELESTIAL BODIES in Omicron System
@@ -181,43 +181,43 @@ def create_game(db_path=None, game_id="OMICRON101", game_name="Stellar Dominion 
     c.execute("""
         INSERT INTO celestial_bodies 
         (body_id, system_id, name, body_type, grid_col, grid_row, gravity, temperature, atmosphere, 
-         tectonic_activity, hydrosphere, life, map_symbol)
+         tectonic_activity, hydrosphere, life, map_symbol, surface_size)
         VALUES (247985, 101, 'Orion', 'planet', 'H', 4, 0.9, 295, 'Standard',
-                4, 65, 'Sentient', 'O')
+                4, 65, 'Sentient', 'O', 31)
     """)
 
     # Planet: Tartarus at R08 -- hot, volcanic, dense atmosphere
     c.execute("""
         INSERT INTO celestial_bodies 
         (body_id, system_id, name, body_type, grid_col, grid_row, gravity, temperature, atmosphere,
-         tectonic_activity, hydrosphere, life, map_symbol)
+         tectonic_activity, hydrosphere, life, map_symbol, surface_size)
         VALUES (301442, 101, 'Tartarus', 'planet', 'R', 8, 1.2, 340, 'Dense',
-                7, 15, 'Microbial', 'O')
+                7, 15, 'Microbial', 'O', 25)
     """)
 
     # Gas Giant: Leviathan at E18
     c.execute("""
         INSERT INTO celestial_bodies 
-        (body_id, system_id, name, body_type, grid_col, grid_row, gravity, temperature, atmosphere, map_symbol)
-        VALUES (155230, 101, 'Leviathan', 'gas_giant', 'E', 18, 2.5, 120, 'Hydrogen', 'G')
+        (body_id, system_id, name, body_type, grid_col, grid_row, gravity, temperature, atmosphere, map_symbol, surface_size)
+        VALUES (155230, 101, 'Leviathan', 'gas_giant', 'E', 18, 2.5, 120, 'Hydrogen', 'G', 50)
     """)
 
     # Moon: Callyx at F19 (moon of Leviathan) -- cold, barren, icy
     c.execute("""
         INSERT INTO celestial_bodies 
         (body_id, system_id, name, body_type, parent_body_id, grid_col, grid_row, gravity, temperature, atmosphere,
-         tectonic_activity, hydrosphere, life, map_symbol)
+         tectonic_activity, hydrosphere, life, map_symbol, surface_size)
         VALUES (88341, 101, 'Callyx', 'moon', 155230, 'F', 19, 0.3, 95, 'Thin',
-                1, 40, 'None', 'o')
+                1, 40, 'None', 'o', 11)
     """)
 
     # Planet: Meridian at T20 -- cold, arid, thin atmosphere, sparse life
     c.execute("""
         INSERT INTO celestial_bodies 
         (body_id, system_id, name, body_type, grid_col, grid_row, gravity, temperature, atmosphere,
-         tectonic_activity, hydrosphere, life, map_symbol)
+         tectonic_activity, hydrosphere, life, map_symbol, surface_size)
         VALUES (412003, 101, 'Meridian', 'planet', 'T', 20, 0.7, 210, 'Thin',
-                2, 10, 'Plant', 'O')
+                2, 10, 'Plant', 'O', 21)
     """)
 
     # =============================================
@@ -255,14 +255,14 @@ def create_game(db_path=None, game_id="OMICRON101", game_name="Stellar Dominion 
     # TRADE GOODS & MARKET CONFIGURATION
     # =============================================
     trade_goods = [
-        (101, game_id, 'Precious Metals', 20, 5),
-        (102, game_id, 'Advanced Computer Cores', 50, 2),
-        (103, game_id, 'Food Supplies', 30, 3),
+        (101, 'Precious Metals', 20, 5),
+        (102, 'Advanced Computer Cores', 50, 2),
+        (103, 'Food Supplies', 30, 3),
     ]
     for item in trade_goods:
         c.execute("""
-            INSERT INTO trade_goods (item_id, game_id, name, base_price, mass_per_unit)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT OR IGNORE INTO trade_goods (item_id, name, base_price, mass_per_unit)
+            VALUES (?, ?, ?, ?)
         """, item)
 
     # Base trade roles: (base_id, item_id, role)
@@ -441,6 +441,15 @@ def generate_welcome_reports(db_path, game_id, account_number, prefect_id, ship_
     ship_file = folders.store_ship_report(turn_str, account_number, ship_id, ship_report)
     prefect_file = folders.store_prefect_report(turn_str, account_number, prefect_id, prefect_report)
 
+    # Generate PDF versions if reportlab is available
+    try:
+        from engine.reports.pdf_export import report_file_to_pdf, is_available as pdf_available
+        if pdf_available():
+            report_file_to_pdf(ship_file)
+            report_file_to_pdf(prefect_file)
+    except Exception:
+        pass  # PDF is optional
+
     print(f"  Welcome reports generated:")
     print(f"    Ship:    {ship_file}")
     print(f"    Prefect: {prefect_file}")
@@ -495,10 +504,9 @@ def add_player(db_path=None, game_id="OMICRON101", player_name="Player 1",
             print(f"Warning: Base {dock_at_base} not found, using default position.")
     elif start_orbit_body:
         body = c.execute(
-            "SELECT cb.*, ss.game_id FROM celestial_bodies cb "
-            "JOIN star_systems ss ON cb.system_id = ss.system_id "
-            "WHERE cb.body_id = ? AND ss.game_id = ?",
-            (start_orbit_body, game_id)
+            "SELECT cb.* FROM celestial_bodies cb "
+            "WHERE cb.body_id = ?",
+            (start_orbit_body,)
         ).fetchone()
         if body:
             ship_start_col = body['grid_col']
@@ -647,9 +655,8 @@ def join_game(db_path=None, game_id="OMICRON101"):
         "SELECT cb.body_id, cb.name, cb.grid_col, cb.grid_row, cb.system_id, ss.name as system_name "
         "FROM celestial_bodies cb "
         "JOIN star_systems ss ON cb.system_id = ss.system_id "
-        "WHERE ss.game_id = ? AND cb.body_type = 'planet' "
-        "ORDER BY cb.name",
-        (game_id,)
+        "WHERE cb.body_type = 'planet' "
+        "ORDER BY cb.name"
     ).fetchall()
     conn.close()
 

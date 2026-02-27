@@ -36,6 +36,7 @@ python pbem.py advance-turn --game OMICRON101
 - Python 3.10+
 - PyYAML (`pip install pyyaml`)
 - SQLite (built-in)
+- ReportLab (`pip install reportlab`) — optional, enables PDF report export
 
 ## Project Structure
 
@@ -44,7 +45,8 @@ stellar_dominion/
 |-- pbem.py                          # Main CLI entry point
 |-- gmail_fetch.py                   # Standalone Gmail fetch (for testing)
 |-- db/
-|   +-- database.py                  # SQLite schema & connection
+|   |-- database.py                  # Two-DB schema, connections & migration
+|   +-- universe_admin.py            # Universe content management (add systems/bodies/links)
 |-- engine/
 |   |-- game_setup.py                # Game/player creation & join-game registration
 |   |-- gmail.py                     # Gmail API integration (auth, fetch, labels)
@@ -52,7 +54,8 @@ stellar_dominion/
 |   |-- registration.py              # Registration form parser (YAML & text)
 |   |-- turn_folders.py              # Turn folder manager (incoming/processed)
 |   |-- maps/
-|   |   +-- system_map.py            # 25x25 ASCII grid renderer
+|   |   |-- system_map.py            # 25x25 ASCII grid renderer
+|   |   +-- surface_gen.py           # 31x31 planet surface terrain generator
 |   |-- orders/
 |   |   +-- parser.py                # YAML & text order parser
 |   |-- resolution/
@@ -60,11 +63,50 @@ stellar_dominion/
 |   +-- reports/
 |       +-- report_gen.py            # Phoenix-style ASCII report generator
 +-- game_data/                       # Created by setup-game
-    |-- stellar_dominion.db          # Persistent game database
+    |-- universe.db                  # World definition (GM-editable)
+    |-- game_state.db                # Live game state (engine-managed)
+    |-- saves/                       # Turn backups (auto after run-turn)
     +-- turns/
         |-- incoming/                # Player orders filed by email address
         +-- processed/               # Resolved reports filed by account number
 ```
+
+## Database Architecture
+
+The game uses a **two-database model**:
+
+**universe.db** — World definition, GM-editable. Contains star systems, celestial bodies,
+system links, factions, and trade goods catalogue. You can open this directly in DB Browser
+for SQLite, add a new system, and it's live next turn.
+
+**game_state.db** — Live game state, engine-managed. Contains players, ships, starbases,
+market prices, orders, turn logs. Automatically backed up after each `run-turn` to
+`saves/game_state_{turn}.db`.
+
+The engine opens `game_state.db` and ATTACHes `universe.db`, so all queries work
+through a single connection — table names are unique across both databases.
+
+### Universe Management CLI
+
+```bash
+python pbem.py list-universe                              # Show all systems, bodies, links
+python pbem.py add-system --name "Proxima" --spectral-type K1V
+python pbem.py add-body --name "Haven" --system-id 102 --col K --row 8 \
+    --gravity 0.95 --temperature 285 --atmosphere Standard \
+    --tectonic 3 --hydrosphere 55 --life Sentient
+python pbem.py add-link 101 102 --known                   # Hyperspace link between systems
+```
+
+New content gets a `created_turn` provenance stamp automatically.
+
+### Legacy Migration
+
+To split an old single-file `stellar_dominion.db` into the two-DB model:
+```bash
+python pbem.py split-db path/to/stellar_dominion.db
+```
+This creates `universe.db` + `game_state.db` in the same directory. The original file
+is preserved. Schema migrations (v0→v3) are applied automatically before splitting.
 
 ## Player Identity
 
@@ -307,6 +349,12 @@ Turns follow `YEAR.WEEK` format: `500.1` through `500.52`, then `501.1`.
 | `process-inbox --inbox <dir>` | Process orders + registrations from inbox |
 | `fetch-mail --credentials <json>` | Fetch from Gmail to staging inbox |
 | `send-turns --credentials <json>` | Email turn reports to players via Gmail |
+| **Universe Management** | |
+| `list-universe` | Show all systems, bodies, links, goods, factions |
+| `add-system --name <name>` | Add a star system to universe.db |
+| `add-body --name <name> --system-id N --col X --row Y` | Add a planet/moon/gas giant to a system |
+| `add-link <sys_a> <sys_b> [--known]` | Add a hyperspace link between two systems |
+| `split-db <legacy.db>` | Split old single-file DB into universe.db + game_state.db |
 
 ### join-game details
 
@@ -490,7 +538,15 @@ Ship turn reports include:
 - **Contacts** -- known objects in the system
 - **Pending Orders** -- orders that failed and carry forward
 
-Prefect reports include financial summaries, ship fleet overview, and known contacts.
+Prefect reports include:
+- **Financial Report** -- per-ship income/expenses summary and current wealth
+- **Ships** -- fleet overview with location and TU status
+- **Known Contacts** -- all detected objects across your ships
+
+All reports are generated as both `.txt` and `.pdf` (if reportlab is installed).
+PDFs use A4 portrait with monospace font, and surface/system maps are rendered at a
+smaller font size so they fit the page without wrapping. Both formats are emailed
+to players by `send-turns`.
 
 ## Game Concepts
 
@@ -536,7 +592,7 @@ tectonic activity, hydrosphere, life level) and deterministic per body.
 **21 Terrain Types:**
 | Symbol | Terrain     | Symbol | Terrain     | Symbol | Terrain     | Symbol | Terrain     |
 |--------|-------------|--------|-------------|--------|-------------|--------|-------------|
-| `~`    | Shallows    | `≈`    | Sea         | `#`    | Ice         | `:`    | Tundra      |
+| `~`    | Shallows    | `S`    | Sea         | `#`    | Ice         | `:`    | Tundra      |
 | `"`    | Grassland   | `.`    | Plains      | `T`    | Forest      | `&`    | Jungle      |
 | `%`    | Swamp       | `;`    | Marsh       | `^`    | Hills       | `A`    | Mountains   |
 | `_`    | Rock        | `,`    | Dust        | `o`    | Crater      | `!`    | Volcanic    |
@@ -615,13 +671,16 @@ than lighter ones (Advanced Computer Cores at 2 MU).
 - [x] Trading between bases (buy/sell cargo with market cycles)
 - [x] Interleaved turn resolution (Phoenix BSE-style priority queue)
 - [x] Planetary landing (LAND/TAKEOFF with surface locations)
-- [x] Planet surface terrain generation (20 terrain types, SURFACESCAN)
+- [x] Planet surface terrain generation (21 terrain types, SURFACESCAN)
+- [x] Two-database architecture (universe.db + game_state.db)
+- [x] Universe expansion CLI (add-system, add-body, add-link)
+- [x] Turn backups (auto snapshot after each run-turn)
+- [x] Legacy DB migration (split-db command)
 - [ ] Gravity check for landing (ship gravity rating vs planet gravity)
 - [ ] Inter-system jump travel
 - [ ] Combat system (naval, ground, boarding)
 - [ ] Base complex management and production
 - [ ] Crew wages and morale
 - [ ] Faction diplomacy and shared knowledge
-- [ ] Planetary surface maps
 - [ ] Web portal for turn upload/display
 - [ ] Standing orders

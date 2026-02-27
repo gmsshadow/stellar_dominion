@@ -295,8 +295,8 @@ def process_single_registration(db_path, game_id, email, content):
     planet = conn.execute(
         "SELECT cb.*, ss.name as system_name FROM celestial_bodies cb "
         "JOIN star_systems ss ON cb.system_id = ss.system_id "
-        "WHERE cb.body_id = ? AND ss.game_id = ?",
-        (planet_id, game_id)
+        "WHERE cb.body_id = ?",
+        (planet_id,)
     ).fetchone()
     if not planet:
         conn.close()

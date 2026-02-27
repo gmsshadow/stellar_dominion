@@ -1130,12 +1130,13 @@ class TurnResolver:
             }
 
         # Validate coordinates
-        if not (1 <= land_x <= 31) or not (1 <= land_y <= 31):
+        surface_size = body['surface_size'] if 'surface_size' in body.keys() else 31
+        if not (1 <= land_x <= surface_size) or not (1 <= land_y <= surface_size):
             return {
                 'command': 'LAND', 'params': params_str,
                 'tu_before': tu_before, 'tu_after': state['tu'],
                 'tu_cost': 0, 'success': False,
-                'message': f"Cannot land: coordinates ({land_x},{land_y}) out of range (1-31)."
+                'message': f"Cannot land: coordinates ({land_x},{land_y}) out of range (1-{surface_size})."
             }
 
         # Check TU
@@ -1308,8 +1309,8 @@ class TurnResolver:
 
         # Look up item
         item = self.conn.execute(
-            "SELECT * FROM trade_goods WHERE item_id = ? AND game_id = ?",
-            (item_id, self.game_id)
+            "SELECT * FROM trade_goods WHERE item_id = ?",
+            (item_id,)
         ).fetchone()
         if not item:
             return {
@@ -1426,6 +1427,9 @@ class TurnResolver:
             'command': 'BUY', 'params': params_str,
             'tu_before': tu_before, 'tu_after': state['tu'],
             'tu_cost': 0, 'success': True,
+            'credits_spent': total_cost_cr,
+            'item_name': item['name'], 'item_id': item_id,
+            'quantity': actual_qty,
             'message': (f"Bought {actual_qty} {item['name']} ({item_id}) "
                         f"at {buy_price} cr each = {total_cost_cr:,} cr total "
                         f"from {base_name} ({base_id}). [{total_mass} MU]{capped_msg}")
@@ -1450,8 +1454,8 @@ class TurnResolver:
 
         # Look up item
         item = self.conn.execute(
-            "SELECT * FROM trade_goods WHERE item_id = ? AND game_id = ?",
-            (item_id, self.game_id)
+            "SELECT * FROM trade_goods WHERE item_id = ?",
+            (item_id,)
         ).fetchone()
         if not item:
             return {
@@ -1564,6 +1568,9 @@ class TurnResolver:
             'command': 'SELL', 'params': params_str,
             'tu_before': tu_before, 'tu_after': state['tu'],
             'tu_cost': 0, 'success': True,
+            'credits_earned': total_income,
+            'item_name': item['name'], 'item_id': item_id,
+            'quantity': actual_qty,
             'message': (f"Sold {actual_qty} {item['name']} ({item_id}) "
                         f"at {sell_price} cr each = {total_income:,} cr total "
                         f"to {base_name} ({base_id}). [{total_mass} MU freed]{capped_msg}")
@@ -1606,7 +1613,7 @@ class TurnResolver:
             SELECT mp.*, tg.name as item_name, tg.mass_per_unit,
                    btc.trade_role
             FROM market_prices mp
-            JOIN trade_goods tg ON mp.item_id = tg.item_id AND tg.game_id = mp.game_id
+            JOIN trade_goods tg ON mp.item_id = tg.item_id
             JOIN base_trade_config btc ON mp.base_id = btc.base_id
                 AND mp.item_id = btc.item_id AND btc.game_id = mp.game_id
             WHERE mp.game_id = ? AND mp.base_id = ?

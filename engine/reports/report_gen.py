@@ -406,8 +406,12 @@ def generate_ship_report(turn_result, db_path=None, game_id="OMICRON101",
 
 
 def generate_prefect_report(prefect_id, db_path=None, game_id="OMICRON101",
-                            between_turn_messages=None):
-    """Generate a prefect turn report."""
+                            between_turn_messages=None, trade_summary=None):
+    """
+    Generate a prefect turn report.
+    
+    trade_summary: {ship_id: {'income': N, 'expenses': N, 'trades': [...]}}
+    """
     conn = get_connection(db_path)
 
     prefect = conn.execute(
@@ -529,26 +533,31 @@ def generate_prefect_report(prefect_id, db_path=None, game_id="OMICRON101",
         f"{'POSITION':<38} {'INCOME':>8}  {'EXPENSES':>8}  {'NET':>8}"
     ))
 
+    if trade_summary is None:
+        trade_summary = {}
+
     total_income = 0
     total_expenses = 0
     for s in ships:
-        income = 0
-        expenses = 0
+        ship_trade = trade_summary.get(s['ship_id'], {})
+        income = ship_trade.get('income', 0)
+        expenses = ship_trade.get('expenses', 0)
         net = income - expenses
         total_income += income
         total_expenses += expenses
         ship_display = faction_display_name(conn, s['name'], prefect['faction_id'])
         lines.append(section_line(
             f"{ship_display} ({s['ship_id']})".ljust(38) +
-            f"{income:>8}  {expenses:>8}  {net:>8}"
+            f"{income:>8,}  {expenses:>8,}  {net:>8,}"
         ))
 
     lines.append(section_line(
         f"{'':38} {'-------':>8}  {'-------':>8}  {'-------':>8}"
     ))
+    total_net = total_income - total_expenses
     lines.append(section_line(
-        f"{'':38} {total_income:>8}  {total_expenses:>8}  "
-        f"{total_income - total_expenses:>8}"
+        f"{'':38} {total_income:>8,}  {total_expenses:>8,}  "
+        f"{total_net:>8,}"
     ))
     lines.append(section_line())
     lines.append(section_line(f"Wealth: {prefect['credits']:,.0f} Credits"))

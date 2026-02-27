@@ -25,7 +25,8 @@ from datetime import datetime
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent))
 
-from db.database import init_db, get_connection, migrate_db, get_faction, faction_display_name
+from db.database import init_db, get_connection, get_faction, faction_display_name, backup_state, split_legacy_db, migrate_db
+from db.universe_admin import add_system, add_body, add_link, add_trade_good, list_universe
 from engine.game_setup import create_game, add_player, setup_demo_game, join_game, suspend_player, reinstate_player, list_players
 from engine.orders.parser import parse_orders_file, parse_yaml_orders, parse_text_orders
 from engine.registration import parse_registration_file, validate_registration
@@ -35,6 +36,7 @@ from engine.order_processor import (
 )
 from engine.resolution.resolver import TurnResolver
 from engine.reports.report_gen import generate_ship_report, generate_prefect_report
+from engine.reports.pdf_export import report_file_to_pdf, is_available as pdf_available
 from engine.maps.system_map import render_system_map
 from engine.turn_folders import TurnFolders
 
@@ -313,6 +315,9 @@ def cmd_run_turn(args):
         results = {}
 
     # Phase 3: Generate reports and mark orders resolved
+    # Also collect trade summaries per prefect for financial report
+    trade_by_prefect = {}  # {prefect_id: {ship_id: {'income': N, 'expenses': N, 'trades': [...]}}}
+
     for ship_id, result in results.items():
         meta = ship_meta[ship_id]
         display_name = meta['display_name']
@@ -330,10 +335,51 @@ def cmd_run_turn(args):
         """, (args.game, game['current_year'], game['current_week'], ship_id))
         conn.commit()
 
+        # Collect trade data from this ship's action log
+        ship_row = conn.execute("SELECT owner_prefect_id FROM ships WHERE ship_id = ?",
+                                (ship_id,)).fetchone()
+        if ship_row:
+            pid = ship_row['owner_prefect_id']
+            if pid not in trade_by_prefect:
+                trade_by_prefect[pid] = {}
+            ship_income = 0
+            ship_expenses = 0
+            ship_trades = []
+            for action in result.get('log', []):
+                if action.get('command') == 'BUY' and action.get('success'):
+                    spent = action.get('credits_spent', 0)
+                    ship_expenses += spent
+                    ship_trades.append({
+                        'type': 'BUY',
+                        'item': action.get('item_name', '?'),
+                        'qty': action.get('quantity', 0),
+                        'credits': spent,
+                    })
+                elif action.get('command') == 'SELL' and action.get('success'):
+                    earned = action.get('credits_earned', 0)
+                    ship_income += earned
+                    ship_trades.append({
+                        'type': 'SELL',
+                        'item': action.get('item_name', '?'),
+                        'qty': action.get('quantity', 0),
+                        'credits': earned,
+                    })
+            trade_by_prefect[pid][ship_id] = {
+                'income': ship_income,
+                'expenses': ship_expenses,
+                'trades': ship_trades,
+            }
+
         # Generate ship report
         report = generate_ship_report(result, db_path, args.game)
         report_file = folders.store_ship_report(turn_str, account_number, ship_id, report)
         print(f"    Ship report:      {report_file}")
+
+        # Generate PDF version
+        if pdf_available():
+            pdf_path = report_file_to_pdf(report_file)
+            if pdf_path:
+                print(f"    Ship PDF:         {pdf_path}")
 
         if args.verbose:
             print()
@@ -357,11 +403,21 @@ def cmd_run_turn(args):
     for pol in all_prefects:
         prefect_id = pol['prefect_id']
         account_number = pol['account_number']
-        prefect_report = generate_prefect_report(prefect_id, db_path, args.game)
+        ship_trades = trade_by_prefect.get(prefect_id, {})
+        prefect_report = generate_prefect_report(
+            prefect_id, db_path, args.game,
+            trade_summary=ship_trades
+        )
         pol_file = folders.store_prefect_report(turn_str, account_number, prefect_id, prefect_report)
         email = pol['email']
         print(f"  Account {account_number} -> {email}")
         print(f"    Prefect report: {pol_file}")
+
+        # Generate PDF version
+        if pdf_available():
+            pdf_path = report_file_to_pdf(pol_file)
+            if pdf_path:
+                print(f"    Prefect PDF:    {pdf_path}")
 
         # Show total files to send
         player_reports = folders.get_player_reports(turn_str, account_number)
@@ -371,6 +427,12 @@ def cmd_run_turn(args):
     resolver.close()
     conn.close()
     print(f"\n=== Turn {turn_str} resolution complete ===")
+
+    # Backup game state after successful turn
+    state_db = Path(args.db) if args.db else None
+    backup_path = backup_state(turn_label=turn_str, state_db_path=state_db)
+    if backup_path:
+        print(f"  State backed up to: {backup_path.name}")
 
     # Show processed folder structure
     processed = folders.list_processed(turn_str)
@@ -578,8 +640,8 @@ def cmd_show_map(args):
     conn = get_connection(db_path)
 
     system = conn.execute(
-        "SELECT * FROM star_systems WHERE game_id = ? AND system_id = ?",
-        (args.game, args.system or 101)
+        "SELECT * FROM star_systems WHERE system_id = ?",
+        (args.system or 101,)
     ).fetchone()
 
     if not system:
@@ -1258,6 +1320,109 @@ def cmd_fetch_mail(args):
     print(f"\n  Next step: python pbem.py process-inbox --inbox {inbox_dir} --game {args.game}")
 
 
+# ======================================================================
+# UNIVERSE MANAGEMENT COMMANDS
+# ======================================================================
+
+def cmd_split_db(args):
+    """Split a legacy single-file database into universe.db + game_state.db."""
+    legacy_path = Path(args.legacy_db)
+    split_legacy_db(legacy_path)
+
+
+def cmd_add_system(args):
+    """Add a new star system to the universe."""
+    from db.universe_admin import add_system
+
+    # Get current turn for provenance from game state
+    created_turn = None
+    if not args.no_turn_stamp:
+        try:
+            state_path = Path(args.db) if args.db else None
+            conn = get_connection(state_path)
+            game = conn.execute("SELECT * FROM games LIMIT 1").fetchone()
+            if game:
+                created_turn = f"{game['current_year']}.{game['current_week']}"
+            conn.close()
+        except Exception:
+            pass
+
+    add_system(
+        system_id=args.system_id,
+        name=args.name,
+        star_name=args.star_name,
+        spectral_type=args.spectral_type or 'G2V',
+        star_col=args.star_col or 'M',
+        star_row=args.star_row or 13,
+        created_turn=created_turn,
+    )
+
+
+def cmd_add_body(args):
+    """Add a celestial body to a system."""
+    from db.universe_admin import add_body
+
+    created_turn = None
+    if not args.no_turn_stamp:
+        try:
+            state_path = Path(args.db) if args.db else None
+            conn = get_connection(state_path)
+            game = conn.execute("SELECT * FROM games LIMIT 1").fetchone()
+            if game:
+                created_turn = f"{game['current_year']}.{game['current_week']}"
+            conn.close()
+        except Exception:
+            pass
+
+    add_body(
+        body_id=args.body_id,
+        system_id=args.system_id,
+        name=args.name,
+        body_type=args.body_type or 'planet',
+        parent_body_id=args.parent,
+        grid_col=args.col,
+        grid_row=args.row,
+        gravity=args.gravity or 1.0,
+        temperature=args.temperature or 300,
+        atmosphere=args.atmosphere or 'Standard',
+        tectonic_activity=args.tectonic or 0,
+        hydrosphere=args.hydrosphere or 0,
+        life=args.life or 'None',
+        surface_size=args.surface_size,
+        created_turn=created_turn,
+    )
+
+
+def cmd_add_link(args):
+    """Add a hyperspace link between two systems."""
+    from db.universe_admin import add_link
+
+    created_turn = None
+    if not args.no_turn_stamp:
+        try:
+            state_path = Path(args.db) if args.db else None
+            conn = get_connection(state_path)
+            game = conn.execute("SELECT * FROM games LIMIT 1").fetchone()
+            if game:
+                created_turn = f"{game['current_year']}.{game['current_week']}"
+            conn.close()
+        except Exception:
+            pass
+
+    add_link(
+        system_a=args.system_a,
+        system_b=args.system_b,
+        known_by_default=1 if args.known else 0,
+        created_turn=created_turn,
+    )
+
+
+def cmd_list_universe(args):
+    """Show all universe content."""
+    from db.universe_admin import list_universe
+    list_universe()
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Stellar Dominion - PBEM Strategy Game Engine",
@@ -1426,6 +1591,49 @@ Gmail integration (two-stage workflow):
     sp.add_argument('--dry-run', action='store_true',
                     help='Show what would be sent without sending')
 
+    # --- split-db ---
+    sp = subparsers.add_parser('split-db', help='Split legacy single DB into universe.db + game_state.db')
+    sp.add_argument('legacy_db', help='Path to the legacy stellar_dominion.db file')
+
+    # --- add-system ---
+    sp = subparsers.add_parser('add-system', help='Add a star system to the universe')
+    sp.add_argument('--name', required=True, help='System name')
+    sp.add_argument('--system-id', type=int, default=None, help='System ID (auto-assigned if omitted)')
+    sp.add_argument('--star-name', default=None, help='Star name (defaults to "<name> Prime")')
+    sp.add_argument('--spectral-type', default='G2V', help='Spectral type (default: G2V)')
+    sp.add_argument('--star-col', default='M', help='Star grid column (default: M)')
+    sp.add_argument('--star-row', type=int, default=13, help='Star grid row (default: 13)')
+    sp.add_argument('--no-turn-stamp', action='store_true', help='Skip created_turn provenance')
+
+    # --- add-body ---
+    sp = subparsers.add_parser('add-body', help='Add a celestial body to a system')
+    sp.add_argument('--name', required=True, help='Body name')
+    sp.add_argument('--system-id', type=int, required=True, help='System to add body to')
+    sp.add_argument('--body-id', type=int, default=None, help='Body ID (auto-assigned if omitted)')
+    sp.add_argument('--body-type', default='planet', choices=['planet', 'moon', 'gas_giant', 'asteroid'])
+    sp.add_argument('--parent', type=int, default=None, help='Parent body ID (for moons)')
+    sp.add_argument('--col', required=True, help='Grid column (e.g. H)')
+    sp.add_argument('--row', type=int, required=True, help='Grid row (e.g. 4)')
+    sp.add_argument('--gravity', type=float, default=1.0, help='Surface gravity')
+    sp.add_argument('--temperature', type=int, default=300, help='Surface temperature (K)')
+    sp.add_argument('--atmosphere', default='Standard', help='Atmosphere type')
+    sp.add_argument('--tectonic', type=int, default=0, help='Tectonic activity (0-10)')
+    sp.add_argument('--hydrosphere', type=int, default=0, help='Hydrosphere percentage (0-100)')
+    sp.add_argument('--life', default='None', help='Life level (None/Microbial/Plant/Animal/Sentient)')
+    sp.add_argument('--surface-size', type=int, default=None,
+                    help='Surface grid size 5-50 (default: planet=31, moon=15, gas_giant=50, asteroid=11)')
+    sp.add_argument('--no-turn-stamp', action='store_true', help='Skip created_turn provenance')
+
+    # --- add-link ---
+    sp = subparsers.add_parser('add-link', help='Add a hyperspace link between two systems')
+    sp.add_argument('system_a', type=int, help='First system ID')
+    sp.add_argument('system_b', type=int, help='Second system ID')
+    sp.add_argument('--known', action='store_true', help='Link is known by default (visible to all)')
+    sp.add_argument('--no-turn-stamp', action='store_true', help='Skip created_turn provenance')
+
+    # --- list-universe ---
+    sp = subparsers.add_parser('list-universe', help='Show all universe content (systems, bodies, links)')
+
     args = parser.parse_args()
 
     if not args.command:
@@ -1452,15 +1660,14 @@ Gmail integration (two-stage workflow):
         'process-inbox': cmd_process_inbox,
         'fetch-mail': cmd_fetch_mail,
         'send-turns': cmd_send_turns,
+        'split-db': cmd_split_db,
+        'add-system': cmd_add_system,
+        'add-body': cmd_add_body,
+        'add-link': cmd_add_link,
+        'list-universe': cmd_list_universe,
     }
 
     if args.command in commands:
-        # Auto-migrate database schema if DB exists
-        db_path = Path(args.db) if args.db else None
-        try:
-            migrate_db(db_path)
-        except Exception:
-            pass  # DB may not exist yet (e.g. setup-game)
         commands[args.command](args)
     else:
         parser.print_help()
