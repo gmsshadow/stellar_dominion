@@ -1350,39 +1350,48 @@ class TurnResolver:
 
         # Cap quantity to available stock
         actual_qty = min(quantity, available_stock)
-        if actual_qty < quantity:
-            capped_msg = f" (only {available_stock} in stock, requested {quantity})"
-        else:
-            capped_msg = ""
 
-        total_cost_cr = buy_price * actual_qty
-        total_mass = item['mass_per_unit'] * actual_qty
-
-        # Check credits
+        # Cap to available credits
         ship = self.get_ship(state['ship_id'])
         prefect = self.conn.execute(
             "SELECT * FROM prefects WHERE prefect_id = ?",
             (ship['owner_prefect_id'],)
         ).fetchone()
-        if prefect['credits'] < total_cost_cr:
+        if buy_price > 0:
+            max_by_credits = int(prefect['credits'] // buy_price)
+            actual_qty = min(actual_qty, max_by_credits)
+
+        # Cap to available cargo space
+        available_mu = ship['cargo_capacity'] - ship['cargo_used']
+        if item['mass_per_unit'] > 0:
+            max_by_cargo = int(available_mu // item['mass_per_unit'])
+            actual_qty = min(actual_qty, max_by_cargo)
+
+        if actual_qty <= 0:
             return {
                 'command': 'BUY', 'params': params_str,
                 'tu_before': tu_before, 'tu_after': state['tu'],
                 'tu_cost': 0, 'success': False,
-                'message': (f"Cannot buy: insufficient credits. "
-                            f"Need {total_cost_cr:,} cr, have {prefect['credits']:,.0f} cr.")
+                'message': (f"Cannot buy any {item['name']}: "
+                            f"stock={available_stock}, credits={prefect['credits']:,.0f} cr, "
+                            f"cargo space={available_mu} MU free.")
             }
 
-        # Check cargo space
-        if ship['cargo_used'] + total_mass > ship['cargo_capacity']:
-            available = ship['cargo_capacity'] - ship['cargo_used']
-            return {
-                'command': 'BUY', 'params': params_str,
-                'tu_before': tu_before, 'tu_after': state['tu'],
-                'tu_cost': 0, 'success': False,
-                'message': (f"Cannot buy: insufficient cargo space. "
-                            f"Need {total_mass} MU, have {available} MU free.")
-            }
+        # Build capped message
+        cap_reasons = []
+        if actual_qty < quantity:
+            if available_stock < quantity:
+                cap_reasons.append(f"stock={available_stock}")
+            if buy_price > 0 and int(prefect['credits'] // buy_price) < quantity:
+                cap_reasons.append(f"credits={prefect['credits']:,.0f} cr")
+            if item['mass_per_unit'] > 0 and int(available_mu // item['mass_per_unit']) < quantity:
+                cap_reasons.append(f"cargo={available_mu} MU free")
+            capped_msg = f" (capped from {quantity} to {actual_qty}: {', '.join(cap_reasons)})"
+        else:
+            capped_msg = ""
+
+        total_cost_cr = buy_price * actual_qty
+        total_mass = item['mass_per_unit'] * actual_qty
 
         # Execute purchase
         self.conn.execute(
@@ -1470,14 +1479,12 @@ class TurnResolver:
             "SELECT * FROM cargo_items WHERE ship_id = ? AND item_type_id = ?",
             (state['ship_id'], item_id)
         ).fetchone()
-        if not cargo or cargo['quantity'] < quantity:
-            have = cargo['quantity'] if cargo else 0
+        if not cargo or cargo['quantity'] <= 0:
             return {
                 'command': 'SELL', 'params': params_str,
                 'tu_before': tu_before, 'tu_after': state['tu'],
                 'tu_cost': 0, 'success': False,
-                'message': (f"Cannot sell: insufficient stock. "
-                            f"Have {have} {item['name']}, need {quantity}.")
+                'message': f"Cannot sell: you have no {item['name']} in cargo."
             }
 
         # Look up current price (keyed to market cycle start)
@@ -1508,25 +1515,31 @@ class TurnResolver:
                 'message': f"Cannot sell: no demand for {item['name']} at this base."
             }
 
-        # Cap quantity to demand
-        actual_qty = min(quantity, available_demand)
+        # Cap to what we actually have, then to demand
+        actual_qty = min(quantity, cargo['quantity'], available_demand)
+
+        if actual_qty <= 0:
+            return {
+                'command': 'SELL', 'params': params_str,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': False,
+                'message': (f"Cannot sell any {item['name']}: "
+                            f"have={cargo['quantity']}, demand={available_demand}.")
+            }
+
+        # Build capped message
+        cap_reasons = []
         if actual_qty < quantity:
-            capped_msg = f" (base only buying {available_demand}, requested {quantity})"
+            if cargo['quantity'] < quantity:
+                cap_reasons.append(f"have {cargo['quantity']} in cargo")
+            if available_demand < quantity:
+                cap_reasons.append(f"demand={available_demand}")
+            capped_msg = f" (capped from {quantity} to {actual_qty}: {', '.join(cap_reasons)})"
         else:
             capped_msg = ""
 
         total_income = sell_price * actual_qty
         total_mass = item['mass_per_unit'] * actual_qty
-
-        # Re-check cargo against actual_qty
-        if cargo['quantity'] < actual_qty:
-            return {
-                'command': 'SELL', 'params': params_str,
-                'tu_before': tu_before, 'tu_after': state['tu'],
-                'tu_cost': 0, 'success': False,
-                'message': (f"Cannot sell: insufficient stock. "
-                            f"Have {cargo['quantity']} {item['name']}, need {actual_qty}.")
-            }
 
         # Execute sale
         ship = self.get_ship(state['ship_id'])
