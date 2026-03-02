@@ -94,6 +94,18 @@ def cmd_submit_orders(args):
     folders = TurnFolders(db_path=db_path, game_id=args.game)
     turn_str = folders.get_current_turn_str()
 
+    # Check turn_status - reject orders if turn is held or processing
+    conn_check = get_connection(db_path)
+    game_check = conn_check.execute(
+        "SELECT turn_status FROM games WHERE game_id = ?", (args.game,)
+    ).fetchone()
+    if game_check and game_check['turn_status'] in ('held', 'processing', 'completed'):
+        print(f"Error: Turn is currently {game_check['turn_status']}. Orders cannot be submitted.")
+        print(f"  Ask the GM to release the turn or advance to the next turn.")
+        conn_check.close()
+        return
+    conn_check.close()
+
     # Determine sender email
     email = args.email
     if not email:
@@ -241,6 +253,25 @@ def cmd_run_turn(args):
         conn.close()
         return
 
+    # Check turn_status - block if held (unless --force)
+    force = hasattr(args, 'force') and args.force
+    if game['turn_status'] == 'held' and not force:
+        print(f"Error: Turn is HELD by GM. Cannot process.")
+        print(f"  Use 'release-turn' first, or 'run-turn --force' to override.")
+        conn.close()
+        return
+    if game['turn_status'] == 'completed' and not force:
+        print(f"Error: Turn already completed. Use 'advance-turn' to move to next turn.")
+        conn.close()
+        return
+
+    # Mark turn as processing
+    conn.execute(
+        "UPDATE games SET turn_status = 'processing' WHERE game_id = ?",
+        (args.game,)
+    )
+    conn.commit()
+
     turn_str = f"{game['current_year']}.{game['current_week']}"
 
     # Determine which ships to resolve
@@ -280,6 +311,7 @@ def cmd_run_turn(args):
         display_name = f"{faction['abbreviation']} {ship['name']}"
         account_number = folders.get_account_for_prefect(prefect_id)
 
+        # Load new orders from this turn
         stored_orders = conn.execute("""
             SELECT * FROM turn_orders 
             WHERE game_id = ? AND turn_year = ? AND turn_week = ?
@@ -287,25 +319,263 @@ def cmd_run_turn(args):
             ORDER BY order_sequence
         """, (args.game, game['current_year'], game['current_week'], ship_id)).fetchall()
 
-        if not stored_orders:
-            print(f"  {display_name} ({ship_id}): No orders this turn.")
-            continue
-
-        order_list = []
+        new_orders = []
         for so in stored_orders:
             params = json.loads(so['parameters']) if so['parameters'] else None
-            order_list.append({
+            new_orders.append({
                 'sequence': so['order_sequence'],
                 'command': so['command'],
                 'params': params,
             })
 
-        ship_orders_map[ship_id] = order_list
+        # Load overflow orders from previous turns
+        overflow_rows = conn.execute("""
+            SELECT * FROM pending_orders
+            WHERE game_id = ? AND subject_type = 'ship' AND subject_id = ?
+            ORDER BY order_sequence
+        """, (args.game, ship_id)).fetchall()
+
+        overflow_orders = []
+        for ov in overflow_rows:
+            params = json.loads(ov['parameters']) if ov['parameters'] else None
+            overflow_orders.append({
+                'command': ov['command'],
+                'params': params,
+            })
+
+        # Check if new orders contain CLEAR — if so, discard overflow
+        has_clear = any(o['command'] == 'CLEAR' for o in new_orders)
+        if has_clear and overflow_orders:
+            print(f"  {display_name} ({ship_id}): CLEAR — discarding {len(overflow_orders)} overflow orders from last turn")
+            overflow_orders = []
+
+        # Delete stored overflow regardless (will be re-saved after resolution)
+        conn.execute("""
+            DELETE FROM pending_orders
+            WHERE game_id = ? AND subject_type = 'ship' AND subject_id = ?
+        """, (args.game, ship_id))
+        conn.commit()
+
+        # Merge: overflow first, then new orders
+        combined = overflow_orders + new_orders
+
+        if not combined:
+            print(f"  {display_name} ({ship_id}): No orders this turn.")
+            continue
+
+        parts = []
+        if overflow_orders:
+            parts.append(f"{len(overflow_orders)} overflow")
+        if new_orders:
+            parts.append(f"{len(new_orders)} new")
+        print(f"  {display_name} ({ship_id}): {' + '.join(parts)} = {len(combined)} orders queued")
+
+        ship_orders_map[ship_id] = combined
         ship_meta[ship_id] = {
             'display_name': display_name,
             'account_number': account_number,
         }
-        print(f"  {display_name} ({ship_id}): {len(order_list)} orders queued")
+
+    # Phase 1.1: Check for MODERATOR orders — auto-hold if pending
+    mod_orders_found = []
+    for sid, orders in ship_orders_map.items():
+        ship_row = conn.execute("SELECT name, owner_prefect_id FROM ships WHERE ship_id = ?", (sid,)).fetchone()
+        for order in orders:
+            if order['command'] == 'MODERATOR':
+                mod_orders_found.append({
+                    'ship_id': sid,
+                    'ship_name': ship_row['name'],
+                    'prefect_id': ship_row['owner_prefect_id'],
+                    'text': order['params']['text'],
+                })
+
+    if mod_orders_found:
+        # Create moderator_actions records for any that don't already exist
+        for mo in mod_orders_found:
+            existing = conn.execute("""
+                SELECT action_id FROM moderator_actions
+                WHERE game_id = ? AND ship_id = ? AND request_text = ?
+                AND requested_turn_year = ? AND requested_turn_week = ?
+            """, (args.game, mo['ship_id'], mo['text'],
+                  game['current_year'], game['current_week'])).fetchone()
+            if not existing:
+                conn.execute("""
+                    INSERT INTO moderator_actions
+                    (game_id, ship_id, prefect_id, request_text, status,
+                     requested_turn_year, requested_turn_week)
+                    VALUES (?, ?, ?, ?, 'pending', ?, ?)
+                """, (args.game, mo['ship_id'], mo['prefect_id'], mo['text'],
+                      game['current_year'], game['current_week']))
+        conn.commit()
+
+        # Check for any still-pending (unresponded) moderator actions this turn
+        pending_actions = conn.execute("""
+            SELECT ma.action_id, ma.request_text, s.name as ship_name, p.name as prefect_name
+            FROM moderator_actions ma
+            JOIN ships s ON ma.ship_id = s.ship_id
+            JOIN prefects p ON ma.prefect_id = p.prefect_id
+            WHERE ma.game_id = ? AND ma.requested_turn_year = ? AND ma.requested_turn_week = ?
+            AND ma.status = 'pending'
+        """, (args.game, game['current_year'], game['current_week'])).fetchall()
+
+        if pending_actions:
+            # Auto-hold the turn
+            conn.execute(
+                "UPDATE games SET turn_status = 'held' WHERE game_id = ?",
+                (args.game,)
+            )
+            conn.commit()
+            print(f"\n  *** TURN AUTO-HELD: {len(pending_actions)} moderator action(s) require GM response ***")
+            for pa in pending_actions:
+                print(f"    #{pa['action_id']}: {pa['prefect_name']}/{pa['ship_name']}: \"{pa['request_text']}\"")
+            print(f"\n  Use 'list-actions --game {args.game}' to review.")
+            print(f"  Use 'respond-action --action-id N --response \"...\"' to respond.")
+            print(f"  Then 'release-turn --game {args.game}' and 'run-turn --game {args.game}' to continue.")
+            resolver.close()
+            conn.close()
+            return
+
+    # Phase 1.5: Crew wage deduction
+    # Regular crew: 1 cr/week, Officers: 5 cr/week
+    wage_messages = {}  # {ship_id: [msg_lines]}
+    all_ships = conn.execute(
+        "SELECT s.*, p.credits as prefect_credits FROM ships s "
+        "JOIN prefects p ON s.owner_prefect_id = p.prefect_id "
+        "WHERE s.game_id = ?", (args.game,)
+    ).fetchall()
+
+    wage_by_prefect = {}  # {prefect_id: total_wages}
+    for ship in all_ships:
+        # Count officers and their wages
+        officers = conn.execute(
+            "SELECT COUNT(*) as cnt, COALESCE(SUM(wages), 0) as total_wages "
+            "FROM officers WHERE ship_id = ?",
+            (ship['ship_id'],)
+        ).fetchone()
+        officer_count = officers['cnt']
+        officer_wages = int(officers['total_wages'])
+
+        # Count cargo crew
+        cargo_crew_row = conn.execute(
+            "SELECT COALESCE(SUM(quantity), 0) as cnt FROM cargo_items "
+            "WHERE ship_id = ? AND item_type_id = 401",
+            (ship['ship_id'],)
+        ).fetchone()
+        cargo_crew = cargo_crew_row['cnt']
+
+        crew_count = cargo_crew + officer_count
+        crew_required = ship['crew_required'] if ship['crew_required'] else 1
+        efficiency = min(100.0, (crew_count / max(1, crew_required)) * 100.0)
+
+        # Update crew_count and efficiency in DB
+        conn.execute(
+            "UPDATE ships SET crew_count = ?, efficiency = ? WHERE ship_id = ?",
+            (crew_count, efficiency, ship['ship_id'])
+        )
+
+        crew_wages = cargo_crew * 1  # 1 cr per regular crew
+        total_wages = crew_wages + officer_wages
+        if total_wages <= 0:
+            continue
+
+        prefect_id = ship['owner_prefect_id']
+        if prefect_id not in wage_by_prefect:
+            wage_by_prefect[prefect_id] = 0
+        wage_by_prefect[prefect_id] += total_wages
+
+        msgs = []
+        parts = []
+        if cargo_crew > 0:
+            parts.append(f"{cargo_crew} crew x 1 cr = {crew_wages} cr")
+        if officer_count > 0:
+            parts.append(f"{officer_count} officer{'s' if officer_count != 1 else ''} x 5 cr = {officer_wages} cr")
+        msgs.append(f"Wages: {' + '.join(parts)} = {total_wages} cr deducted.")
+        if crew_count < ship['crew_required']:
+            msgs.append(
+                f"  WARNING: Ship undermanned! {crew_count}/{ship['crew_required']} crew. "
+                f"Efficiency: {efficiency:.0f}% (+{100 - efficiency:.0f}% TU penalty)."
+            )
+        life_support = ship['life_support_capacity'] if ship['life_support_capacity'] else 20
+        msgs.append(f"  Life support: {crew_count}/{life_support} capacity.")
+        wage_messages[ship['ship_id']] = msgs
+
+    # Deduct wages per prefect (aggregate)
+    for prefect_id, total_wages in wage_by_prefect.items():
+        conn.execute(
+            "UPDATE prefects SET credits = credits - ? WHERE prefect_id = ?",
+            (total_wages, prefect_id)
+        )
+    conn.commit()
+
+    # Phase 1.6: Process approved faction change requests
+    faction_messages = {}  # {prefect_id: [msg_lines]}
+    approved_requests = conn.execute("""
+        SELECT fr.*, cf.abbreviation as old_abbr, cf.name as old_name,
+               tf.abbreviation as new_abbr, tf.name as new_name
+        FROM faction_requests fr
+        LEFT JOIN factions cf ON fr.current_faction_id = cf.faction_id
+        LEFT JOIN factions tf ON fr.target_faction_id = tf.faction_id
+        WHERE fr.game_id = ? AND fr.status = 'approved'
+    """, (args.game,)).fetchall()
+
+    for req in approved_requests:
+        # Apply the faction change
+        conn.execute(
+            "UPDATE prefects SET faction_id = ? WHERE prefect_id = ?",
+            (req['target_faction_id'], req['prefect_id'])
+        )
+        # Mark request as processed
+        conn.execute("""
+            UPDATE faction_requests
+            SET status = 'completed',
+                processed_turn_year = ?, processed_turn_week = ?
+            WHERE request_id = ?
+        """, (game['current_year'], game['current_week'], req['request_id']))
+
+        old = req['old_abbr'] or 'IND'
+        new = req['new_abbr'] or 'IND'
+        msgs = [
+            f"FACTION CHANGE APPROVED: {old} -> {new} ({req['new_name']})",
+        ]
+        if req['gm_note']:
+            msgs.append(f"  GM note: \"{req['gm_note']}\"")
+        msgs.append(f"  All ships now fly under the {req['new_abbr']} banner.")
+
+        pid = req['prefect_id']
+        if pid not in faction_messages:
+            faction_messages[pid] = []
+        faction_messages[pid].extend(msgs)
+
+    # Also notify denied requests
+    denied_requests = conn.execute("""
+        SELECT fr.*, tf.abbreviation as target_abbr, tf.name as target_name
+        FROM faction_requests fr
+        LEFT JOIN factions tf ON fr.target_faction_id = tf.faction_id
+        WHERE fr.game_id = ? AND fr.status = 'denied'
+        AND fr.processed_turn_year IS NULL
+    """, (args.game,)).fetchall()
+
+    for req in denied_requests:
+        conn.execute("""
+            UPDATE faction_requests
+            SET processed_turn_year = ?, processed_turn_week = ?
+            WHERE request_id = ?
+        """, (game['current_year'], game['current_week'], req['request_id']))
+
+        msgs = [
+            f"FACTION CHANGE DENIED: request to join {req['target_abbr']} ({req['target_name']}) was denied.",
+        ]
+        if req['gm_note']:
+            msgs.append(f"  GM note: \"{req['gm_note']}\"")
+
+        pid = req['prefect_id']
+        if pid not in faction_messages:
+            faction_messages[pid] = []
+        faction_messages[pid].extend(msgs)
+
+    if approved_requests or denied_requests:
+        conn.commit()
+        print(f"  Faction changes: {len(approved_requests)} approved, {len(denied_requests)} denied")
 
     # Phase 2: Interleaved resolution (cheapest TU actions first)
     if ship_orders_map:
@@ -333,6 +603,19 @@ def cmd_run_turn(args):
             WHERE game_id = ? AND turn_year = ? AND turn_week = ?
             AND subject_type = 'ship' AND subject_id = ? AND status = 'pending'
         """, (args.game, game['current_year'], game['current_week'], ship_id))
+
+        # Save overflow orders (TU exhaustion carry-forward) to pending_orders
+        overflow = result.get('overflow', [])
+        if overflow:
+            for seq, ov_order in enumerate(overflow, 1):
+                params_json = json.dumps(ov_order['params']) if ov_order['params'] else None
+                conn.execute("""
+                    INSERT INTO pending_orders
+                    (game_id, subject_type, subject_id, order_sequence, command, parameters, reason)
+                    VALUES (?, 'ship', ?, ?, ?, ?, 'TU overflow')
+                """, (args.game, ship_id, seq, ov_order['command'], params_json))
+            print(f"    {display_name}: {len(overflow)} orders carry forward to next turn")
+
         conn.commit()
 
         # Collect trade data from this ship's action log
@@ -371,7 +654,39 @@ def cmd_run_turn(args):
             }
 
         # Generate ship report
-        report = generate_ship_report(result, db_path, args.game)
+        # Query undelivered messages for this ship
+        incoming_msgs = conn.execute("""
+            SELECT * FROM messages
+            WHERE game_id = ? AND recipient_type = 'ship' AND recipient_id = ? AND delivered = 0
+            ORDER BY message_id
+        """, (args.game, ship_id)).fetchall()
+
+        between_msgs = None
+        # Start with wage messages for this ship
+        ship_wage_msgs = wage_messages.get(ship_id, [])
+        if incoming_msgs or ship_wage_msgs:
+            between_msgs = []
+            # Wage info first
+            if ship_wage_msgs:
+                between_msgs.extend(ship_wage_msgs)
+                between_msgs.append("")
+            # Then player messages
+            for m in incoming_msgs:
+                between_msgs.append(
+                    f"Message from {m['sender_name']} ({m['sender_id']}) "
+                    f"[{m['sent_turn_year']}.{m['sent_turn_week']}]:"
+                )
+                between_msgs.append(f"  \"{m['message_text']}\"")
+                between_msgs.append("")
+            # Mark as delivered
+            conn.execute("""
+                UPDATE messages SET delivered = 1
+                WHERE game_id = ? AND recipient_type = 'ship' AND recipient_id = ? AND delivered = 0
+            """, (args.game, ship_id))
+            conn.commit()
+
+        report = generate_ship_report(result, db_path, args.game,
+                                      between_turn_messages=between_msgs)
         report_file = folders.store_ship_report(turn_str, account_number, ship_id, report)
         print(f"    Ship report:      {report_file}")
 
@@ -404,8 +719,93 @@ def cmd_run_turn(args):
         prefect_id = pol['prefect_id']
         account_number = pol['account_number']
         ship_trades = trade_by_prefect.get(prefect_id, {})
+
+        # Query undelivered messages for this prefect
+        incoming_msgs = conn.execute("""
+            SELECT * FROM messages
+            WHERE game_id = ? AND recipient_type = 'prefect' AND recipient_id = ? AND delivered = 0
+            ORDER BY message_id
+        """, (args.game, prefect_id)).fetchall()
+
+        # Also include messages sent to bases owned by this prefect
+        base_msgs = conn.execute("""
+            SELECT m.* FROM messages m
+            JOIN starbases b ON m.recipient_id = b.base_id AND m.recipient_type = 'base'
+            WHERE m.game_id = ? AND b.owner_prefect_id = ? AND m.delivered = 0
+            ORDER BY m.message_id
+        """, (args.game, prefect_id)).fetchall()
+
+        all_prefect_msgs = list(incoming_msgs) + list(base_msgs)
+
+        # Build prefect between-turn messages: wages + faction changes + player messages
+        prefect_wage_total = wage_by_prefect.get(prefect_id, 0)
+        prefect_faction_msgs = faction_messages.get(prefect_id, [])
+        has_content = all_prefect_msgs or prefect_wage_total > 0 or prefect_faction_msgs
+
+        prefect_between_msgs = None
+        if has_content:
+            prefect_between_msgs = []
+
+            # Faction change notifications (most important, show first)
+            if prefect_faction_msgs:
+                for fm in prefect_faction_msgs:
+                    prefect_between_msgs.append(fm)
+                prefect_between_msgs.append("")
+
+            # Wage summary for all ships
+            if prefect_wage_total > 0:
+                prefect_ships = conn.execute(
+                    "SELECT ship_id, name, crew_count, crew_required FROM ships "
+                    "WHERE owner_prefect_id = ? AND game_id = ?",
+                    (prefect_id, args.game)
+                ).fetchall()
+                prefect_between_msgs.append(f"Wage deductions: {prefect_wage_total} cr total")
+                for ps in prefect_ships:
+                    # Get officer count and cargo crew separately
+                    off = conn.execute(
+                        "SELECT COUNT(*) as cnt, COALESCE(SUM(wages),0) as ow "
+                        "FROM officers WHERE ship_id = ?", (ps['ship_id'],)
+                    ).fetchone()
+                    cc_row = conn.execute(
+                        "SELECT COALESCE(SUM(quantity),0) as cnt FROM cargo_items "
+                        "WHERE ship_id = ? AND item_type_id = 401", (ps['ship_id'],)
+                    ).fetchone()
+                    o_cnt = off['cnt']
+                    o_wages = int(off['ow'])
+                    c_cnt = cc_row['cnt']
+                    c_wages = c_cnt * 1
+                    sw = c_wages + o_wages
+                    if sw <= 0:
+                        continue
+                    status = ""
+                    if ps['crew_count'] < ps['crew_required']:
+                        status = " [UNDERMANNED]"
+                    detail = f"{c_cnt} crew + {o_cnt} officers" if o_cnt else f"{c_cnt} crew"
+                    prefect_between_msgs.append(
+                        f"  {ps['name']} ({ps['ship_id']}): "
+                        f"{detail}, {sw} cr{status}"
+                    )
+                prefect_between_msgs.append("")
+
+            for m in all_prefect_msgs:
+                dest = ""
+                if m['recipient_type'] == 'base':
+                    dest = f" (via base {m['recipient_id']})"
+                prefect_between_msgs.append(
+                    f"Message from {m['sender_name']} ({m['sender_id']}) "
+                    f"[{m['sent_turn_year']}.{m['sent_turn_week']}]{dest}:"
+                )
+                prefect_between_msgs.append(f"  \"{m['message_text']}\"")
+                prefect_between_msgs.append("")
+            # Mark all as delivered
+            msg_ids = [m['message_id'] for m in all_prefect_msgs]
+            placeholders = ','.join('?' * len(msg_ids))
+            conn.execute(f"UPDATE messages SET delivered = 1 WHERE message_id IN ({placeholders})", msg_ids)
+            conn.commit()
+
         prefect_report = generate_prefect_report(
             prefect_id, db_path, args.game,
+            between_turn_messages=prefect_between_msgs,
             trade_summary=ship_trades
         )
         pol_file = folders.store_prefect_report(turn_str, account_number, prefect_id, prefect_report)
@@ -425,6 +825,16 @@ def cmd_run_turn(args):
             print(f"    Total files to email: {len(player_reports)}")
 
     resolver.close()
+
+    # Mark turn as completed
+    conn2 = get_connection(db_path)
+    conn2.execute(
+        "UPDATE games SET turn_status = 'completed' WHERE game_id = ?",
+        (args.game,)
+    )
+    conn2.commit()
+    conn2.close()
+
     conn.close()
     print(f"\n=== Turn {turn_str} resolution complete ===")
 
@@ -582,6 +992,17 @@ def cmd_turn_status(args):
 
     print(f"\n=== Turn {turn_str} Status - Game {args.game} ===\n")
 
+    # Show pipeline status
+    db_path = Path(args.db) if args.db else None
+    conn_p = get_connection(db_path)
+    game_p = conn_p.execute("SELECT turn_status FROM games WHERE game_id = ?", (args.game,)).fetchone()
+    if game_p:
+        status = game_p['turn_status'] if 'turn_status' in game_p.keys() else 'open'
+        labels = {'open': 'OPEN', 'held': 'HELD', 'processing': 'PROCESSING', 'completed': 'COMPLETED'}
+        print(f"  Pipeline: {labels.get(status, status.upper())}")
+        print()
+    conn_p.close()
+
     for player in summary['players']:
         status_icon = "[done]" if player['processed'] else "[    ]"
         print(f"{status_icon} {player['name']} ({player['email']})")
@@ -688,18 +1109,29 @@ def cmd_show_map(args):
             bases_by_body[body_id] = []
         bases_by_body[body_id].append(b)
 
+    # Build lookup of moons by parent body_id
+    children_by_parent = {}
+    top_level = []
     for b in bodies:
+        if b['parent_body_id']:
+            children_by_parent.setdefault(b['parent_body_id'], []).append(b)
+        else:
+            top_level.append(b)
+
+    def print_body(b, indent):
         loc = f"{b['grid_col']}{b['grid_row']:02d}"
-        indent = "  " if not b['parent_body_id'] else "      "
         type_label = b['body_type'].replace('_', ' ').title()
         print(f"{indent}{b['map_symbol']}  {b['name']} ({b['body_id']}) at {loc} - {type_label}")
-
-        # Show bases orbiting this body
         if b['body_id'] in bases_by_body:
             for base in bases_by_body[b['body_id']]:
                 base_loc = f"{base['grid_col']}{base['grid_row']:02d}"
                 print(f"{indent}     [{base['base_type']}] {base['name']} ({base['base_id']}) at {base_loc}"
                       f" - Docking: {base['docking_capacity']}")
+        for child in children_by_parent.get(b['body_id'], []):
+            print_body(child, "      ")
+
+    for b in top_level:
+        print_body(b, "  ")
 
     conn.close()
 
@@ -796,6 +1228,11 @@ def cmd_advance_turn(args):
         "UPDATE ships SET tu_remaining = tu_per_turn WHERE game_id = ?",
         (args.game,)
     )
+    # Reset turn status to open for new turn
+    conn.execute(
+        "UPDATE games SET turn_status = 'open' WHERE game_id = ?",
+        (args.game,)
+    )
     conn.commit()
     conn.close()
 
@@ -886,9 +1323,8 @@ def cmd_generate_form(args):
         "SELECT cb.*, ss.name as system_name "
         "FROM celestial_bodies cb "
         "JOIN star_systems ss ON cb.system_id = ss.system_id "
-        "WHERE ss.game_id = ? AND cb.body_type = 'planet' "
-        "ORDER BY cb.name",
-        (args.game,)
+        "WHERE cb.body_type = 'planet' "
+        "ORDER BY cb.name"
     ).fetchall()
 
     turn_str = f"{game['current_year']}.{game['current_week']}"
@@ -1031,11 +1467,11 @@ def cmd_register_player(args):
     planet = conn.execute(
         "SELECT cb.*, ss.name as system_name FROM celestial_bodies cb "
         "JOIN star_systems ss ON cb.system_id = ss.system_id "
-        "WHERE cb.body_id = ? AND ss.game_id = ?",
-        (planet_id, game_id)
+        "WHERE cb.body_id = ?",
+        (planet_id,)
     ).fetchone()
     if not planet:
-        print(f"Error: Planet/body {planet_id} not found in game {game_id}.")
+        print(f"Error: Planet/body {planet_id} not found.")
         conn.close()
         return
 
@@ -1418,10 +1854,643 @@ def cmd_add_link(args):
     )
 
 
+def cmd_add_port(args):
+    """Add a surface port to a planet."""
+    conn = get_connection(Path(args.db) if args.db else None)
+
+    # Verify the body exists
+    body = conn.execute(
+        "SELECT * FROM celestial_bodies WHERE body_id = ?", (args.body_id,)
+    ).fetchone()
+    if not body:
+        print(f"Error: Body {args.body_id} not found in universe.")
+        conn.close()
+        return
+
+    # Verify parent base exists if specified
+    if args.parent_base:
+        base = conn.execute(
+            "SELECT * FROM starbases WHERE base_id = ?", (args.parent_base,)
+        ).fetchone()
+        if not base:
+            print(f"Error: Starbase {args.parent_base} not found.")
+            conn.close()
+            return
+
+    # Auto-detect game_id
+    game = conn.execute("SELECT game_id FROM games LIMIT 1").fetchone()
+    game_id = game['game_id'] if game else 'DEFAULT'
+
+    conn.execute("""
+        INSERT INTO surface_ports
+        (port_id, game_id, name, body_id, surface_x, surface_y,
+         parent_base_id, complexes, workers, troops)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (args.port_id, game_id, args.name, args.body_id,
+          args.x, args.y, args.parent_base,
+          args.complexes or 0, args.workers or 0, args.troops or 0))
+    conn.commit()
+
+    print(f"Surface Port '{args.name}' ({args.port_id}) added:")
+    print(f"  Body: {body['name']} ({args.body_id})")
+    print(f"  Position: ({args.x},{args.y})")
+    if args.parent_base:
+        print(f"  Parent Starbase: {args.parent_base}")
+    conn.close()
+
+
+def cmd_add_outpost(args):
+    """Add an outpost to a planet or moon."""
+    conn = get_connection(Path(args.db) if args.db else None)
+
+    body = conn.execute(
+        "SELECT * FROM celestial_bodies WHERE body_id = ?", (args.body_id,)
+    ).fetchone()
+    if not body:
+        print(f"Error: Body {args.body_id} not found in universe.")
+        conn.close()
+        return
+
+    game = conn.execute("SELECT game_id FROM games LIMIT 1").fetchone()
+    game_id = game['game_id'] if game else 'DEFAULT'
+
+    conn.execute("""
+        INSERT INTO outposts
+        (outpost_id, game_id, name, body_id, surface_x, surface_y,
+         outpost_type, workers)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    """, (args.outpost_id, game_id, args.name, args.body_id,
+          args.x, args.y, args.type or 'General', args.workers or 0))
+    conn.commit()
+
+    print(f"Outpost '{args.name}' ({args.outpost_id}) added:")
+    print(f"  Body: {body['name']} ({args.body_id})")
+    print(f"  Position: ({args.x},{args.y})")
+    print(f"  Type: {args.type or 'General'}")
+    conn.close()
+
+
 def cmd_list_universe(args):
     """Show all universe content."""
     from db.universe_admin import list_universe
     list_universe()
+
+
+def cmd_list_factions(args):
+    """List all available factions."""
+    from db.database import get_universe_connection
+    conn = get_universe_connection()
+    factions = conn.execute("SELECT * FROM factions ORDER BY faction_id").fetchall()
+    print(f"\nAvailable Factions:")
+    print(f"{'ID':<6} {'Abbr':<6} {'Name':<30} Description")
+    print("-" * 80)
+    for f in factions:
+        print(f"{f['faction_id']:<6} {f['abbreviation']:<6} {f['name']:<30} {f['description']}")
+    conn.close()
+
+
+def cmd_faction_requests(args):
+    """List faction change requests."""
+    from db.database import get_connection
+    conn = get_connection()
+
+    status_filter = args.status if hasattr(args, 'status') and args.status else 'pending'
+    if status_filter == 'all':
+        requests = conn.execute("""
+            SELECT fr.*, p.name as prefect_name, pl.player_name,
+                   cf.abbreviation as current_abbr, cf.name as current_name,
+                   tf.abbreviation as target_abbr, tf.name as target_name
+            FROM faction_requests fr
+            JOIN prefects p ON fr.prefect_id = p.prefect_id
+            JOIN players pl ON p.player_id = pl.player_id
+            LEFT JOIN factions cf ON fr.current_faction_id = cf.faction_id
+            LEFT JOIN factions tf ON fr.target_faction_id = tf.faction_id
+            WHERE fr.game_id = ?
+            ORDER BY fr.request_id
+        """, (args.game,)).fetchall()
+    else:
+        requests = conn.execute("""
+            SELECT fr.*, p.name as prefect_name, pl.player_name,
+                   cf.abbreviation as current_abbr, cf.name as current_name,
+                   tf.abbreviation as target_abbr, tf.name as target_name
+            FROM faction_requests fr
+            JOIN prefects p ON fr.prefect_id = p.prefect_id
+            JOIN players pl ON p.player_id = pl.player_id
+            LEFT JOIN factions cf ON fr.current_faction_id = cf.faction_id
+            LEFT JOIN factions tf ON fr.target_faction_id = tf.faction_id
+            WHERE fr.game_id = ? AND fr.status = ?
+            ORDER BY fr.request_id
+        """, (args.game, status_filter)).fetchall()
+
+    print(f"\nFaction Change Requests ({status_filter}):")
+    if not requests:
+        print("  No requests found.")
+    else:
+        for r in requests:
+            cur = r['current_abbr'] or 'IND'
+            tgt = r['target_abbr'] or '???'
+            print(f"  #{r['request_id']}: {r['player_name']}/{r['prefect_name']} "
+                  f"({r['prefect_id']}): {cur} -> {tgt} ({r['target_name']})")
+            print(f"    Requested: {r['requested_turn_year']}.{r['requested_turn_week']}  "
+                  f"Status: {r['status'].upper()}")
+            if r['reason']:
+                print(f"    Reason: \"{r['reason']}\"")
+            if r['gm_note']:
+                print(f"    GM Note: \"{r['gm_note']}\"")
+    conn.close()
+
+
+def cmd_approve_faction(args):
+    """Approve a faction change request."""
+    from db.database import get_connection
+    conn = get_connection()
+
+    request = conn.execute(
+        "SELECT * FROM faction_requests WHERE request_id = ? AND game_id = ?",
+        (args.request_id, args.game)
+    ).fetchone()
+    if not request:
+        print(f"Error: request #{args.request_id} not found.")
+        return
+    if request['status'] != 'pending':
+        print(f"Error: request #{args.request_id} is already {request['status']}.")
+        return
+
+    note = args.note if hasattr(args, 'note') and args.note else ''
+    conn.execute("""
+        UPDATE faction_requests SET status = 'approved', gm_note = ?
+        WHERE request_id = ?
+    """, (note, args.request_id))
+    conn.commit()
+
+    prefect = conn.execute("SELECT name FROM prefects WHERE prefect_id = ?",
+                            (request['prefect_id'],)).fetchone()
+    target = conn.execute("SELECT abbreviation, name FROM factions WHERE faction_id = ?",
+                           (request['target_faction_id'],)).fetchone()
+    print(f"Approved: {prefect['name']} -> {target['abbreviation']} ({target['name']})")
+    print(f"  Change will take effect at next turn processing.")
+    conn.close()
+
+
+def cmd_deny_faction(args):
+    """Deny a faction change request."""
+    from db.database import get_connection
+    conn = get_connection()
+
+    request = conn.execute(
+        "SELECT * FROM faction_requests WHERE request_id = ? AND game_id = ?",
+        (args.request_id, args.game)
+    ).fetchone()
+    if not request:
+        print(f"Error: request #{args.request_id} not found.")
+        return
+    if request['status'] != 'pending':
+        print(f"Error: request #{args.request_id} is already {request['status']}.")
+        return
+
+    note = args.note if hasattr(args, 'note') and args.note else ''
+    conn.execute("""
+        UPDATE faction_requests SET status = 'denied', gm_note = ?
+        WHERE request_id = ?
+    """, (note, args.request_id))
+    conn.commit()
+
+    prefect = conn.execute("SELECT name FROM prefects WHERE prefect_id = ?",
+                            (request['prefect_id'],)).fetchone()
+    target = conn.execute("SELECT abbreviation FROM factions WHERE faction_id = ?",
+                           (request['target_faction_id'],)).fetchone()
+    print(f"Denied: {prefect['name']} -> {target['abbreviation']}")
+    if note:
+        print(f"  Note: {note}")
+    conn.close()
+
+
+# ======================================================================
+# MODERATOR / GM ACTIONS
+# ======================================================================
+
+def cmd_turn_pipeline(args):
+    """Show the current turn pipeline status."""
+    db_path = Path(args.db) if args.db else None
+    conn = get_connection(db_path)
+    game = conn.execute("SELECT * FROM games WHERE game_id = ?", (args.game,)).fetchone()
+    if not game:
+        print(f"Error: Game {args.game} not found.")
+        conn.close()
+        return
+
+    turn_str = f"{game['current_year']}.{game['current_week']}"
+    status = game['turn_status'] if 'turn_status' in game.keys() else 'open'
+
+    status_display = {
+        'open': 'OPEN - accepting orders',
+        'held': 'HELD - orders locked, awaiting GM review/release',
+        'processing': 'PROCESSING - turn is being resolved',
+        'completed': 'COMPLETED - turn resolved, ready to advance',
+    }
+
+    print(f"\n=== Turn Pipeline: {args.game} ===")
+    print(f"  Turn:   {turn_str}")
+    print(f"  Status: {status_display.get(status, status.upper())}")
+
+    # Count orders
+    order_count = conn.execute("""
+        SELECT COUNT(*) as cnt FROM turn_orders
+        WHERE game_id = ? AND turn_year = ? AND turn_week = ? AND status = 'pending'
+    """, (args.game, game['current_year'], game['current_week'])).fetchone()
+    overflow_count = conn.execute("""
+        SELECT COUNT(*) as cnt FROM pending_orders WHERE game_id = ?
+    """, (args.game,)).fetchone()
+
+    print(f"  Orders: {order_count['cnt']} pending, {overflow_count['cnt']} overflow from previous turns")
+
+    # Ships with/without orders
+    ships = conn.execute("""
+        SELECT s.ship_id, s.name, p.name as prefect_name, f.abbreviation as faction
+        FROM ships s
+        JOIN prefects p ON s.owner_prefect_id = p.prefect_id
+        LEFT JOIN factions f ON p.faction_id = f.faction_id
+        JOIN players pl ON p.player_id = pl.player_id
+        WHERE s.game_id = ? AND pl.status = 'active'
+    """, (args.game,)).fetchall()
+
+    ships_with = []
+    ships_without = []
+    for s in ships:
+        has = conn.execute("""
+            SELECT COUNT(*) as cnt FROM turn_orders
+            WHERE game_id = ? AND turn_year = ? AND turn_week = ?
+            AND subject_type = 'ship' AND subject_id = ? AND status = 'pending'
+        """, (args.game, game['current_year'], game['current_week'], s['ship_id'])).fetchone()
+        if has['cnt'] > 0:
+            ships_with.append(s)
+        else:
+            ships_without.append(s)
+
+    print(f"\n  Ships with orders:    {len(ships_with)}")
+    for s in ships_with:
+        fac = s['faction'] or 'IND'
+        print(f"    {fac} {s['name']} ({s['ship_id']}) - {s['prefect_name']}")
+    print(f"  Ships without orders: {len(ships_without)}")
+    for s in ships_without:
+        fac = s['faction'] or 'IND'
+        print(f"    {fac} {s['name']} ({s['ship_id']}) - {s['prefect_name']}")
+    conn.close()
+
+
+def cmd_hold_turn(args):
+    """Hold the turn - lock orders, prevent run-turn."""
+    db_path = Path(args.db) if args.db else None
+    conn = get_connection(db_path)
+    game = conn.execute("SELECT * FROM games WHERE game_id = ?", (args.game,)).fetchone()
+    if not game:
+        print(f"Error: Game {args.game} not found.")
+        conn.close()
+        return
+
+    status = game['turn_status'] if 'turn_status' in game.keys() else 'open'
+    if status == 'held':
+        print(f"Turn is already held.")
+        conn.close()
+        return
+    if status in ('processing', 'completed'):
+        print(f"Cannot hold: turn is {status}.")
+        conn.close()
+        return
+
+    conn.execute(
+        "UPDATE games SET turn_status = 'held' WHERE game_id = ?",
+        (args.game,)
+    )
+    conn.commit()
+    turn_str = f"{game['current_year']}.{game['current_week']}"
+    print(f"Turn {turn_str} is now HELD.")
+    print(f"  Orders are locked — no new submissions accepted.")
+    print(f"  Use 'review-orders' to inspect, then 'release-turn' when ready.")
+    conn.close()
+
+
+def cmd_release_turn(args):
+    """Release a held turn - allow run-turn or reopen for orders."""
+    db_path = Path(args.db) if args.db else None
+    conn = get_connection(db_path)
+    game = conn.execute("SELECT * FROM games WHERE game_id = ?", (args.game,)).fetchone()
+    if not game:
+        print(f"Error: Game {args.game} not found.")
+        conn.close()
+        return
+
+    status = game['turn_status'] if 'turn_status' in game.keys() else 'open'
+    if status == 'open':
+        print(f"Turn is already open.")
+        conn.close()
+        return
+
+    conn.execute(
+        "UPDATE games SET turn_status = 'open' WHERE game_id = ?",
+        (args.game,)
+    )
+    conn.commit()
+    turn_str = f"{game['current_year']}.{game['current_week']}"
+    print(f"Turn {turn_str} released — status: OPEN (was {status.upper()}).")
+    print(f"  Ready for order submissions or 'run-turn'.")
+    conn.close()
+
+
+def cmd_review_orders(args):
+    """Review all pending orders for the current turn."""
+    db_path = Path(args.db) if args.db else None
+    conn = get_connection(db_path)
+    game = conn.execute("SELECT * FROM games WHERE game_id = ?", (args.game,)).fetchone()
+    if not game:
+        print(f"Error: Game {args.game} not found.")
+        conn.close()
+        return
+
+    turn_str = f"{game['current_year']}.{game['current_week']}"
+
+    # Get all orders grouped by ship
+    ships = conn.execute("""
+        SELECT DISTINCT s.ship_id, s.name, p.name as prefect_name, pl.player_name,
+               f.abbreviation as faction
+        FROM turn_orders o
+        JOIN ships s ON o.subject_id = s.ship_id AND o.subject_type = 'ship'
+        JOIN prefects p ON s.owner_prefect_id = p.prefect_id
+        JOIN players pl ON p.player_id = pl.player_id
+        LEFT JOIN factions f ON p.faction_id = f.faction_id
+        WHERE o.game_id = ? AND o.turn_year = ? AND o.turn_week = ? AND o.status = 'pending'
+    """, (args.game, game['current_year'], game['current_week'])).fetchall()
+
+    print(f"\n=== Order Review: Turn {turn_str} ===\n")
+
+    if not ships:
+        print("  No pending orders.")
+        # Check overflow
+        overflow = conn.execute(
+            "SELECT COUNT(*) as cnt FROM pending_orders WHERE game_id = ?",
+            (args.game,)
+        ).fetchone()
+        if overflow['cnt'] > 0:
+            print(f"  ({overflow['cnt']} overflow orders from previous turns)")
+        conn.close()
+        return
+
+    for ship in ships:
+        fac = ship['faction'] or 'IND'
+        print(f"{fac} {ship['name']} ({ship['ship_id']}) - {ship['player_name']}/{ship['prefect_name']}")
+
+        orders = conn.execute("""
+            SELECT order_id, order_sequence, command, parameters FROM turn_orders
+            WHERE game_id = ? AND turn_year = ? AND turn_week = ?
+            AND subject_type = 'ship' AND subject_id = ? AND status = 'pending'
+            ORDER BY order_sequence
+        """, (args.game, game['current_year'], game['current_week'],
+              ship['ship_id'])).fetchall()
+
+        for o in orders:
+            params_display = o['parameters'] if o['parameters'] else ''
+            # Truncate long params
+            if len(params_display) > 60:
+                params_display = params_display[:57] + '...'
+            print(f"  [{o['order_id']}] #{o['order_sequence']}: {o['command']} {params_display}")
+        print()
+
+    # Overflow orders
+    overflow = conn.execute("""
+        SELECT po.*, s.name as ship_name
+        FROM pending_orders po
+        JOIN ships s ON po.subject_id = s.ship_id
+        WHERE po.game_id = ?
+        ORDER BY po.subject_id, po.order_sequence
+    """, (args.game,)).fetchall()
+    if overflow:
+        print(f"--- Overflow Orders (from previous turns) ---")
+        for o in overflow:
+            params_display = o['parameters'] if o['parameters'] else ''
+            if len(params_display) > 60:
+                params_display = params_display[:57] + '...'
+            print(f"  {o['ship_name']} ({o['subject_id']}): #{o['order_sequence']}: {o['command']} {params_display}")
+
+    conn.close()
+
+
+def cmd_edit_order(args):
+    """Edit an existing pending order."""
+    db_path = Path(args.db) if args.db else None
+    conn = get_connection(db_path)
+
+    order = conn.execute(
+        "SELECT * FROM turn_orders WHERE order_id = ? AND game_id = ? AND status = 'pending'",
+        (args.order_id, args.game)
+    ).fetchone()
+    if not order:
+        print(f"Error: order #{args.order_id} not found or not pending.")
+        conn.close()
+        return
+
+    old_cmd = order['command']
+    old_params = order['parameters']
+
+    # Parse new command if provided
+    if args.command_str:
+        from engine.orders.parser import parse_single_order
+        parts = args.command_str.strip().split(None, 1)
+        new_cmd = parts[0].upper()
+        new_params_raw = parts[1] if len(parts) > 1 else ''
+        cmd, params, error = parse_single_order(new_cmd, new_params_raw)
+        if error:
+            print(f"Parse error: {error}")
+            conn.close()
+            return
+
+        new_params_json = json.dumps(params) if params else None
+        conn.execute("""
+            UPDATE turn_orders SET command = ?, parameters = ?
+            WHERE order_id = ?
+        """, (cmd, new_params_json, args.order_id))
+        conn.commit()
+        print(f"Order #{args.order_id} updated:")
+        print(f"  Was: {old_cmd} {old_params or ''}")
+        print(f"  Now: {cmd} {new_params_json or ''}")
+    else:
+        print(f"Order #{args.order_id}: {old_cmd} {old_params or ''}")
+        print(f"  Use --command to provide new command string")
+
+    conn.close()
+
+
+def cmd_delete_order(args):
+    """Delete a pending order."""
+    db_path = Path(args.db) if args.db else None
+    conn = get_connection(db_path)
+
+    order = conn.execute(
+        "SELECT * FROM turn_orders WHERE order_id = ? AND game_id = ? AND status = 'pending'",
+        (args.order_id, args.game)
+    ).fetchone()
+    if not order:
+        print(f"Error: order #{args.order_id} not found or not pending.")
+        conn.close()
+        return
+
+    conn.execute("DELETE FROM turn_orders WHERE order_id = ?", (args.order_id,))
+    conn.commit()
+    print(f"Deleted order #{args.order_id}: {order['command']} {order['parameters'] or ''}")
+    print(f"  (Ship {order['subject_id']}, sequence #{order['order_sequence']})")
+    conn.close()
+
+
+def cmd_inject_order(args):
+    """Inject a GM order for any ship."""
+    db_path = Path(args.db) if args.db else None
+    conn = get_connection(db_path)
+
+    game = conn.execute("SELECT * FROM games WHERE game_id = ?", (args.game,)).fetchone()
+    if not game:
+        print(f"Error: Game {args.game} not found.")
+        conn.close()
+        return
+
+    ship = conn.execute(
+        "SELECT s.*, p.player_id FROM ships s "
+        "JOIN prefects p ON s.owner_prefect_id = p.prefect_id "
+        "WHERE s.ship_id = ? AND s.game_id = ?",
+        (args.ship, args.game)
+    ).fetchone()
+    if not ship:
+        print(f"Error: Ship {args.ship} not found.")
+        conn.close()
+        return
+
+    from engine.orders.parser import parse_single_order
+    parts = args.command_str.strip().split(None, 1)
+    new_cmd = parts[0].upper()
+    new_params_raw = parts[1] if len(parts) > 1 else ''
+    cmd, params, error = parse_single_order(new_cmd, new_params_raw)
+    if error:
+        print(f"Parse error: {error}")
+        conn.close()
+        return
+
+    # Find next sequence number
+    max_seq = conn.execute("""
+        SELECT MAX(order_sequence) as mx FROM turn_orders
+        WHERE game_id = ? AND turn_year = ? AND turn_week = ?
+        AND subject_type = 'ship' AND subject_id = ?
+    """, (args.game, game['current_year'], game['current_week'],
+          args.ship)).fetchone()
+
+    seq_num = args.sequence if hasattr(args, 'sequence') and args.sequence else (max_seq['mx'] or 0) + 1
+    params_json = json.dumps(params) if params else None
+
+    conn.execute("""
+        INSERT INTO turn_orders (game_id, turn_year, turn_week, player_id,
+                                  subject_type, subject_id, order_sequence,
+                                  command, parameters, status)
+        VALUES (?, ?, ?, ?, 'ship', ?, ?, ?, ?, 'pending')
+    """, (args.game, game['current_year'], game['current_week'],
+          ship['player_id'], args.ship, seq_num, cmd, params_json))
+    conn.commit()
+
+    print(f"Injected order for {ship['name']} ({args.ship}):")
+    print(f"  #{seq_num}: {cmd} {params_json or ''}")
+    print(f"  (GM-injected)")
+    conn.close()
+
+
+def cmd_list_actions(args):
+    """List moderator action requests for GM review."""
+    db_path = Path(args.db) if args.db else None
+    conn = get_connection(db_path)
+
+    status_filter = args.status if hasattr(args, 'status') and args.status else 'pending'
+    game = conn.execute("SELECT * FROM games WHERE game_id = ?", (args.game,)).fetchone()
+    if not game:
+        print(f"Error: Game {args.game} not found.")
+        conn.close()
+        return
+
+    if status_filter == 'all':
+        actions = conn.execute("""
+            SELECT ma.*, s.name as ship_name, p.name as prefect_name, pl.player_name
+            FROM moderator_actions ma
+            JOIN ships s ON ma.ship_id = s.ship_id
+            JOIN prefects p ON ma.prefect_id = p.prefect_id
+            JOIN players pl ON p.player_id = pl.player_id
+            WHERE ma.game_id = ?
+            ORDER BY ma.action_id
+        """, (args.game,)).fetchall()
+    else:
+        actions = conn.execute("""
+            SELECT ma.*, s.name as ship_name, p.name as prefect_name, pl.player_name
+            FROM moderator_actions ma
+            JOIN ships s ON ma.ship_id = s.ship_id
+            JOIN prefects p ON ma.prefect_id = p.prefect_id
+            JOIN players pl ON p.player_id = pl.player_id
+            WHERE ma.game_id = ? AND ma.status = ?
+            ORDER BY ma.action_id
+        """, (args.game, status_filter)).fetchall()
+
+    print(f"\nModerator Actions ({status_filter}):")
+    if not actions:
+        print("  No actions found.")
+    else:
+        for a in actions:
+            print(f"  #{a['action_id']}: {a['player_name']}/{a['prefect_name']} "
+                  f"via {a['ship_name']} ({a['ship_id']})")
+            print(f"    Turn: {a['requested_turn_year']}.{a['requested_turn_week']}  "
+                  f"Status: {a['status'].upper()}")
+            print(f"    Request: \"{a['request_text']}\"")
+            if a['gm_response']:
+                print(f"    Response: \"{a['gm_response']}\"")
+            print()
+    conn.close()
+
+
+def cmd_respond_action(args):
+    """Respond to a moderator action request."""
+    db_path = Path(args.db) if args.db else None
+    conn = get_connection(db_path)
+
+    action = conn.execute(
+        "SELECT * FROM moderator_actions WHERE action_id = ? AND game_id = ?",
+        (args.action_id, args.game)
+    ).fetchone()
+    if not action:
+        print(f"Error: action #{args.action_id} not found.")
+        conn.close()
+        return
+    if action['status'] not in ('pending', 'responded'):
+        print(f"Error: action #{args.action_id} is already {action['status']}.")
+        conn.close()
+        return
+
+    conn.execute("""
+        UPDATE moderator_actions SET status = 'responded', gm_response = ?
+        WHERE action_id = ?
+    """, (args.response, args.action_id))
+    conn.commit()
+
+    ship = conn.execute("SELECT name FROM ships WHERE ship_id = ?",
+                         (action['ship_id'],)).fetchone()
+    print(f"Responded to action #{args.action_id}:")
+    print(f"  Ship: {ship['name']} ({action['ship_id']})")
+    print(f"  Request: \"{action['request_text']}\"")
+    print(f"  Response: \"{args.response}\"")
+
+    # Check if all actions for this turn are now responded
+    remaining = conn.execute("""
+        SELECT COUNT(*) as cnt FROM moderator_actions
+        WHERE game_id = ? AND requested_turn_year = ? AND requested_turn_week = ?
+        AND status = 'pending'
+    """, (args.game, action['requested_turn_year'],
+          action['requested_turn_week'])).fetchone()
+
+    if remaining['cnt'] == 0:
+        print(f"\n  All moderator actions responded. Use 'release-turn' then 'run-turn' to continue.")
+    else:
+        print(f"\n  {remaining['cnt']} action(s) still pending.")
+    conn.close()
 
 
 def main():
@@ -1490,6 +2559,8 @@ Gmail integration (two-stage workflow):
     sp.add_argument('--ship', type=int, help='Specific ship ID (or resolve all)')
     sp.add_argument('--verbose', '-v', action='store_true',
                     help='Print reports to console')
+    sp.add_argument('--force', action='store_true',
+                    help='Override held/completed status')
 
     # --- turn-status ---
     sp = subparsers.add_parser('turn-status', help='Show incoming/processed status')
@@ -1634,8 +2705,99 @@ Gmail integration (two-stage workflow):
     sp.add_argument('--known', action='store_true', help='Link is known by default (visible to all)')
     sp.add_argument('--no-turn-stamp', action='store_true', help='Skip created_turn provenance')
 
+    # --- add-port ---
+    sp = subparsers.add_parser('add-port', help='Add a surface port to a planet')
+    sp.add_argument('port_id', type=int, help='Unique port ID')
+    sp.add_argument('body_id', type=int, help='Planet/moon body ID')
+    sp.add_argument('name', help='Port name')
+    sp.add_argument('x', type=int, help='Surface X coordinate')
+    sp.add_argument('y', type=int, help='Surface Y coordinate')
+    sp.add_argument('--parent-base', type=int, help='Linked orbital starbase ID')
+    sp.add_argument('--complexes', type=int, default=0, help='Number of complexes')
+    sp.add_argument('--workers', type=int, default=0, help='Worker count')
+    sp.add_argument('--troops', type=int, default=0, help='Troop count')
+
+    # --- add-outpost ---
+    sp = subparsers.add_parser('add-outpost', help='Add an outpost to a planet or moon')
+    sp.add_argument('outpost_id', type=int, help='Unique outpost ID')
+    sp.add_argument('body_id', type=int, help='Planet/moon body ID')
+    sp.add_argument('name', help='Outpost name')
+    sp.add_argument('x', type=int, help='Surface X coordinate')
+    sp.add_argument('y', type=int, help='Surface Y coordinate')
+    sp.add_argument('--type', default='General', help='Outpost type (e.g. Mining, Communications)')
+    sp.add_argument('--workers', type=int, default=0, help='Worker count')
+
     # --- list-universe ---
     sp = subparsers.add_parser('list-universe', help='Show all universe content (systems, bodies, links)')
+
+    # --- list-factions ---
+    sp = subparsers.add_parser('list-factions', help='List all available factions')
+
+    # --- faction-requests ---
+    sp = subparsers.add_parser('faction-requests', help='List faction change requests')
+    sp.add_argument('--game', required=True, help='Game ID')
+    sp.add_argument('--status', default='pending', help='Filter: pending, approved, denied, all')
+
+    # --- approve-faction ---
+    sp = subparsers.add_parser('approve-faction', help='Approve a faction change request')
+    sp.add_argument('--game', required=True, help='Game ID')
+    sp.add_argument('--request-id', type=int, required=True, help='Request ID to approve')
+    sp.add_argument('--note', default='', help='GM note to include')
+
+    # --- deny-faction ---
+    sp = subparsers.add_parser('deny-faction', help='Deny a faction change request')
+    sp.add_argument('--game', required=True, help='Game ID')
+    sp.add_argument('--request-id', type=int, required=True, help='Request ID to deny')
+    sp.add_argument('--note', default='', help='GM note / reason for denial')
+
+    # --- GM / Moderator Actions ---
+    sp = subparsers.add_parser('turn-pipeline', help='Show current turn pipeline status')
+    sp.add_argument('--game', default='OMICRON101', help='Game ID')
+    sp.add_argument('--db', help='Path to game_state.db')
+
+    sp = subparsers.add_parser('hold-turn', help='Hold turn — lock orders, block run-turn')
+    sp.add_argument('--game', default='OMICRON101', help='Game ID')
+    sp.add_argument('--db', help='Path to game_state.db')
+
+    sp = subparsers.add_parser('release-turn', help='Release a held turn')
+    sp.add_argument('--game', default='OMICRON101', help='Game ID')
+    sp.add_argument('--db', help='Path to game_state.db')
+    sp.add_argument('--reopen', action='store_true', help='Reopen for additional orders')
+
+    sp = subparsers.add_parser('review-orders', help='Review all pending orders for GM inspection')
+    sp.add_argument('--game', default='OMICRON101', help='Game ID')
+    sp.add_argument('--db', help='Path to game_state.db')
+
+    sp = subparsers.add_parser('edit-order', help='Edit a pending order')
+    sp.add_argument('--game', default='OMICRON101', help='Game ID')
+    sp.add_argument('--db', help='Path to game_state.db')
+    sp.add_argument('--order-id', type=int, required=True, help='Order ID to edit')
+    sp.add_argument('--command', dest='command_str', help='New command string e.g. "MOVE F10"')
+
+    sp = subparsers.add_parser('delete-order', help='Delete a pending order')
+    sp.add_argument('--game', default='OMICRON101', help='Game ID')
+    sp.add_argument('--db', help='Path to game_state.db')
+    sp.add_argument('--order-id', type=int, required=True, help='Order ID to delete')
+
+    sp = subparsers.add_parser('inject-order', help='Inject a GM order for any ship')
+    sp.add_argument('--game', default='OMICRON101', help='Game ID')
+    sp.add_argument('--db', help='Path to game_state.db')
+    sp.add_argument('--ship', type=int, required=True, help='Ship ID')
+    sp.add_argument('--command', dest='command_str', required=True, help='Command string e.g. "MOVE F10"')
+    sp.add_argument('--sequence', type=int, help='Order sequence number (default: append)')
+
+    # --- list-actions ---
+    sp = subparsers.add_parser('list-actions', help='List moderator action requests')
+    sp.add_argument('--game', default='OMICRON101', help='Game ID')
+    sp.add_argument('--db', help='Path to game_state.db')
+    sp.add_argument('--status', default='pending', help='Filter: pending, responded, resolved, all')
+
+    # --- respond-action ---
+    sp = subparsers.add_parser('respond-action', help='Respond to a moderator action request')
+    sp.add_argument('--game', default='OMICRON101', help='Game ID')
+    sp.add_argument('--db', help='Path to game_state.db')
+    sp.add_argument('--action-id', type=int, required=True, help='Action ID to respond to')
+    sp.add_argument('--response', required=True, help='GM response text')
 
     args = parser.parse_args()
 
@@ -1667,7 +2829,22 @@ Gmail integration (two-stage workflow):
         'add-system': cmd_add_system,
         'add-body': cmd_add_body,
         'add-link': cmd_add_link,
+        'add-port': cmd_add_port,
+        'add-outpost': cmd_add_outpost,
         'list-universe': cmd_list_universe,
+        'list-factions': cmd_list_factions,
+        'faction-requests': cmd_faction_requests,
+        'approve-faction': cmd_approve_faction,
+        'deny-faction': cmd_deny_faction,
+        'turn-pipeline': cmd_turn_pipeline,
+        'hold-turn': cmd_hold_turn,
+        'release-turn': cmd_release_turn,
+        'review-orders': cmd_review_orders,
+        'edit-order': cmd_edit_order,
+        'delete-order': cmd_delete_order,
+        'inject-order': cmd_inject_order,
+        'list-actions': cmd_list_actions,
+        'respond-action': cmd_respond_action,
     }
 
     if args.command in commands:

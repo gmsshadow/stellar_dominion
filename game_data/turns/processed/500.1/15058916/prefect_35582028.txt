@@ -1,0 +1,89 @@
+                             === BEGIN REPORT ===                             
+
+                               Stellar Dominion                               
+                              PBEM Strategy Game                              
+
+                    STA PREFECT Father Nicholas (35582028)                    
+                              Account: 15058916                               
+
+Printed on 02 March 2026, Star Date 500.1
+
+------------------------------------------------------------------------------
+                             BETWEEN TURN REPORT                              
+------------------------------------------------------------------------------
+
+WELCOME TO STELLAR DOMINION
+===========================
+
+They warned you at the Stellar Academy that is was a big universe out
+there. Looks like it was time to find out. The Academy also offered                                                        
+for you to use their designation (STA) on your ship for now, as a mark
+of safety in your first steps. You know you'll have to join another 
+faction at some point, but for now you can get out own your own and
+explore.                                                                                    
+
+This is your Prefect report. It provides an overview of your position:
+your finances, your fleet, and everything you have discovered so far.
+
+You will receive this report each turn alongside your ship reports.
+Use it to track your credits, monitor your ships, and review contacts.
+
+Your account number is SECRET -- never share it with other players.
+Your prefect ID and ship IDs are public and may be discovered by
+other players through scanning.    
+
+------------------------------------------------------------------------------
+                                 TURN REPORT                                  
+------------------------------------------------------------------------------
+
+------------------------------------------------------------------------------
+                                PLAYER REPORTS                                
+------------------------------------------------------------------------------
+|------------------------------ Prefect Report ------------------------------|
+|                                                                            |
+| Name: Father Nicholas (35582028)   Faction: Stellar Training Academy       |
+| Rank: Citizen                      Influence: 0                            |
+| Created: 500.1                                                             |
+|                                                                            |
+| LOCATION                                                                   |
+| Aboard STA St Paul (12048563) - Omicron System (101)                       |
+|                                                                            |
+|----------------------------- Financial Report -----------------------------|
+|                                                                            |
+| POSITION                                 INCOME  EXPENSES       NET        |
+| STA St Paul (12048563)                       0         0         0         |
+|                                         -------   -------   -------        |
+|                                               0         0         0        |
+|                                                                            |
+| Wealth: 10,000 Credits                                                     |
+|                                                                            |
+|---------------------------------- Ships -----------------------------------|
+|                                                                            |
+| STA St Paul (12048563)             Omicron (101) P19                       |
+|    Light Trader MK I               TU: 280/300  Size: 50 (Commercial)      |
+|    Crew: 16/20                     Required: 10                            |
+|                                                                            |
+|------------------------------ Known Contacts ------------------------------|
+|                                                                            |
+| BASES:                                                                     |
+|   Citadel Station (45687590) at H04                                        |
+|   Meridian Waystation (78901234) at T20                                    |
+|   Tartarus Depot (12340001) at R08                                         |
+| GAS_GIANTS:                                                                |
+|   Leviathan (155230) at D20                                                |
+| MOONS:                                                                     |
+|   Callyx (88341) at E19                                                    |
+|   Tarsus (715000) at I08                                                   |
+| PLANETS:                                                                   |
+|   Meridian (412003) at P19                                                 |
+|   Orion (247985) at J09                                                    |
+|   Tartarus (301442) at R08                                                 |
+| SHIPS:                                                                     |
+|   STA Corvus (68727002) at J09                                             |
+|   STA Valiant (30158993) at R08                                            |
+| STARS:                                                                     |
+|   Omicron Prime (101) at M13                                               |
+|                                                                            |
+|----------------------------------------------------------------------------|
+
+                              === END REPORT ===                              

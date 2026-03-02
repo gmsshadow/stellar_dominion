@@ -356,13 +356,16 @@ def generate_surface(body):
     return tiles
 
 
-def render_surface_map(tiles, body_name, body_id, planetary_data=None, ship_pos=None):
+def render_surface_map(tiles, body_name, body_id, planetary_data=None, ship_pos=None,
+                       port_positions=None, outpost_positions=None):
     """
     Render a surface map as ASCII text. Grid size is auto-detected from tiles.
 
     tiles: list of (x, y, terrain_type)
     planetary_data: dict with temperature, gravity, atmosphere, etc.
     ship_pos: tuple (x, y) of ship location to mark with X, or None
+    port_positions: list of (x, y, name) tuples for surface ports (shown in data, not on map)
+    outpost_positions: list of (x, y, name, type) tuples — shown in data, NOT on map
 
     Returns: list of strings (lines)
     """
@@ -414,15 +417,23 @@ def render_surface_map(tiles, body_name, body_id, planetary_data=None, ship_pos=
                      f"    Hydrosphere: {pd.get('hydrosphere', '?')}%"
                      f"        Life: {pd.get('life', '?')}")
         lines.append(f"  Surface Size: {GS}x{GS}")
-        res = pd.get('resource_name')
-        res_id = pd.get('resource_id')
-        if res:
-            lines.append(f"  Natural Resource: {res} ({res_id})")
 
     # Ship position
     if ship_pos:
         terrain = grid.get(ship_pos, 'Unknown')
         lines.append(f"  Ship Position: ({ship_pos[0]},{ship_pos[1]}) - {terrain}")
+
+    # Surface port info
+    if port_positions:
+        for px, py, pname in port_positions:
+            terrain = grid.get((px, py), 'Unknown')
+            lines.append(f"  Surface Port: {pname} at ({px},{py}) - {terrain}")
+
+    # Outpost info (not shown on map due to small size)
+    if outpost_positions:
+        for ox, oy, oname, otype in outpost_positions:
+            terrain = grid.get((ox, oy), 'Unknown')
+            lines.append(f"  Outpost: {oname} [{otype}] at ({ox},{oy}) - {terrain}")
 
     # Legend
     lines.append("")

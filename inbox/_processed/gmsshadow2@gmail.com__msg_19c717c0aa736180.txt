@@ -1,0 +1,8 @@
+game: OMICRON101
+account: 35032008
+ship: 52609874
+orders:
+- UNDOCK: 45687590
+- LOCATIONSCAN: {}
+- MOVE: M13
+- LOCATIONSCAN: {}

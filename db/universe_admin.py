@@ -185,7 +185,11 @@ def list_universe(universe_db_path=None):
             loc = f"{b['grid_col']}{b['grid_row']:02d}"
             parent = f" (moon of {b['parent_body_id']})" if b['parent_body_id'] else ""
             res_id = b['resource_id'] if 'resource_id' in b.keys() and b['resource_id'] else None
-            res_str = f"  res={res_id}" if res_id else ""
+            res_str = ""
+            if res_id:
+                res = conn.execute("SELECT name FROM resources WHERE resource_id = ?", (res_id,)).fetchone()
+                res_name = res['name'] if res else f"#{res_id}"
+                res_str = f"  res={res_name} ({res_id})"
             print(f"         {b['body_id']:>6d}  {b['name']:<16s} {b['body_type']:<10s} at {loc}"
                   f"  {b['gravity']}g {b['temperature']}K {b['atmosphere']}  [{b['surface_size']}x{b['surface_size']}]{parent}{res_str}")
 
@@ -212,11 +216,74 @@ def list_universe(universe_db_path=None):
             origin_str = f"  origin={origin}" if origin else ""
             print(f"  {g['item_id']:>6d}  {g['name']:<30s}  base={g['base_price']}cr  mass={g['mass_per_unit']}MU{origin_str}")
 
+    # Planetary resources (GM-only, hidden from players)
+    has_res_table = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='resources'"
+    ).fetchone()
+    if has_res_table:
+        res_list = conn.execute("SELECT * FROM resources ORDER BY resource_id").fetchall()
+        if res_list:
+            print(f"\nPlanetary Resources ({len(res_list)}):")
+            print(f"  (GM-only -- not visible to players)")
+            for r in res_list:
+                produces = ""
+                if r['produces_item_id']:
+                    item = conn.execute("SELECT name FROM trade_goods WHERE item_id = ?",
+                                        (r['produces_item_id'],)).fetchone()
+                    produces = f"  -> {item['name']} ({r['produces_item_id']})" if item else f"  -> item {r['produces_item_id']}"
+                print(f"  {r['resource_id']:>6d}  {r['name']:<30s}  {r['description']}{produces}")
+
     # Factions
     factions = conn.execute("SELECT * FROM factions ORDER BY faction_id").fetchall()
     if factions:
         print(f"\nFactions ({len(factions)}):")
         for f in factions:
             print(f"  {f['faction_id']:>3d}  [{f['abbreviation']}] {f['name']}")
+
+    # Surface ports and outposts (in game_state.db — open combined connection if available)
+    from db.database import STATE_DB_PATH
+    uni_path = Path(universe_db_path) if universe_db_path else None
+    state_path = uni_path.parent / "game_state.db" if uni_path else STATE_DB_PATH
+    if state_path.exists():
+        import sqlite3
+        sc = sqlite3.connect(str(state_path))
+        sc.row_factory = sqlite3.Row
+        # Check if surface_ports table exists
+        has_sp = sc.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='surface_ports'"
+        ).fetchone()
+        if has_sp:
+            ports = sc.execute("SELECT * FROM surface_ports ORDER BY port_id").fetchall()
+            if ports:
+                print(f"\nSurface Ports ({len(ports)}):")
+                for p in ports:
+                    parent = ""
+                    if p['parent_base_id']:
+                        base = sc.execute(
+                            "SELECT name FROM starbases WHERE base_id = ?",
+                            (p['parent_base_id'],)
+                        ).fetchone()
+                        parent = f"  -> {base['name']} ({p['parent_base_id']})" if base else f"  -> base {p['parent_base_id']}"
+                    print(f"  {p['port_id']:>8d}  {p['name']:<20s}  on body {p['body_id']}  "
+                          f"at ({p['surface_x']},{p['surface_y']})  "
+                          f"cx={p['complexes']} wk={p['workers']} tp={p['troops']}{parent}")
+        # Outposts
+        has_op = sc.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='outposts'"
+        ).fetchone()
+        if has_op:
+            ops = sc.execute("SELECT * FROM outposts ORDER BY outpost_id").fetchall()
+            if ops:
+                print(f"\nOutposts ({len(ops)}):")
+                for o in ops:
+                    body = conn.execute(
+                        "SELECT name FROM celestial_bodies WHERE body_id = ?",
+                        (o['body_id'],)
+                    ).fetchone()
+                    body_name = body['name'] if body else f"#{o['body_id']}"
+                    print(f"  {o['outpost_id']:>8d}  {o['name']:<24s}  on {body_name} ({o['body_id']})  "
+                          f"at ({o['surface_x']},{o['surface_y']})  "
+                          f"type={o['outpost_type']}  wk={o['workers']}")
+        sc.close()
 
     conn.close()

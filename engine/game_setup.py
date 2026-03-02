@@ -67,12 +67,20 @@ def get_market_weeks_remaining(turn_week):
     return MARKET_CYCLE_WEEKS - ((turn_week - 1) % MARKET_CYCLE_WEEKS)
 
 
+# Fixed-price items: item_id -> {buy, sell, stock, demand}
+# These don't fluctuate — stock refreshes each market cycle.
+FIXED_PRICE_ITEMS = {
+    401: {'buy': 5, 'sell': 3, 'stock': 100, 'demand': 100},  # Human Crew
+}
+
+
 def generate_market_prices(conn, game_id, turn_year, turn_week):
     """
     Generate market prices for a new cycle.
     
     Prices are keyed to the cycle start week and persist for MARKET_CYCLE_WEEKS.
     Stock and demand deplete over the cycle as players trade.
+    Fixed-price items (e.g. crew) get constant prices and refreshing stock.
     
     Only call this at the start of a new cycle (or game setup).
     """
@@ -102,7 +110,22 @@ def generate_market_prices(conn, game_id, turn_year, turn_week):
     """, (game_id, turn_year, cycle_start))
 
     for cfg in configs:
-        avg = week_averages[cfg['item_id']]
+        item_id = cfg['item_id']
+
+        # Fixed-price items bypass normal price generation
+        if item_id in FIXED_PRICE_ITEMS:
+            fp = FIXED_PRICE_ITEMS[item_id]
+            conn.execute("""
+                INSERT INTO market_prices
+                (game_id, base_id, item_id, turn_year, turn_week,
+                 buy_price, sell_price, stock, demand)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (game_id, cfg['base_id'], item_id,
+                  turn_year, cycle_start,
+                  fp['buy'], fp['sell'], fp['stock'], fp['demand']))
+            continue
+
+        avg = week_averages[item_id]
         modifier = TRADE_ROLE_MODIFIERS.get(cfg['trade_role'], 1.0)
         effective = avg * modifier
         buy_price = max(1, round(effective * BUY_SPREAD))
@@ -183,7 +206,7 @@ def create_game(db_path=None, game_id="OMICRON101", game_name="Stellar Dominion 
         (body_id, system_id, name, body_type, grid_col, grid_row, gravity, temperature, atmosphere, 
          tectonic_activity, hydrosphere, life, map_symbol, surface_size, resource_id)
         VALUES (247985, 101, 'Orion', 'planet', 'H', 4, 0.9, 295, 'Standard',
-                4, 65, 'Sentient', 'O', 31, 100102)
+                4, 65, 'Sentient', 'O', 31, 200002)
     """)
 
     # Planet: Tartarus at R08 -- hot, volcanic, dense atmosphere
@@ -192,7 +215,7 @@ def create_game(db_path=None, game_id="OMICRON101", game_name="Stellar Dominion 
         (body_id, system_id, name, body_type, grid_col, grid_row, gravity, temperature, atmosphere,
          tectonic_activity, hydrosphere, life, map_symbol, surface_size, resource_id)
         VALUES (301442, 101, 'Tartarus', 'planet', 'R', 8, 1.2, 340, 'Dense',
-                7, 15, 'Microbial', 'O', 25, 100101)
+                7, 15, 'Microbial', 'O', 25, 200001)
     """)
 
     # Gas Giant: Leviathan at E18
@@ -217,7 +240,7 @@ def create_game(db_path=None, game_id="OMICRON101", game_name="Stellar Dominion 
         (body_id, system_id, name, body_type, grid_col, grid_row, gravity, temperature, atmosphere,
          tectonic_activity, hydrosphere, life, map_symbol, surface_size, resource_id)
         VALUES (412003, 101, 'Meridian', 'planet', 'T', 20, 0.7, 210, 'Thin',
-                2, 10, 'Plant', 'O', 21, 100103)
+                2, 10, 'Plant', 'O', 21, 200003)
     """)
 
     # =============================================
@@ -252,18 +275,86 @@ def create_game(db_path=None, game_id="OMICRON101", game_name="Stellar Dominion 
     """, (game_id,))
 
     # =============================================
+    # SURFACE PORTS (ground facilities linked to orbital starbases)
+    # =============================================
+    # One per planet that has a starbase; placed near centre of surface grid
+
+    # Orion Landing (on Orion, 31x31 grid) - linked to Citadel Station
+    c.execute("""
+        INSERT INTO surface_ports
+        (port_id, game_id, name, body_id, surface_x, surface_y,
+         parent_base_id, complexes, workers, troops)
+        VALUES (30100001, ?, 'Orion Landing', 247985, 16, 16,
+                45687590, 10, 200, 50)
+    """, (game_id,))
+
+    # Tartarus Foundry (on Tartarus, 31x31 grid) - linked to Tartarus Depot
+    c.execute("""
+        INSERT INTO surface_ports
+        (port_id, game_id, name, body_id, surface_x, surface_y,
+         parent_base_id, complexes, workers, troops)
+        VALUES (30100002, ?, 'Tartarus Foundry', 301442, 13, 13,
+                12340001, 5, 100, 25)
+    """, (game_id,))
+
+    # Meridian Harbour (on Meridian, 31x31 grid) - linked to Meridian Waystation
+    c.execute("""
+        INSERT INTO surface_ports
+        (port_id, game_id, name, body_id, surface_x, surface_y,
+         parent_base_id, complexes, workers, troops)
+        VALUES (30100003, ?, 'Meridian Harbour', 412003, 11, 11,
+                78901234, 4, 80, 15)
+    """, (game_id,))
+
+    # =============================================
+    # OUTPOSTS (lightweight surface installations)
+    # =============================================
+
+    # Callyx Relay (on Callyx moon, 11x11 grid)
+    c.execute("""
+        INSERT INTO outposts
+        (outpost_id, game_id, name, body_id, surface_x, surface_y,
+         outpost_type, workers)
+        VALUES (40100001, ?, 'Callyx Relay', 88341, 6, 6,
+                'Communications', 15)
+    """, (game_id,))
+
+    # Tartarus Mining Camp (on Tartarus, 25x25 grid)
+    c.execute("""
+        INSERT INTO outposts
+        (outpost_id, game_id, name, body_id, surface_x, surface_y,
+         outpost_type, workers)
+        VALUES (40100002, ?, 'Tartarus Mining Camp', 301442, 8, 19,
+                'Mining', 30)
+    """, (game_id,))
+
+    # =============================================
     # TRADE GOODS & MARKET CONFIGURATION
     # =============================================
     trade_goods = [
         (100101, 'Tartarus Precious Metals', 20, 5, 101),
         (100102, 'Orion Computer Cores', 50, 2, 101),
         (100103, 'Meridian Food Supplies', 30, 3, 101),
+        (401, 'Human Crew', 5, 1, None),
     ]
     for item in trade_goods:
         c.execute("""
             INSERT OR IGNORE INTO trade_goods (item_id, name, base_price, mass_per_unit, origin_system_id)
             VALUES (?, ?, ?, ?, ?)
         """, item)
+
+    # Planetary resources (GM-only, not visible to players)
+    # These are separate from trade goods. When mined, they produce the linked item.
+    resources = [
+        (200001, 'Tartarine Ore', 'Rich mineral deposits found in volcanic regions', 100101),
+        (200002, 'Silicon Lattice Crystals', 'High-purity crystalline structures for computation', 100102),
+        (200003, 'Fertile Biomass', 'Nutrient-dense organic matter supporting agriculture', 100103),
+    ]
+    for res in resources:
+        c.execute("""
+            INSERT OR IGNORE INTO resources (resource_id, name, description, produces_item_id)
+            VALUES (?, ?, ?, ?)
+        """, res)
 
     # Base trade roles: (base_id, item_id, role)
     # Citadel:  produces Orion Computer Cores, average Food, demands Precious Metals
@@ -273,12 +364,15 @@ def create_game(db_path=None, game_id="OMICRON101", game_name="Stellar Dominion 
         (45687590, 100101, 'demands'),
         (45687590, 100102, 'produces'),
         (45687590, 100103, 'average'),
+        (45687590, 401, 'average'),
         (12340001, 100101, 'produces'),
         (12340001, 100102, 'average'),
         (12340001, 100103, 'demands'),
+        (12340001, 401, 'average'),
         (78901234, 100101, 'average'),
         (78901234, 100102, 'demands'),
         (78901234, 100103, 'produces'),
+        (78901234, 401, 'average'),
     ]
     for base_id, item_id, role in base_trade:
         c.execute("""
@@ -539,17 +633,19 @@ def add_player(db_path=None, game_id="OMICRON101", player_name="Player 1",
         INSERT INTO ships 
         (ship_id, game_id, owner_prefect_id, name, ship_class, design, hull_type,
          hull_count, grid_col, grid_row, system_id, docked_at_base_id, orbiting_body_id,
-         tu_per_turn, tu_remaining, sensor_rating, cargo_capacity, crew_count, crew_required)
+         tu_per_turn, tu_remaining, sensor_rating, cargo_capacity, cargo_used,
+         crew_count, crew_required, life_support_capacity)
         VALUES (?, ?, ?, ?, 'Trader', 'Light Trader MK I', 'Commercial', 50,
-                ?, ?, ?, ?, ?, 300, 300, 20, 500, 15, 10)
+                ?, ?, ?, ?, ?, 300, 300, 20, 500, 15,
+                16, 10, 20)
     """, (ship_id, game_id, prefect_id, ship_name,
           ship_start_col, ship_start_row, ship_system_id, docked_at, orbiting_body))
 
     # Add a starting captain (randomly generated)
     captain_name = generate_random_name()
     c.execute("""
-        INSERT INTO officers (ship_id, crew_number, name, rank, specialty, experience, crew_factors)
-        VALUES (?, 1, ?, 'Captain', 'Navigation', 0, 8)
+        INSERT INTO officers (ship_id, crew_number, name, rank, specialty, experience, crew_factors, crew_type_id, wages)
+        VALUES (?, 1, ?, 'Captain', 'Navigation', 0, 8, 401, 5)
     """, (ship_id, captain_name))
 
     # Add starting installed items
@@ -567,6 +663,12 @@ def add_player(db_path=None, game_id="OMICRON101", player_name="Player 1",
             INSERT INTO installed_items (ship_id, item_type_id, item_name, quantity, mass_per_unit)
             VALUES (?, ?, ?, ?, ?)
         """, (sid, item_type, item_name, qty, mass))
+
+    # Add starting crew as cargo (Human Crew item 401)
+    c.execute("""
+        INSERT INTO cargo_items (ship_id, item_type_id, item_name, quantity, mass_per_unit)
+        VALUES (?, 401, 'Human Crew', 15, 1)
+    """, (ship_id,))
 
     conn.commit()
     conn.close()

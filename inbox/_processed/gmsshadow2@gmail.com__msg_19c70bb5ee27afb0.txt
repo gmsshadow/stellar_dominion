@@ -1,0 +1,6 @@
+GAME OMICRON101
+PLAYER_NAME Barry Dewey-Robertson
+EMAIL gmsshadow2@gmail.com
+PREFECT_NAME Tiberius Crowe
+SHIP_NAME Corvus
+PLANET 247985

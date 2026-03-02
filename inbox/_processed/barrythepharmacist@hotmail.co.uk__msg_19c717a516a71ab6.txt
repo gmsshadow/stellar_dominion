@@ -1,0 +1,16 @@
+game: OMICRON101
+account: 72791067 
+ship: 39268992
+orders:
+- UNDOCK: 45687590
+- LOCATIONSCAN: {}
+- MOVE: M13
+- LOCATIONSCAN: {}
+- MOVE: H05          
+- LOCATIONSCAN: {}  
+- MOVE: H04          
+- LOCATIONSCAN: {} 
+- ORBIT: 247985 
+- LOCATIONSCAN: {}
+- DOCK: 45687590
+- LOCATIONSCAN: {}

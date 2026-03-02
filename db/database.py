@@ -56,6 +56,37 @@ def get_connection(state_db_path=None, universe_db_path=None):
         if 'resource_id' not in cb_cols:
             conn.execute("ALTER TABLE celestial_bodies ADD COLUMN resource_id INTEGER DEFAULT NULL")
             conn.commit()
+        # Migrate universe.db: create resources table if missing
+        has_resources = conn.execute(
+            "SELECT name FROM universe.sqlite_master WHERE type='table' AND name='resources'"
+        ).fetchone()
+        if not has_resources:
+            conn.execute("""CREATE TABLE IF NOT EXISTS resources (
+                resource_id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                description TEXT DEFAULT '',
+                produces_item_id INTEGER DEFAULT NULL
+            )""")
+            conn.commit()
+
+    # Migrate game_state.db: add life_support_capacity to ships if missing
+    ship_cols = [r[1] for r in conn.execute("PRAGMA table_info(ships)").fetchall()]
+    if 'life_support_capacity' not in ship_cols:
+        conn.execute("ALTER TABLE ships ADD COLUMN life_support_capacity INTEGER DEFAULT 20")
+        conn.commit()
+
+    # Migrate game_state.db: add crew_type_id and wages to officers if missing
+    off_cols = [r[1] for r in conn.execute("PRAGMA table_info(officers)").fetchall()]
+    if 'crew_type_id' not in off_cols:
+        conn.execute("ALTER TABLE officers ADD COLUMN crew_type_id INTEGER DEFAULT 401")
+        conn.execute("ALTER TABLE officers ADD COLUMN wages INTEGER DEFAULT 5")
+        conn.commit()
+
+    # Migrate game_state.db: add turn_status to games if missing
+    game_cols = [r[1] for r in conn.execute("PRAGMA table_info(games)").fetchall()]
+    if 'turn_status' not in game_cols:
+        conn.execute("ALTER TABLE games ADD COLUMN turn_status TEXT NOT NULL DEFAULT 'open'")
+        conn.commit()
 
     return conn
 
@@ -144,9 +175,30 @@ CREATE TABLE IF NOT EXISTS trade_goods (
     origin_system_id INTEGER DEFAULT NULL
 );
 
--- Seed default faction
+-- Planetary resources (GM-only, not visible to players)
+-- Resources are separate from trade goods. When mined (future), a resource
+-- produces the linked trade good. Discovery mechanics TBD.
+CREATE TABLE IF NOT EXISTS resources (
+    resource_id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT DEFAULT '',
+    produces_item_id INTEGER DEFAULT NULL,
+    FOREIGN KEY (produces_item_id) REFERENCES trade_goods(item_id)
+);
+
+-- Seed factions
 INSERT OR IGNORE INTO factions (faction_id, abbreviation, name, description)
 VALUES (11, 'STA', 'Stellar Training Academy', 'Default starting faction for new players');
+INSERT OR IGNORE INTO factions (faction_id, abbreviation, name, description)
+VALUES (12, 'MTG', 'Merchant Trade Guild', 'A coalition of traders and commerce-focused captains');
+INSERT OR IGNORE INTO factions (faction_id, abbreviation, name, description)
+VALUES (13, 'IMP', 'Imperial Navy', 'Military arm of the Terran Empire');
+INSERT OR IGNORE INTO factions (faction_id, abbreviation, name, description)
+VALUES (14, 'FRN', 'Frontier Coalition', 'Independent settlers and explorers of the outer systems');
+INSERT OR IGNORE INTO factions (faction_id, abbreviation, name, description)
+VALUES (15, 'SYN', 'Syndicate', 'A shadowy network of smugglers, pirates, and opportunists');
+INSERT OR IGNORE INTO factions (faction_id, abbreviation, name, description)
+VALUES (0, 'IND', 'Independent', 'No faction affiliation');
 
 -- Indexes
 CREATE INDEX IF NOT EXISTS idx_bodies_system ON celestial_bodies(system_id);
@@ -181,6 +233,7 @@ CREATE TABLE IF NOT EXISTS games (
     game_name TEXT NOT NULL,
     current_year INTEGER NOT NULL DEFAULT 500,
     current_week INTEGER NOT NULL DEFAULT 1,
+    turn_status TEXT NOT NULL DEFAULT 'open',
     schema_version INTEGER NOT NULL DEFAULT 1,
     rng_seed TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -243,6 +296,7 @@ CREATE TABLE IF NOT EXISTS ships (
     cargo_used INTEGER DEFAULT 0,
     crew_count INTEGER DEFAULT 10,
     crew_required INTEGER DEFAULT 10,
+    life_support_capacity INTEGER DEFAULT 20,
     efficiency REAL DEFAULT 100.0,
     integrity REAL DEFAULT 100.0,
     FOREIGN KEY (game_id) REFERENCES games(game_id),
@@ -268,6 +322,37 @@ CREATE TABLE IF NOT EXISTS starbases (
     FOREIGN KEY (game_id) REFERENCES games(game_id)
 );
 
+-- Surface ports (ground facilities linked to orbital starbases)
+CREATE TABLE IF NOT EXISTS surface_ports (
+    port_id INTEGER PRIMARY KEY,
+    game_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    body_id INTEGER NOT NULL,
+    surface_x INTEGER NOT NULL,
+    surface_y INTEGER NOT NULL,
+    parent_base_id INTEGER,
+    owner_prefect_id INTEGER,
+    complexes INTEGER DEFAULT 0,
+    workers INTEGER DEFAULT 0,
+    troops INTEGER DEFAULT 0,
+    FOREIGN KEY (game_id) REFERENCES games(game_id),
+    FOREIGN KEY (parent_base_id) REFERENCES starbases(base_id)
+);
+
+-- Outposts (lightweight surface installations, smaller than surface ports)
+CREATE TABLE IF NOT EXISTS outposts (
+    outpost_id INTEGER PRIMARY KEY,
+    game_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    body_id INTEGER NOT NULL,
+    surface_x INTEGER NOT NULL,
+    surface_y INTEGER NOT NULL,
+    owner_prefect_id INTEGER,
+    outpost_type TEXT DEFAULT 'General',
+    workers INTEGER DEFAULT 0,
+    FOREIGN KEY (game_id) REFERENCES games(game_id)
+);
+
 -- Ship officers / crew
 CREATE TABLE IF NOT EXISTS officers (
     officer_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -278,7 +363,9 @@ CREATE TABLE IF NOT EXISTS officers (
     rank TEXT DEFAULT 'Ensign',
     specialty TEXT DEFAULT 'General',
     experience INTEGER DEFAULT 0,
-    crew_factors INTEGER DEFAULT 5
+    crew_factors INTEGER DEFAULT 5,
+    crew_type_id INTEGER DEFAULT 401,
+    wages INTEGER DEFAULT 5
 );
 
 -- Ship installed items
@@ -381,6 +468,58 @@ CREATE TABLE IF NOT EXISTS pending_orders (
     command TEXT NOT NULL,
     parameters TEXT,
     reason TEXT
+);
+
+-- Inter-position messages
+CREATE TABLE IF NOT EXISTS messages (
+    message_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    game_id TEXT NOT NULL,
+    sender_type TEXT NOT NULL,
+    sender_id INTEGER NOT NULL,
+    sender_name TEXT NOT NULL,
+    recipient_type TEXT NOT NULL,
+    recipient_id INTEGER NOT NULL,
+    message_text TEXT NOT NULL,
+    sent_turn_year INTEGER NOT NULL,
+    sent_turn_week INTEGER NOT NULL,
+    delivered INTEGER DEFAULT 0,
+    FOREIGN KEY (game_id) REFERENCES games(game_id)
+);
+
+-- Faction change requests (GM-moderated)
+CREATE TABLE IF NOT EXISTS faction_requests (
+    request_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    game_id TEXT NOT NULL,
+    prefect_id INTEGER NOT NULL,
+    current_faction_id INTEGER,
+    target_faction_id INTEGER NOT NULL,
+    reason TEXT DEFAULT '',
+    status TEXT DEFAULT 'pending',
+    requested_turn_year INTEGER NOT NULL,
+    requested_turn_week INTEGER NOT NULL,
+    processed_turn_year INTEGER,
+    processed_turn_week INTEGER,
+    gm_note TEXT DEFAULT '',
+    FOREIGN KEY (game_id) REFERENCES games(game_id),
+    FOREIGN KEY (prefect_id) REFERENCES prefects(prefect_id)
+);
+
+-- Moderator action requests (player -> GM free-text, GM responds)
+CREATE TABLE IF NOT EXISTS moderator_actions (
+    action_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    game_id TEXT NOT NULL,
+    ship_id INTEGER NOT NULL,
+    prefect_id INTEGER NOT NULL,
+    request_text TEXT NOT NULL,
+    status TEXT DEFAULT 'pending',
+    gm_response TEXT DEFAULT '',
+    requested_turn_year INTEGER NOT NULL,
+    requested_turn_week INTEGER NOT NULL,
+    resolved_turn_year INTEGER,
+    resolved_turn_week INTEGER,
+    FOREIGN KEY (game_id) REFERENCES games(game_id),
+    FOREIGN KEY (ship_id) REFERENCES ships(ship_id),
+    FOREIGN KEY (prefect_id) REFERENCES prefects(prefect_id)
 );
 
 -- Turn audit log
@@ -611,10 +750,10 @@ def split_legacy_db(legacy_path):
     state_conn.execute("PRAGMA foreign_keys = OFF")
 
     state_tables = [
-        'games', 'players', 'prefects', 'ships', 'starbases',
+        'games', 'players', 'prefects', 'ships', 'starbases', 'surface_ports', 'outposts',
         'officers', 'installed_items', 'cargo_items',
         'base_trade_config', 'market_prices', 'planet_surface',
-        'known_contacts', 'turn_orders', 'pending_orders', 'turn_log',
+        'known_contacts', 'turn_orders', 'pending_orders', 'messages', 'faction_requests', 'moderator_actions', 'turn_log',
     ]
 
     for table in state_tables:

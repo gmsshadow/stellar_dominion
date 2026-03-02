@@ -269,7 +269,12 @@ def generate_ship_report(turn_result, db_path=None, game_id="OMICRON101",
                                f"Faction: {faction_str}"))
     lines.append(section_line(f"Wealth: {prefect['credits']:,.0f} Credits".ljust(COL_LEFT) +
                                "Ownership: Player owned"))
-    lines.append(section_line(f"Efficiency: {ship['efficiency']:.0f}%".ljust(COL_LEFT) +
+    eff = ship['efficiency']
+    eff_str = f"Efficiency: {eff:.0f}%"
+    if eff < 100:
+        penalty = 100 - eff
+        eff_str += f" (+{penalty:.0f}% TU penalty)"
+    lines.append(section_line(eff_str.ljust(COL_LEFT) +
                                f"TUs left: {turn_result['final_tu']} tus"))
     lines.append(section_line())
 
@@ -309,7 +314,8 @@ def generate_ship_report(turn_result, db_path=None, game_id="OMICRON101",
     lines.append(section_line("OFFICERS"))
     if officers:
         for off in officers:
-            rank_info = f"[ {off['specialty']} {off['experience']} Xp ] +{off['crew_factors']} CF"
+            wages = off['wages'] if 'wages' in off.keys() else 5
+            rank_info = f"[ {off['specialty']} {off['experience']} Xp ] +{off['crew_factors']} CF  {wages} cr/wk"
             lines.append(section_line(
                 f"[{off['crew_number']}] {off['rank']} {off['name']}".ljust(45) + rank_info
             ))
@@ -323,8 +329,15 @@ def generate_ship_report(turn_result, db_path=None, game_id="OMICRON101",
         lines.append(section_line(f"{prefect['name']} ({prefect['prefect_id']})"))
         lines.append(section_line())
 
-    crew_line = f"Crew: {ship['crew_count']}".ljust(COL_LEFT) + f"Required: {ship['crew_required']}"
+    life_support = ship['life_support_capacity'] if 'life_support_capacity' in ship.keys() else 20
+    crew_line = (f"Crew: {ship['crew_count']}/{life_support}".ljust(COL_LEFT) +
+                 f"Required: {ship['crew_required']}")
     lines.append(section_line(crew_line))
+    if ship['crew_count'] < ship['crew_required']:
+        penalty = 100.0 - min(100.0, (ship['crew_count'] / max(1, ship['crew_required'])) * 100.0)
+        lines.append(section_line(
+            f"*** WARNING: Ship undermanned! +{penalty:.0f}% TU penalty on all actions. ***"
+        ))
     lines.append(section_line())
 
     # ==========================================
@@ -382,20 +395,30 @@ def generate_ship_report(turn_result, db_path=None, game_id="OMICRON101",
     lines.append(section_line())
 
     # ==========================================
-    # PENDING ORDERS
+    # OVERFLOW ORDERS (carry forward to next turn)
     # ==========================================
-    lines.append(section_header("Pending Orders"))
+    lines.append(section_header("Overflow Orders"))
     lines.append(section_line())
-    if turn_result['pending']:
-        for i, pend in enumerate(turn_result['pending'], 1):
-            params_str = f" {{{pend['params']}}}" if pend['params'] else ""
+    overflow = turn_result.get('overflow', [])
+    if overflow:
+        lines.append(section_line("The following orders will run automatically next turn"))
+        lines.append(section_line("(submit CLEAR as first order to cancel them):"))
+        lines.append(section_line())
+        for i, ov in enumerate(overflow, 1):
+            params_str = ""
+            if ov.get('params'):
+                p = ov['params']
+                if isinstance(p, dict) and 'col' in p:
+                    params_str = f" {{{p['col']}{p['row']:02d}}}"
+                elif isinstance(p, dict) and 'target_id' in p and 'text' in p:
+                    params_str = f" {{{p['target_id']} ...}}"
+                else:
+                    params_str = f" {{{p}}}"
             lines.append(section_line(
-                f"{i:>3}. {pend['command']}{params_str}"
+                f"{i:>3}. {ov['command']}{params_str}"
             ))
-            if pend.get('reason'):
-                lines.append(section_line(f"     Reason: {pend['reason']}"))
     else:
-        lines.append(section_line("No pending orders."))
+        lines.append(section_line("No overflow orders."))
     lines.append(section_line())
 
     # ==========================================
@@ -589,6 +612,14 @@ def generate_prefect_report(prefect_id, db_path=None, game_id="OMICRON101",
             f"   {s['design']}".ljust(COL_LEFT) +
             f"TU: {s['tu_remaining']}/{s['tu_per_turn']}  "
             f"Size: {s['hull_count']} ({s['hull_type']})"
+        ))
+        ls = s['life_support_capacity'] if 'life_support_capacity' in s.keys() else 20
+        crew_status = ""
+        if s['crew_count'] < s['crew_required']:
+            crew_status = " [UNDERMANNED]"
+        lines.append(section_line(
+            f"   Crew: {s['crew_count']}/{ls}".ljust(COL_LEFT) +
+            f"Required: {s['crew_required']}{crew_status}"
         ))
         lines.append(section_line())
 

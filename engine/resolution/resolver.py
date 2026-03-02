@@ -6,6 +6,7 @@ Resolves orders for ships, deducting TU and updating game state.
 import random
 import hashlib
 import heapq
+import math
 from datetime import datetime
 from db.database import get_connection, get_faction
 from engine.maps.system_map import (
@@ -29,7 +30,20 @@ TU_COSTS = {
     'SELL': 0,
     'GETMARKET': 0,
     'JUMP': 60,        # hyperspace jump between systems
+    'MESSAGE': 0,      # sending messages is free
+    'MAKEOFFICER': 10, # promoting crew takes some time
+    'RENAMESHIP': 0,
+    'RENAMEBASE': 0,
+    'RENAMEPREFECT': 0,
+    'RENAMEOFFICER': 0,
+    'CHANGEFACTION': 0,
+    'MODERATOR': 0,
 }
+
+# Special item IDs
+CREW_ITEM_ID = 401  # Human Crew
+OFFICER_WAGE = 5    # Credits per officer per week
+CREW_WAGE = 1       # Credits per regular crew per week
 
 # Jump drive configuration (scope to make per-ship via installed items later)
 JUMP_CONFIG = {
@@ -47,7 +61,7 @@ class TurnResolver:
         self.game_id = game_id
         self.conn = get_connection(db_path)
         self.log = []  # Turn execution log
-        self.pending = []  # Failed orders carried forward
+        self.pending = []  # Legacy (unused) — overflow handled by caller
         self.contacts = []  # Contacts discovered during turn
 
     def _commit_ship_position(self, state):
@@ -74,7 +88,7 @@ class TurnResolver:
         Returns dict: moved (bool), finished (bool), step (col, row),
                       orbit_msg (str), error_msg (str or None).
         """
-        cost = state['move_cost']
+        cost = self._effective_tu_cost(state['move_cost'], state.get('efficiency', 100.0))
 
         # Already there
         if state['col'] == target_col and state['row'] == target_row:
@@ -140,7 +154,7 @@ class TurnResolver:
         # Per-ship state tracking
         states = {}
         logs = {}
-        pendings = {}
+        overflows = {}  # Orders that carry forward to next turn (TU exhaustion)
         contacts_map = {}
         rngs = {}
         queues = {}
@@ -177,12 +191,15 @@ class TurnResolver:
                 'start_col': ship['grid_col'],
                 'start_row': ship['grid_row'],
                 'start_tu': ship['tu_per_turn'],
+                'efficiency': self._calc_efficiency(ship),
             }
             logs[ship_id] = []
-            pendings[ship_id] = []
+            overflows[ship_id] = []
             contacts_map[ship_id] = []
             rngs[ship_id] = random.Random(seed)
-            queues[ship_id] = list(orders)
+
+            # Filter out CLEAR command — if present, caller already handled it
+            queues[ship_id] = [o for o in orders if o['command'] != 'CLEAR']
 
         # Build initial priority queue: (completion_time, tiebreaker, ship_id)
         heap = []
@@ -205,7 +222,6 @@ class TurnResolver:
 
             # Swap per-ship tracking into instance vars
             self.log = logs[ship_id]
-            self.pending = pendings[ship_id]
             self.contacts = contacts_map[ship_id]
 
             if order['command'] == 'MOVE':
@@ -250,10 +266,27 @@ class TurnResolver:
                     # Pop the order, flush accumulator to log
                     queues[ship_id].pop(0)
                     log_entry = self._build_move_log_entry(
-                        acc, state, step_result, pendings[ship_id]
+                        acc, state, step_result
                     )
                     logs[ship_id].append(log_entry)
                     del move_acc[ship_id]
+
+                    # If TU exhausted during MOVE, collect overflow
+                    if log_entry.get('tu_exhausted'):
+                        # The MOVE itself carries forward (remaining distance)
+                        overflow_move = {
+                            'command': 'MOVE',
+                            'params': {'col': target_col, 'row': target_row},
+                        }
+                        overflows[ship_id].append(overflow_move)
+                        # Plus all remaining orders in queue
+                        for rem in queues[ship_id]:
+                            overflows[ship_id].append({
+                                'command': rem['command'],
+                                'params': rem['params'],
+                            })
+                        queues[ship_id].clear()
+
                 # else: leave order in queue for next step
 
             else:
@@ -277,6 +310,19 @@ class TurnResolver:
 
                 logs[ship_id].append(result)
 
+                # If TU exhausted, collect this order + remaining as overflow
+                if result.get('tu_exhausted'):
+                    overflows[ship_id].append({
+                        'command': order['command'],
+                        'params': order['params'],
+                    })
+                    for rem in queues[ship_id]:
+                        overflows[ship_id].append({
+                            'command': rem['command'],
+                            'params': rem['params'],
+                        })
+                    queues[ship_id].clear()
+
             # Re-insert into heap if more work remains
             if queues[ship_id]:
                 elapsed = state['start_tu'] - state['tu']
@@ -287,18 +333,32 @@ class TurnResolver:
                 # MOVE still in progress (shouldn't happen since finished
                 # pops, but guard against edge cases)
                 elapsed = state['start_tu'] - state['tu']
-                heapq.heappush(heap, (elapsed + state['move_cost'], counter, ship_id))
+                eff_move = self._effective_tu_cost(state['move_cost'], state.get('efficiency', 100.0))
+                heapq.heappush(heap, (elapsed + eff_move, counter, ship_id))
                 counter += 1
 
         # Flush any interrupted moves (ran out of TU mid-move)
         for ship_id, acc in list(move_acc.items()):
             state = states[ship_id]
-            self.pending = pendings[ship_id]
             log_entry = self._build_move_log_entry(
-                acc, state, {'moved': False, 'finished': True, 'out_of_tu': True},
-                pendings[ship_id]
+                acc, state, {'moved': False, 'finished': True, 'out_of_tu': True}
             )
             logs[ship_id].append(log_entry)
+
+            # Collect overflow: remaining MOVE distance + any remaining orders
+            if log_entry.get('tu_exhausted'):
+                target_col = acc['target_col']
+                target_row = acc['target_row']
+                overflows[ship_id].append({
+                    'command': 'MOVE',
+                    'params': {'col': target_col, 'row': target_row},
+                })
+                for rem in queues[ship_id]:
+                    overflows[ship_id].append({
+                        'command': rem['command'],
+                        'params': rem['params'],
+                    })
+                queues[ship_id].clear()
 
         # === Commit final states and build results ===
         results = {}
@@ -307,7 +367,6 @@ class TurnResolver:
             ship = ship_rows[ship_id]
 
             self.log = logs[ship_id]
-            self.pending = pendings[ship_id]
             self.contacts = contacts_map[ship_id]
 
             self._commit_ship_state(state)
@@ -338,7 +397,7 @@ class TurnResolver:
                 'landed_x': state['landed_x'],
                 'landed_y': state['landed_y'],
                 'log': logs[ship_id],
-                'pending': pendings[ship_id],
+                'overflow': overflows[ship_id],
                 'contacts': contacts_map[ship_id],
                 'rng_seed': seed_str,
                 'turn_year': game['current_year'],
@@ -351,18 +410,19 @@ class TurnResolver:
         """Estimate TU cost for priority ordering. MOVE = one step at ship's speed."""
         cmd = order['command']
         params = order['params']
+        eff = state.get('efficiency', 100.0)
 
         if cmd == 'MOVE':
-            return state['move_cost']
+            return self._effective_tu_cost(state['move_cost'], eff)
         elif cmd == 'WAIT':
             if isinstance(params, (int, float)):
                 return min(int(params), state['tu'])
             return state['tu']
         elif cmd in TU_COSTS:
-            return TU_COSTS[cmd]
+            return self._effective_tu_cost(TU_COSTS[cmd], eff)
         return 0
 
-    def _build_move_log_entry(self, acc, state, final_step, pendings_list):
+    def _build_move_log_entry(self, acc, state, final_step, pendings_list=None):
         """Build a combined MOVE log entry from accumulated steps."""
         target_col = acc['target_col']
         target_row = acc['target_row']
@@ -371,7 +431,9 @@ class TurnResolver:
         tu_before = acc['tu_before']
         orbit_msg = acc['orbit_msg']
         steps_taken = len(waypoints) - 1  # first entry is start position
-        total_cost = steps_taken * state['move_cost']
+        effective_move_cost = self._effective_tu_cost(state['move_cost'], state.get('efficiency', 100.0))
+        total_cost = steps_taken * effective_move_cost
+        tu_exhausted = False
 
         reached = (state['col'] == target_col and state['row'] == target_row)
         final_loc = f"{state['col']}{state['row']:02d}"
@@ -379,16 +441,14 @@ class TurnResolver:
         if final_step.get('already_there'):
             msg = f"Already at {target_str}."
         elif final_step.get('blocked_docked'):
-            msg = "Cannot move while docked. UNDOCK first. Order queued as pending."
+            msg = "Cannot move while docked. UNDOCK first. Order dropped."
         elif final_step.get('blocked_landed'):
-            msg = "Cannot move while landed. TAKEOFF first. Order queued as pending."
+            msg = "Cannot move while landed. TAKEOFF first. Order dropped."
         elif steps_taken == 0 and final_step.get('out_of_tu'):
+            eff_mc = self._effective_tu_cost(state['move_cost'], state.get('efficiency', 100.0))
             msg = (f"Insufficient TU for move ({state['tu']} < "
-                   f"{state['move_cost']}). Order queued as pending.")
-            pendings_list.append({
-                'command': 'MOVE', 'params': target_str,
-                'reason': 'Insufficient TU'
-            })
+                   f"{eff_mc}). Order carries forward.")
+            tu_exhausted = True
         elif reached:
             if steps_taken <= 4:
                 path_str = " -> ".join(waypoints)
@@ -404,10 +464,7 @@ class TurnResolver:
             remaining = grid_distance(state['col'], state['row'], target_col, target_row)
             msg = (f"{orbit_msg}Moved {steps_taken} squares toward {target_str}, "
                    f"stopped at {final_loc} ({remaining} squares remaining). ({path_str})")
-            pendings_list.append({
-                'command': 'MOVE', 'params': target_str,
-                'reason': f"Ran out of TU at {final_loc}"
-            })
+            tu_exhausted = True
 
         # Append encounter detections during movement
         encounters = acc.get('encounters', [])
@@ -421,7 +478,7 @@ class TurnResolver:
             'command': 'MOVE', 'params': target_str,
             'tu_before': tu_before, 'tu_after': state['tu'],
             'tu_cost': total_cost,
-            'success': reached,
+            'success': reached, 'tu_exhausted': tu_exhausted,
             'message': msg,
             'steps': steps_taken,
             'waypoints': waypoints,
@@ -446,6 +503,51 @@ class TurnResolver:
             "SELECT * FROM ships WHERE ship_id = ? AND game_id = ?",
             (ship_id, self.game_id)
         ).fetchone()
+
+    def _get_crew_count(self, ship_id):
+        """Get total crew count: cargo crew + officers on ship."""
+        row = self.conn.execute(
+            "SELECT quantity FROM cargo_items WHERE ship_id = ? AND item_type_id = ?",
+            (ship_id, CREW_ITEM_ID)
+        ).fetchone()
+        cargo_crew = row['quantity'] if row else 0
+        off_row = self.conn.execute(
+            "SELECT COUNT(*) as cnt FROM officers WHERE ship_id = ?",
+            (ship_id,)
+        ).fetchone()
+        officer_count = off_row['cnt'] if off_row else 0
+        return cargo_crew + officer_count
+
+    def _sync_crew_count(self, ship_id):
+        """Sync ships.crew_count with cargo crew + officers."""
+        crew = self._get_crew_count(ship_id)
+        self.conn.execute(
+            "UPDATE ships SET crew_count = ? WHERE ship_id = ?",
+            (crew, ship_id)
+        )
+
+    @staticmethod
+    def _calc_efficiency(ship):
+        """Calculate crew efficiency as percentage (0-100).
+        Efficiency = min(100, crew_count / crew_required * 100).
+        """
+        required = ship['crew_required'] if ship['crew_required'] else 1
+        if required <= 0:
+            return 100.0
+        return min(100.0, (ship['crew_count'] / required) * 100.0)
+
+    @staticmethod
+    def _effective_tu_cost(base_cost, efficiency):
+        """Apply efficiency penalty to a TU cost.
+        Penalty = (100 - efficiency)% extra cost, rounded up.
+        E.g. 80% efficiency -> 20% penalty -> cost * 1.2, ceil'd.
+        """
+        if base_cost <= 0:
+            return 0
+        if efficiency >= 100.0:
+            return base_cost
+        penalty_pct = (100.0 - efficiency) / 100.0
+        return math.ceil(base_cost * (1.0 + penalty_pct))
 
     def _get_faction(self, faction_id):
         """Get faction details."""
@@ -553,16 +655,34 @@ class TurnResolver:
             'start_col': ship['grid_col'],
             'start_row': ship['grid_row'],
             'start_tu': ship['tu_per_turn'],
+            'efficiency': self._calc_efficiency(ship),
         }
 
         self.log = []
-        self.pending = []
         self.contacts = []
+        overflow = []
 
-        # Execute each order in sequence
-        for order in orders:
+        # Execute each order in sequence; stop on TU exhaustion
+        remaining_orders = list(orders)
+        for i, order in enumerate(remaining_orders):
+            if order['command'] == 'CLEAR':
+                continue  # Already handled by caller
             result = self._execute_order(state, order, rng)
             self.log.append(result)
+
+            # If TU exhausted, collect this order + remaining as overflow
+            if result.get('tu_exhausted'):
+                overflow.append({
+                    'command': order['command'],
+                    'params': order['params'],
+                })
+                for rem in remaining_orders[i + 1:]:
+                    if rem['command'] != 'CLEAR':
+                        overflow.append({
+                            'command': rem['command'],
+                            'params': rem['params'],
+                        })
+                break
 
         # Commit final ship state to database
         self._commit_ship_state(state)
@@ -593,7 +713,7 @@ class TurnResolver:
             'landed_x': state['landed_x'],
             'landed_y': state['landed_y'],
             'log': self.log,
-            'pending': self.pending,
+            'overflow': overflow,
             'contacts': self.contacts,
             'rng_seed': seed_str,
             'turn_year': game['current_year'],
@@ -634,6 +754,31 @@ class TurnResolver:
             return self._cmd_getmarket(state, params)
         elif cmd == 'JUMP':
             return self._cmd_jump(state, params)
+        elif cmd == 'MESSAGE':
+            return self._cmd_message(state, params)
+        elif cmd == 'MAKEOFFICER':
+            return self._cmd_makeofficer(state, params)
+        elif cmd == 'RENAMESHIP':
+            return self._cmd_renameship(state, params)
+        elif cmd == 'RENAMEBASE':
+            return self._cmd_renamebase(state, params)
+        elif cmd == 'RENAMEPREFECT':
+            return self._cmd_renameprefect(state, params)
+        elif cmd == 'RENAMEOFFICER':
+            return self._cmd_renameofficer(state, params)
+        elif cmd == 'CHANGEFACTION':
+            return self._cmd_changefaction(state, params)
+        elif cmd == 'MODERATOR':
+            return self._cmd_moderator(state, params)
+        elif cmd == 'CLEAR':
+            # CLEAR is handled by the caller before resolution starts.
+            # If it reaches here, just log it as a no-op.
+            return {
+                'command': 'CLEAR', 'params': None,
+                'tu_before': tu_before, 'tu_after': tu_before,
+                'tu_cost': 0, 'success': True,
+                'message': "Overflow orders from previous turn cleared."
+            }
         else:
             return {
                 'command': cmd, 'params': params,
@@ -671,7 +816,7 @@ class TurnResolver:
         tu_before = state['tu']
         target_col = params['col']
         target_row = params['row']
-        cost_per_step = state['move_cost']
+        cost_per_step = self._effective_tu_cost(state['move_cost'], state['efficiency'])
 
         # Already there?
         if state['col'] == target_col and state['row'] == target_row:
@@ -684,16 +829,12 @@ class TurnResolver:
             }
 
         if state['tu'] < cost_per_step:
-            self.pending.append({
-                'command': 'MOVE', 'params': f"{target_col}{target_row:02d}",
-                'reason': 'Insufficient TU'
-            })
             return {
                 'command': 'MOVE', 'params': f"{target_col}{target_row:02d}",
                 'tu_before': tu_before, 'tu_after': state['tu'],
                 'tu_cost': 0,
-                'success': False,
-                'message': f"Insufficient TU for move ({state['tu']} < {cost_per_step}). Order queued as pending."
+                'success': False, 'tu_exhausted': True,
+                'message': f"Insufficient TU for move ({state['tu']} < {cost_per_step}). Order carries forward."
             }
 
         # If docked, must undock first
@@ -703,7 +844,7 @@ class TurnResolver:
                 'tu_before': tu_before, 'tu_after': state['tu'],
                 'tu_cost': 0,
                 'success': False,
-                'message': "Cannot move while docked. UNDOCK first. Order queued as pending."
+                'message': "Cannot move while docked. UNDOCK first. Order dropped."
             }
 
         # Leave orbit if orbiting
@@ -728,11 +869,7 @@ class TurnResolver:
 
         for step_col, step_row in path:
             if state['tu'] < cost_per_step:
-                # Out of TU -- queue remaining distance as pending
-                self.pending.append({
-                    'command': 'MOVE', 'params': f"{target_col}{target_row:02d}",
-                    'reason': f"Ran out of TU at {state['col']}{state['row']:02d}"
-                })
+                # Out of TU mid-move -- mark for overflow
                 break
 
             # Move to next square
@@ -808,19 +945,15 @@ class TurnResolver:
     def _cmd_location_scan(self, state, rng):
         """LOCATIONSCAN - scan nearby cells for objects."""
         tu_before = state['tu']
-        cost = TU_COSTS['LOCATIONSCAN']
+        cost = self._effective_tu_cost(TU_COSTS['LOCATIONSCAN'], state['efficiency'])
 
         if state['tu'] < cost:
-            self.pending.append({
-                'command': 'LOCATIONSCAN', 'params': None,
-                'reason': 'Insufficient TU'
-            })
             return {
                 'command': 'LOCATIONSCAN', 'params': None,
                 'tu_before': tu_before, 'tu_after': state['tu'],
                 'tu_cost': 0,
-                'success': False,
-                'message': f"Insufficient TU for scan ({state['tu']} < {cost}). Order queued as pending."
+                'success': False, 'tu_exhausted': True,
+                'message': f"Insufficient TU for scan ({state['tu']} < {cost}). Order carries forward."
             }
 
         state['tu'] -= cost
@@ -842,6 +975,24 @@ class TurnResolver:
             for obj in detected:
                 loc = f"{obj['col']}{obj['row']:02d}"
                 scan_lines.append(f"    {obj['name']} ({obj['id']}) at {loc}")
+
+                # For celestial bodies, also list surface ports and outposts
+                if obj['type'] in ('planet', 'moon', 'gas_giant'):
+                    body_id = obj['id']
+                    ports = self.conn.execute(
+                        "SELECT name, port_id, surface_x, surface_y FROM surface_ports WHERE body_id = ?",
+                        (body_id,)
+                    ).fetchall()
+                    for p in ports:
+                        scan_lines.append(
+                            f"        Surface Port: {p['name']} ({p['port_id']}) at ({p['surface_x']},{p['surface_y']})")
+                    outposts = self.conn.execute(
+                        "SELECT name, outpost_id, surface_x, surface_y, outpost_type FROM outposts WHERE body_id = ?",
+                        (body_id,)
+                    ).fetchall()
+                    for o in outposts:
+                        scan_lines.append(
+                            f"        Outpost: {o['name']} ({o['outpost_id']}) [{o['outpost_type']}] at ({o['surface_x']},{o['surface_y']})")
         else:
             scan_lines = ["Scan complete. No contacts detected."]
 
@@ -857,19 +1008,15 @@ class TurnResolver:
     def _cmd_system_scan(self, state):
         """SYSTEMSCAN - produce full system map."""
         tu_before = state['tu']
-        cost = TU_COSTS['SYSTEMSCAN']
+        cost = self._effective_tu_cost(TU_COSTS['SYSTEMSCAN'], state['efficiency'])
 
         if state['tu'] < cost:
-            self.pending.append({
-                'command': 'SYSTEMSCAN', 'params': None,
-                'reason': 'Insufficient TU'
-            })
             return {
                 'command': 'SYSTEMSCAN', 'params': None,
                 'tu_before': tu_before, 'tu_after': state['tu'],
                 'tu_cost': 0,
-                'success': False,
-                'message': f"Insufficient TU for system scan ({state['tu']} < {cost})."
+                'success': False, 'tu_exhausted': True,
+                'message': f"Insufficient TU for system scan ({state['tu']} < {cost}). Order carries forward."
             }
 
         state['tu'] -= cost
@@ -907,19 +1054,15 @@ class TurnResolver:
     def _cmd_orbit(self, state, body_id):
         """ORBIT {body_id} - enter orbit of a celestial body."""
         tu_before = state['tu']
-        cost = TU_COSTS['ORBIT']
+        cost = self._effective_tu_cost(TU_COSTS['ORBIT'], state['efficiency'])
 
         if state['tu'] < cost:
-            self.pending.append({
-                'command': 'ORBIT', 'params': body_id,
-                'reason': 'Insufficient TU'
-            })
             return {
                 'command': 'ORBIT', 'params': body_id,
                 'tu_before': tu_before, 'tu_after': state['tu'],
                 'tu_cost': 0,
-                'success': False,
-                'message': f"Insufficient TU for orbit ({state['tu']} < {cost}). Order queued as pending."
+                'success': False, 'tu_exhausted': True,
+                'message': f"Insufficient TU for orbit ({state['tu']} < {cost}). Order carries forward."
             }
 
         # Check body exists and is at ship's location
@@ -939,16 +1082,12 @@ class TurnResolver:
 
         if body['grid_col'] != state['col'] or body['grid_row'] != state['row']:
             loc = f"{body['grid_col']}{body['grid_row']:02d}"
-            self.pending.append({
-                'command': 'ORBIT', 'params': body_id,
-                'reason': f'Not at body location ({loc})'
-            })
             return {
                 'command': 'ORBIT', 'params': body_id,
                 'tu_before': tu_before, 'tu_after': state['tu'],
                 'tu_cost': 0,
                 'success': False,
-                'message': f"Unable to orbit: ship is not at {body['name']} location ({loc}). Order queued as pending."
+                'message': f"Unable to orbit: ship is not at {body['name']} location ({loc}). Order dropped."
             }
 
         state['orbiting'] = body_id
@@ -965,19 +1104,15 @@ class TurnResolver:
     def _cmd_dock(self, state, base_id):
         """DOCK {base_id} - dock at a starbase."""
         tu_before = state['tu']
-        cost = TU_COSTS['DOCK']
+        cost = self._effective_tu_cost(TU_COSTS['DOCK'], state['efficiency'])
 
         if state['tu'] < cost:
-            self.pending.append({
-                'command': 'DOCK', 'params': base_id,
-                'reason': 'Insufficient TU'
-            })
             return {
                 'command': 'DOCK', 'params': base_id,
                 'tu_before': tu_before, 'tu_after': state['tu'],
                 'tu_cost': 0,
-                'success': False,
-                'message': f"Insufficient TU for docking ({state['tu']} < {cost}). Order queued as pending."
+                'success': False, 'tu_exhausted': True,
+                'message': f"Insufficient TU for docking ({state['tu']} < {cost}). Order carries forward."
             }
 
         # Check base exists
@@ -998,16 +1133,12 @@ class TurnResolver:
         # Check ship is at base location
         if base['grid_col'] != state['col'] or base['grid_row'] != state['row']:
             loc = f"{base['grid_col']}{base['grid_row']:02d}"
-            self.pending.append({
-                'command': 'DOCK', 'params': base_id,
-                'reason': f'Not at base location ({loc})'
-            })
             return {
                 'command': 'DOCK', 'params': base_id,
                 'tu_before': tu_before, 'tu_after': state['tu'],
                 'tu_cost': 0,
                 'success': False,
-                'message': f"Unable to dock: ship is not at base location ({loc}). Order queued as pending."
+                'message': f"Unable to dock: ship is not at base location ({loc}). Order dropped."
             }
 
         # If base is in orbit, ship must also be orbiting the same body
@@ -1056,7 +1187,7 @@ class TurnResolver:
     def _cmd_undock(self, state):
         """UNDOCK - leave docked starbase."""
         tu_before = state['tu']
-        cost = TU_COSTS['UNDOCK']
+        cost = self._effective_tu_cost(TU_COSTS['UNDOCK'], state['efficiency'])
 
         if not state['docked_at']:
             return {
@@ -1068,16 +1199,12 @@ class TurnResolver:
             }
 
         if state['tu'] < cost:
-            self.pending.append({
-                'command': 'UNDOCK', 'params': None,
-                'reason': 'Insufficient TU'
-            })
             return {
                 'command': 'UNDOCK', 'params': None,
                 'tu_before': tu_before, 'tu_after': state['tu'],
                 'tu_cost': 0,
-                'success': False,
-                'message': f"Insufficient TU to undock ({state['tu']} < {cost}). Order queued as pending."
+                'success': False, 'tu_exhausted': True,
+                'message': f"Insufficient TU to undock ({state['tu']} < {cost}). Order carries forward."
             }
 
         base_id = state['docked_at']
@@ -1101,7 +1228,7 @@ class TurnResolver:
         """LAND <body_id> <x> <y> - land on a planet or moon surface at coordinates."""
         from engine.maps.surface_gen import get_or_generate_surface, TERRAIN_SYMBOLS
         tu_before = state['tu']
-        cost = TU_COSTS['LAND']
+        cost = self._effective_tu_cost(TU_COSTS['LAND'], state['efficiency'])
 
         body_id = params['body_id']
         land_x = params['x']
@@ -1156,15 +1283,11 @@ class TurnResolver:
 
         # Check TU
         if state['tu'] < cost:
-            self.pending.append({
-                'command': 'LAND', 'params': params_str,
-                'reason': 'Insufficient TU'
-            })
             return {
                 'command': 'LAND', 'params': params_str,
                 'tu_before': tu_before, 'tu_after': state['tu'],
-                'tu_cost': 0, 'success': False,
-                'message': f"Insufficient TU to land ({state['tu']} < {cost}). Order queued as pending."
+                'tu_cost': 0, 'success': False, 'tu_exhausted': True,
+                'message': f"Insufficient TU to land ({state['tu']} < {cost}). Order carries forward."
             }
 
         # Future: gravity check would go here
@@ -1196,7 +1319,7 @@ class TurnResolver:
     def _cmd_takeoff(self, state):
         """TAKEOFF - lift off from planet surface, return to orbit."""
         tu_before = state['tu']
-        cost = TU_COSTS['TAKEOFF']
+        cost = self._effective_tu_cost(TU_COSTS['TAKEOFF'], state['efficiency'])
 
         if not state['landed']:
             return {
@@ -1207,15 +1330,11 @@ class TurnResolver:
             }
 
         if state['tu'] < cost:
-            self.pending.append({
-                'command': 'TAKEOFF', 'params': None,
-                'reason': 'Insufficient TU'
-            })
             return {
                 'command': 'TAKEOFF', 'params': None,
                 'tu_before': tu_before, 'tu_after': state['tu'],
-                'tu_cost': 0, 'success': False,
-                'message': f"Insufficient TU to take off ({state['tu']} < {cost}). Order queued as pending."
+                'tu_cost': 0, 'success': False, 'tu_exhausted': True,
+                'message': f"Insufficient TU to take off ({state['tu']} < {cost}). Order carries forward."
             }
 
         body_id = state['landed']
@@ -1240,7 +1359,7 @@ class TurnResolver:
         """SURFACESCAN - produce a terrain map of the planet the ship is orbiting or landed on."""
         from engine.maps.surface_gen import get_or_generate_surface, render_surface_map
         tu_before = state['tu']
-        cost = TU_COSTS['SURFACESCAN']
+        cost = self._effective_tu_cost(TU_COSTS['SURFACESCAN'], state['efficiency'])
 
         # Determine which body to scan - landed takes priority, then orbiting
         body_id = state['landed'] or state['orbiting']
@@ -1253,15 +1372,11 @@ class TurnResolver:
             }
 
         if state['tu'] < cost:
-            self.pending.append({
-                'command': 'SURFACESCAN', 'params': None,
-                'reason': 'Insufficient TU'
-            })
             return {
                 'command': 'SURFACESCAN', 'params': None,
                 'tu_before': tu_before, 'tu_after': state['tu'],
-                'tu_cost': 0, 'success': False,
-                'message': f"Insufficient TU for surface scan ({state['tu']} < {cost}). Order queued as pending."
+                'tu_cost': 0, 'success': False, 'tu_exhausted': True,
+                'message': f"Insufficient TU for surface scan ({state['tu']} < {cost}). Order carries forward."
             }
 
         body = self.conn.execute(
@@ -1287,22 +1402,33 @@ class TurnResolver:
             'life': body['life'],
         }
 
-        # Add resource info if the body has one
-        res_id = body['resource_id'] if 'resource_id' in body.keys() else None
-        if res_id:
-            res = self.conn.execute(
-                "SELECT name FROM trade_goods WHERE item_id = ?", (res_id,)
-            ).fetchone()
-            planetary_data['resource_id'] = res_id
-            planetary_data['resource_name'] = res['name'] if res else f"Unknown ({res_id})"
-
         # Show ship position on map if landed
         ship_pos = None
         if state['landed']:
             ship_pos = (state.get('landed_x', 1), state.get('landed_y', 1))
 
+        # Query surface ports on this body
+        port_positions = []
+        ports = self.conn.execute(
+            "SELECT port_id, name, surface_x, surface_y FROM surface_ports WHERE body_id = ?",
+            (body_id,)
+        ).fetchall()
+        for p in ports:
+            port_positions.append((p['surface_x'], p['surface_y'], p['name']))
+
+        # Query outposts on this body (shown in data section, not on map)
+        outpost_list = []
+        outposts = self.conn.execute(
+            "SELECT outpost_id, name, surface_x, surface_y, outpost_type FROM outposts WHERE body_id = ?",
+            (body_id,)
+        ).fetchall()
+        for o in outposts:
+            outpost_list.append((o['surface_x'], o['surface_y'], o['name'], o['outpost_type']))
+
         map_lines = render_surface_map(
-            tiles, body['name'], body_id, planetary_data, ship_pos=ship_pos
+            tiles, body['name'], body_id, planetary_data,
+            ship_pos=ship_pos, port_positions=port_positions or None,
+            outpost_positions=outpost_list or None
         )
         message = '\n'.join(f"    {line}" for line in map_lines)
 
@@ -1391,14 +1517,26 @@ class TurnResolver:
             max_by_cargo = int(available_mu // item['mass_per_unit'])
             actual_qty = min(actual_qty, max_by_cargo)
 
+        # Cap crew purchases to life support capacity
+        if item_id == CREW_ITEM_ID:
+            current_crew = self._get_crew_count(state['ship_id'])
+            life_support = ship['life_support_capacity'] if ship['life_support_capacity'] else 20
+            max_by_ls = life_support - current_crew
+            actual_qty = min(actual_qty, max(0, max_by_ls))
+
         if actual_qty <= 0:
+            extra_info = ""
+            if item_id == CREW_ITEM_ID:
+                current_crew = self._get_crew_count(state['ship_id'])
+                life_support = ship['life_support_capacity'] if ship['life_support_capacity'] else 20
+                extra_info = f", life support={current_crew}/{life_support}"
             return {
                 'command': 'BUY', 'params': params_str,
                 'tu_before': tu_before, 'tu_after': state['tu'],
                 'tu_cost': 0, 'success': False,
                 'message': (f"Cannot buy any {item['name']}: "
                             f"stock={available_stock}, credits={prefect['credits']:,.0f} cr, "
-                            f"cargo space={available_mu} MU free.")
+                            f"cargo space={available_mu} MU free{extra_info}.")
             }
 
         # Build capped message
@@ -1410,6 +1548,11 @@ class TurnResolver:
                 cap_reasons.append(f"credits={prefect['credits']:,.0f} cr")
             if item['mass_per_unit'] > 0 and int(available_mu // item['mass_per_unit']) < quantity:
                 cap_reasons.append(f"cargo={available_mu} MU free")
+            if item_id == CREW_ITEM_ID:
+                current_crew = self._get_crew_count(state['ship_id'])
+                life_support = ship['life_support_capacity'] if ship['life_support_capacity'] else 20
+                if life_support - current_crew < quantity:
+                    cap_reasons.append(f"life support={current_crew}/{life_support}")
             capped_msg = f" (capped from {quantity} to {actual_qty}: {', '.join(cap_reasons)})"
         else:
             capped_msg = ""
@@ -1448,6 +1591,12 @@ class TurnResolver:
                 INSERT INTO cargo_items (ship_id, item_type_id, item_name, quantity, mass_per_unit)
                 VALUES (?, ?, ?, ?, ?)
             """, (state['ship_id'], item_id, item['name'], actual_qty, item['mass_per_unit']))
+
+        # Sync crew_count and efficiency if buying crew
+        if item_id == CREW_ITEM_ID:
+            self._sync_crew_count(state['ship_id'])
+            ship_now = self.get_ship(state['ship_id'])
+            state['efficiency'] = self._calc_efficiency(ship_now)
 
         self.conn.commit()
 
@@ -1594,12 +1743,26 @@ class TurnResolver:
                 (new_qty, cargo['cargo_id'])
             )
 
+        # Sync crew_count and efficiency if selling crew
+        if item_id == CREW_ITEM_ID:
+            self._sync_crew_count(state['ship_id'])
+            ship_now = self.get_ship(state['ship_id'])
+            state['efficiency'] = self._calc_efficiency(ship_now)
+
         self.conn.commit()
 
         base = self.conn.execute(
             "SELECT name FROM starbases WHERE base_id = ?", (base_id,)
         ).fetchone()
         base_name = base['name'] if base else str(base_id)
+
+        # Warn if crew dropped below required
+        crew_warning = ""
+        if item_id == CREW_ITEM_ID:
+            ship_now = self.get_ship(state['ship_id'])
+            if ship_now['crew_count'] < ship_now['crew_required']:
+                crew_warning = (f" WARNING: Crew now {ship_now['crew_count']}, "
+                                f"required {ship_now['crew_required']}. Ship undermanned!")
 
         return {
             'command': 'SELL', 'params': params_str,
@@ -1610,7 +1773,7 @@ class TurnResolver:
             'quantity': actual_qty,
             'message': (f"Sold {actual_qty} {item['name']} ({item_id}) "
                         f"at {sell_price} cr each = {total_income:,} cr total "
-                        f"to {base_name} ({base_id}). [{total_mass} MU freed]{capped_msg}")
+                        f"to {base_name} ({base_id}). [{total_mass} MU freed]{capped_msg}{crew_warning}")
         }
 
     def _cmd_getmarket(self, state, base_id):
@@ -1734,7 +1897,7 @@ class TurnResolver:
     def _cmd_jump(self, state, target_system_id):
         """JUMP <system_id> - hyperspace jump to a linked star system."""
         tu_before = state['tu']
-        cost = JUMP_CONFIG['tu_per_hop']
+        cost = self._effective_tu_cost(JUMP_CONFIG['tu_per_hop'], state['efficiency'])
         min_star_dist = JUMP_CONFIG['min_star_distance']
         max_range = JUMP_CONFIG['max_jump_range']
         params_str = str(target_system_id)
@@ -1822,16 +1985,12 @@ class TurnResolver:
 
         # Check TU
         if state['tu'] < total_cost:
-            self.pending.append({
-                'command': 'JUMP', 'params': params_str,
-                'reason': 'Insufficient TU'
-            })
             return {
                 'command': 'JUMP', 'params': params_str,
                 'tu_before': tu_before, 'tu_after': state['tu'],
-                'tu_cost': 0, 'success': False,
+                'tu_cost': 0, 'success': False, 'tu_exhausted': True,
                 'message': (f"Insufficient TU for jump ({state['tu']} < {total_cost}). "
-                            f"Order queued as pending.")
+                            f"Order carries forward.")
             }
 
         # Execute jump
@@ -1858,6 +2017,450 @@ class TurnResolver:
                         f"to {target['name']} ({target_system_id}){hop_str}. "
                         f"Arrived at {arrival_loc}. [{total_cost} TU]")
         }
+
+    def _cmd_message(self, state, params):
+        """MESSAGE <target_id> <text> - send a free-text message to another position."""
+        tu_before = state['tu']
+        target_id = params['target_id']
+        text = params['text']
+        params_str = f"{target_id} {text}"
+
+        # Determine recipient type by looking up the target_id
+        recipient_type = None
+        recipient_name = None
+
+        ship = self.conn.execute(
+            "SELECT ship_id, name FROM ships WHERE ship_id = ? AND game_id = ?",
+            (target_id, self.game_id)
+        ).fetchone()
+        if ship:
+            recipient_type = 'ship'
+            recipient_name = ship['name']
+
+        if not recipient_type:
+            base = self.conn.execute(
+                "SELECT base_id, name FROM starbases WHERE base_id = ? AND game_id = ?",
+                (target_id, self.game_id)
+            ).fetchone()
+            if base:
+                recipient_type = 'base'
+                recipient_name = base['name']
+
+        if not recipient_type:
+            prefect = self.conn.execute(
+                "SELECT prefect_id, name FROM prefects WHERE prefect_id = ? AND game_id = ?",
+                (target_id, self.game_id)
+            ).fetchone()
+            if prefect:
+                recipient_type = 'prefect'
+                recipient_name = prefect['name']
+
+        if not recipient_type:
+            return {
+                'command': 'MESSAGE', 'params': params_str,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': False,
+                'message': f"Message failed: unknown position {target_id}. Order dropped."
+            }
+
+        # Store the message
+        game = self.get_game()
+        self.conn.execute("""
+            INSERT INTO messages
+            (game_id, sender_type, sender_id, sender_name,
+             recipient_type, recipient_id, message_text,
+             sent_turn_year, sent_turn_week)
+            VALUES (?, 'ship', ?, ?, ?, ?, ?, ?, ?)
+        """, (self.game_id, state['ship_id'], state['name'],
+              recipient_type, target_id, text,
+              game['current_year'], game['current_week']))
+        self.conn.commit()
+
+        return {
+            'command': 'MESSAGE', 'params': params_str,
+            'tu_before': tu_before, 'tu_after': state['tu'],
+            'tu_cost': 0, 'success': True,
+            'message': f"Message sent to {recipient_name} ({target_id})."
+        }
+
+    def _cmd_makeofficer(self, state, params):
+        """MAKEOFFICER <ship_id> <crew_type_id> - promote a crew member to officer."""
+        from engine.game_setup import generate_random_name
+
+        tu_before = state['tu']
+        target_ship_id = params['ship_id']
+        crew_type_id = params['crew_type_id']
+        cost = self._effective_tu_cost(TU_COSTS['MAKEOFFICER'], state['efficiency'])
+        params_str = f"{target_ship_id} {crew_type_id}"
+
+        # Validate ship_id matches executing ship
+        if target_ship_id != state['ship_id']:
+            return {
+                'command': 'MAKEOFFICER', 'params': params_str,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': False,
+                'message': (f"Cannot promote officer: ship {target_ship_id} does not match "
+                            f"executing ship {state['ship_id']}. Order dropped.")
+            }
+
+        # Check TU
+        if state['tu'] < cost:
+            return {
+                'command': 'MAKEOFFICER', 'params': params_str,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': False, 'tu_exhausted': True,
+                'message': f"Insufficient TU for officer promotion ({state['tu']} < {cost}). Order carries forward."
+            }
+
+        # Check crew of that type in cargo
+        cargo = self.conn.execute(
+            "SELECT * FROM cargo_items WHERE ship_id = ? AND item_type_id = ?",
+            (state['ship_id'], crew_type_id)
+        ).fetchone()
+        if not cargo or cargo['quantity'] <= 0:
+            # Look up the item name for a better message
+            item = self.conn.execute(
+                "SELECT name FROM trade_goods WHERE item_id = ?", (crew_type_id,)
+            ).fetchone()
+            item_name = item['name'] if item else f"item {crew_type_id}"
+            return {
+                'command': 'MAKEOFFICER', 'params': params_str,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': False,
+                'message': f"Cannot promote officer: no {item_name} ({crew_type_id}) in cargo. Order dropped."
+            }
+
+        state['tu'] -= cost
+
+        # Remove 1 crew from cargo
+        new_qty = cargo['quantity'] - 1
+        if new_qty <= 0:
+            self.conn.execute("DELETE FROM cargo_items WHERE cargo_id = ?", (cargo['cargo_id'],))
+        else:
+            self.conn.execute(
+                "UPDATE cargo_items SET quantity = ? WHERE cargo_id = ?",
+                (new_qty, cargo['cargo_id'])
+            )
+
+        # Update cargo_used (1 MU freed since crew weighs 1 MU)
+        self.conn.execute(
+            "UPDATE ships SET cargo_used = cargo_used - ? WHERE ship_id = ?",
+            (cargo['mass_per_unit'], state['ship_id'])
+        )
+
+        # Determine next crew_number
+        max_cn = self.conn.execute(
+            "SELECT MAX(crew_number) as mx FROM officers WHERE ship_id = ?",
+            (state['ship_id'],)
+        ).fetchone()
+        next_cn = (max_cn['mx'] or 0) + 1
+
+        # Generate officer
+        name = params.get('name') or generate_random_name()
+        self.conn.execute("""
+            INSERT INTO officers
+            (ship_id, crew_number, name, rank, specialty, experience,
+             crew_factors, crew_type_id, wages)
+            VALUES (?, ?, ?, 'Ensign', 'General', 0, 5, ?, ?)
+        """, (state['ship_id'], next_cn, name, crew_type_id, OFFICER_WAGE))
+
+        # Sync crew_count (net zero: -1 cargo +1 officer)
+        self._sync_crew_count(state['ship_id'])
+        ship_now = self.get_ship(state['ship_id'])
+        state['efficiency'] = self._calc_efficiency(ship_now)
+
+        self.conn.commit()
+
+        item = self.conn.execute(
+            "SELECT name FROM trade_goods WHERE item_id = ?", (crew_type_id,)
+        ).fetchone()
+        item_name = item['name'] if item else f"item {crew_type_id}"
+
+        return {
+            'command': 'MAKEOFFICER', 'params': params_str,
+            'tu_before': tu_before, 'tu_after': state['tu'],
+            'tu_cost': cost, 'success': True,
+            'message': (f"Promoted {item_name} to officer: Ensign {name} "
+                        f"[{next_cn}] assigned. [{cost} TU]")
+        }
+
+    def _cmd_renameship(self, state, params):
+        """RENAMESHIP <ship_id> <new_name> - rename a ship."""
+        tu_before = state['tu']
+        target_id = params['id']
+        new_name = params['name']
+        params_str = f"{target_id} {new_name}"
+
+        if target_id != state['ship_id']:
+            return {
+                'command': 'RENAMESHIP', 'params': params_str,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': False,
+                'message': (f"Cannot rename: ship {target_id} does not match "
+                            f"executing ship {state['ship_id']}. Order dropped.")
+            }
+
+        old_name = state['name']
+        self.conn.execute(
+            "UPDATE ships SET name = ? WHERE ship_id = ?",
+            (new_name, target_id)
+        )
+        state['name'] = new_name
+        self.conn.commit()
+
+        return {
+            'command': 'RENAMESHIP', 'params': params_str,
+            'tu_before': tu_before, 'tu_after': state['tu'],
+            'tu_cost': 0, 'success': True,
+            'message': f"Ship renamed from '{old_name}' to '{new_name}'."
+        }
+
+    def _cmd_renamebase(self, state, params):
+        """RENAMEBASE <base_id> <new_name> - rename a starbase."""
+        tu_before = state['tu']
+        target_id = params['id']
+        new_name = params['name']
+        params_str = f"{target_id} {new_name}"
+
+        # Verify base exists and is owned by this ship's prefect
+        ship = self.get_ship(state['ship_id'])
+        base = self.conn.execute(
+            "SELECT * FROM starbases WHERE base_id = ?", (target_id,)
+        ).fetchone()
+        if not base:
+            return {
+                'command': 'RENAMEBASE', 'params': params_str,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': False,
+                'message': f"Cannot rename: base {target_id} not found. Order dropped."
+            }
+        if base['owner_prefect_id'] != ship['owner_prefect_id']:
+            return {
+                'command': 'RENAMEBASE', 'params': params_str,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': False,
+                'message': f"Cannot rename: base {target_id} is not owned by your prefect. Order dropped."
+            }
+
+        old_name = base['name']
+        self.conn.execute(
+            "UPDATE starbases SET name = ? WHERE base_id = ?",
+            (new_name, target_id)
+        )
+        self.conn.commit()
+
+        return {
+            'command': 'RENAMEBASE', 'params': params_str,
+            'tu_before': tu_before, 'tu_after': state['tu'],
+            'tu_cost': 0, 'success': True,
+            'message': f"Base renamed from '{old_name}' to '{new_name}'."
+        }
+
+    def _cmd_renameprefect(self, state, params):
+        """RENAMEPREFECT <prefect_id> <new_name> - rename a prefect."""
+        tu_before = state['tu']
+        target_id = params['id']
+        new_name = params['name']
+        params_str = f"{target_id} {new_name}"
+
+        # Verify prefect is the one owning this ship
+        ship = self.get_ship(state['ship_id'])
+        if target_id != ship['owner_prefect_id']:
+            return {
+                'command': 'RENAMEPREFECT', 'params': params_str,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': False,
+                'message': f"Cannot rename: prefect {target_id} is not your prefect. Order dropped."
+            }
+
+        prefect = self.conn.execute(
+            "SELECT name FROM prefects WHERE prefect_id = ?", (target_id,)
+        ).fetchone()
+        old_name = prefect['name'] if prefect else str(target_id)
+
+        self.conn.execute(
+            "UPDATE prefects SET name = ? WHERE prefect_id = ?",
+            (new_name, target_id)
+        )
+        self.conn.commit()
+
+        return {
+            'command': 'RENAMEPREFECT', 'params': params_str,
+            'tu_before': tu_before, 'tu_after': state['tu'],
+            'tu_cost': 0, 'success': True,
+            'message': f"Prefect renamed from '{old_name}' to '{new_name}'."
+        }
+
+    def _cmd_renameofficer(self, state, params):
+        """RENAMEOFFICER <ship_id> <crew_number> <new_name> - rename an officer."""
+        tu_before = state['tu']
+        target_ship = params['ship_id']
+        crew_number = params['crew_number']
+        new_name = params['name']
+        params_str = f"{target_ship} {crew_number} {new_name}"
+
+        if target_ship != state['ship_id']:
+            return {
+                'command': 'RENAMEOFFICER', 'params': params_str,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': False,
+                'message': (f"Cannot rename: ship {target_ship} does not match "
+                            f"executing ship {state['ship_id']}. Order dropped.")
+            }
+
+        officer = self.conn.execute(
+            "SELECT * FROM officers WHERE ship_id = ? AND crew_number = ?",
+            (state['ship_id'], crew_number)
+        ).fetchone()
+        if not officer:
+            return {
+                'command': 'RENAMEOFFICER', 'params': params_str,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': False,
+                'message': f"Cannot rename: no officer with crew number {crew_number}. Order dropped."
+            }
+
+        old_name = officer['name']
+        self.conn.execute(
+            "UPDATE officers SET name = ? WHERE officer_id = ?",
+            (new_name, officer['officer_id'])
+        )
+        self.conn.commit()
+
+        return {
+            'command': 'RENAMEOFFICER', 'params': params_str,
+            'tu_before': tu_before, 'tu_after': state['tu'],
+            'tu_cost': 0, 'success': True,
+            'message': (f"Officer [{crew_number}] {officer['rank']} renamed "
+                        f"from '{old_name}' to '{new_name}'.")
+        }
+
+    def _cmd_changefaction(self, state, params):
+        """CHANGEFACTION <faction_id> [reason] - request faction change (GM-moderated)."""
+        tu_before = state['tu']
+        target_faction_id = params['faction_id']
+        reason = params.get('reason', '')
+        params_str = f"{target_faction_id}"
+        if reason:
+            params_str += f" {reason}"
+
+        ship = self.get_ship(state['ship_id'])
+        prefect = self.conn.execute(
+            "SELECT * FROM prefects WHERE prefect_id = ?",
+            (ship['owner_prefect_id'],)
+        ).fetchone()
+        current_faction_id = prefect['faction_id']
+
+        # Check target faction exists
+        target_faction = self.conn.execute(
+            "SELECT * FROM factions WHERE faction_id = ?",
+            (target_faction_id,)
+        ).fetchone()
+        if not target_faction:
+            return {
+                'command': 'CHANGEFACTION', 'params': params_str,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': False,
+                'message': f"Cannot request faction change: faction {target_faction_id} not found. Order dropped."
+            }
+
+        # Already in that faction
+        if current_faction_id == target_faction_id:
+            return {
+                'command': 'CHANGEFACTION', 'params': params_str,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': False,
+                'message': (f"Already a member of {target_faction['name']} "
+                            f"({target_faction['abbreviation']}). Order dropped.")
+            }
+
+        # Check for existing pending request
+        existing = self.conn.execute(
+            "SELECT * FROM faction_requests WHERE game_id = ? AND prefect_id = ? AND status = 'pending'",
+            (self.game_id, prefect['prefect_id'])
+        ).fetchone()
+        if existing:
+            existing_faction = self.conn.execute(
+                "SELECT abbreviation FROM factions WHERE faction_id = ?",
+                (existing['target_faction_id'],)
+            ).fetchone()
+            ef_name = existing_faction['abbreviation'] if existing_faction else str(existing['target_faction_id'])
+            return {
+                'command': 'CHANGEFACTION', 'params': params_str,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': False,
+                'message': (f"Cannot request: you already have a pending faction change "
+                            f"request to {ef_name} (request #{existing['request_id']}). Order dropped.")
+            }
+
+        # Submit request
+        game = self.get_game()
+        self.conn.execute("""
+            INSERT INTO faction_requests
+            (game_id, prefect_id, current_faction_id, target_faction_id,
+             reason, status, requested_turn_year, requested_turn_week)
+            VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)
+        """, (self.game_id, prefect['prefect_id'], current_faction_id,
+              target_faction_id, reason,
+              game['current_year'], game['current_week']))
+        self.conn.commit()
+
+        from db.database import get_faction
+        current_faction = get_faction(self.conn, current_faction_id)
+        reason_str = f" Reason: \"{reason}\"" if reason else ""
+
+        return {
+            'command': 'CHANGEFACTION', 'params': params_str,
+            'tu_before': tu_before, 'tu_after': state['tu'],
+            'tu_cost': 0, 'success': True,
+            'message': (f"Faction change requested: {current_faction['abbreviation']} -> "
+                        f"{target_faction['abbreviation']} ({target_faction['name']}).{reason_str} "
+                        f"Awaiting GM approval.")
+        }
+
+    def _cmd_moderator(self, state, params):
+        """MODERATOR <text> - submit a free-text request to the GM."""
+        tu_before = state['tu']
+        request_text = params['text']
+        params_str = request_text
+
+        ship = self.get_ship(state['ship_id'])
+        game = self.get_game()
+
+        # Look up the GM response (created during Phase 1.1 auto-hold)
+        action = self.conn.execute("""
+            SELECT * FROM moderator_actions
+            WHERE game_id = ? AND ship_id = ? AND request_text = ?
+            AND requested_turn_year = ? AND requested_turn_week = ?
+        """, (self.game_id, state['ship_id'], request_text,
+              game['current_year'], game['current_week'])).fetchone()
+
+        if action and action['status'] == 'responded':
+            # Mark as resolved
+            self.conn.execute("""
+                UPDATE moderator_actions
+                SET status = 'resolved', resolved_turn_year = ?, resolved_turn_week = ?
+                WHERE action_id = ?
+            """, (game['current_year'], game['current_week'], action['action_id']))
+            self.conn.commit()
+
+            response = action['gm_response']
+            return {
+                'command': 'MODERATOR', 'params': params_str,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': True,
+                'message': (f"MODERATOR REQUEST: \"{request_text}\"\n"
+                            f"  GM RESPONSE: \"{response}\"")
+            }
+        else:
+            # No response yet (shouldn't happen if auto-hold worked, but handle gracefully)
+            return {
+                'command': 'MODERATOR', 'params': params_str,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': True,
+                'message': (f"MODERATOR REQUEST: \"{request_text}\"\n"
+                            f"  GM RESPONSE: (no response — request noted)")
+            }
 
     def _scan_at_location(self, state):
         """Scan for objects at the ship's current location."""

@@ -1,0 +1,24 @@
+# ============================================================
+# STELLAR DOMINION - New Player Registration Form
+# Game: Stellar Dominion (OMICRON101)
+# Current Turn: 500.1
+# ============================================================
+#
+# Fill in the fields below and return this file to the GM.
+# Each field must be on its own line: FIELD_NAME value
+#
+# AVAILABLE STARTING PLANETS:
+#   Meridian (412003) - Planet at T20 - Omicron (101)
+#   Orion (247985) - Planet at H04 - Omicron (101)
+#   Tartarus (301442) - Planet at R08 - Omicron (101)
+#
+# Choose one planet body ID from the list above for your starting
+# location. Your ship will begin the game in orbit around it.
+# ============================================================
+
+GAME OMICRON101
+PLAYER_NAME Nicholas Dewey-Robertson
+EMAIL nicholasdeweyrobertson@gmail.com 
+PREFECT_NAME Father Nicholas
+SHIP_NAME St Paul
+PLANET 412003

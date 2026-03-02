@@ -24,6 +24,15 @@ VALID_COMMANDS = {
     'SELL': {'params': 'trade_order', 'description': 'Sell items to base market'},
     'GETMARKET': {'params': 'base_id', 'description': 'View base market prices'},
     'JUMP': {'params': 'system_id', 'description': 'Jump to a linked star system'},
+    'MESSAGE': {'params': 'message_order', 'description': 'Send a message to another position'},
+    'MAKEOFFICER': {'params': 'makeofficer_order', 'description': 'Promote a crew member to officer'},
+    'RENAMESHIP': {'params': 'rename_id_name', 'description': 'Rename a ship'},
+    'RENAMEBASE': {'params': 'rename_id_name', 'description': 'Rename a starbase'},
+    'RENAMEPREFECT': {'params': 'rename_id_name', 'description': 'Rename a prefect'},
+    'RENAMEOFFICER': {'params': 'rename_officer', 'description': 'Rename an officer'},
+    'CHANGEFACTION': {'params': 'changefaction_order', 'description': 'Request to change faction (GM-moderated)'},
+    'MODERATOR': {'params': 'moderator_order', 'description': 'Submit a free-text request to the GM'},
+    'CLEAR': {'params': 'none', 'description': 'Clear all pending overflow orders from previous turns'},
 }
 
 # Grid coordinate pattern: A-Y followed by 01-25
@@ -155,6 +164,179 @@ def parse_order(command_str, params):
             else:
                 return command, params, f"{command}: expected 'body_id x y', got '{params}'"
         return command, params, f"{command}: expected land parameters (body_id x y)"
+
+    elif spec['params'] == 'message_order':
+        # MESSAGE: target_id followed by free text
+        # YAML: {target: 75695302, text: "Hello"} or "75695302 Hello there"
+        # Text: MESSAGE 75695302 Hello there captain
+        if isinstance(params, dict):
+            try:
+                target_id = int(params.get('target', params.get('target_id', 0)))
+                text = str(params.get('text', params.get('message', '')))
+                if target_id <= 0:
+                    return command, params, f"{command}: target_id must be a positive integer"
+                if not text.strip():
+                    return command, params, f"{command}: message text cannot be empty"
+                return command, {'target_id': target_id, 'text': text.strip()}, None
+            except (ValueError, TypeError):
+                return command, params, f"{command}: invalid message parameters"
+        elif isinstance(params, str):
+            parts = params.strip().split(None, 1)
+            if len(parts) < 2:
+                return command, params, f"{command}: expected 'target_id message_text'"
+            try:
+                target_id = int(parts[0])
+                text = parts[1].strip()
+                if target_id <= 0:
+                    return command, params, f"{command}: target_id must be a positive integer"
+                if not text:
+                    return command, params, f"{command}: message text cannot be empty"
+                return command, {'target_id': target_id, 'text': text}, None
+            except ValueError:
+                return command, params, f"{command}: expected numeric target_id, got '{parts[0]}'"
+        return command, params, f"{command}: expected message parameters (target_id text)"
+
+    elif spec['params'] == 'makeofficer_order':
+        # MAKEOFFICER: ship_id crew_type_id [name]
+        # Text: MAKEOFFICER 52589098 401 Marcus Varro
+        # YAML: {ship: 52589098, crew_type: 401, name: "Marcus Varro"}
+        #   or: "52589098 401 Marcus Varro"
+        if isinstance(params, dict):
+            try:
+                ship_id = int(params.get('ship', params.get('ship_id', 0)))
+                crew_type = int(params.get('crew_type', params.get('crew_type_id', 0)))
+                if ship_id <= 0 or crew_type <= 0:
+                    return command, params, f"{command}: ship_id and crew_type_id must be positive integers"
+                result = {'ship_id': ship_id, 'crew_type_id': crew_type}
+                name = params.get('name', '').strip()
+                if name:
+                    result['name'] = name
+                return command, result, None
+            except (ValueError, TypeError):
+                return command, params, f"{command}: invalid parameters"
+        elif isinstance(params, str):
+            parts = params.strip().split()
+            if len(parts) < 2:
+                return command, params, f"{command}: expected 'ship_id crew_type_id [name]'"
+            try:
+                ship_id = int(parts[0])
+                crew_type = int(parts[1])
+                if ship_id <= 0 or crew_type <= 0:
+                    return command, params, f"{command}: ship_id and crew_type_id must be positive integers"
+                result = {'ship_id': ship_id, 'crew_type_id': crew_type}
+                if len(parts) > 2:
+                    result['name'] = ' '.join(parts[2:])
+                return command, result, None
+            except ValueError:
+                return command, params, f"{command}: expected numeric values for ship_id and crew_type_id"
+        return command, params, f"{command}: expected parameters (ship_id crew_type_id [name])"
+
+    elif spec['params'] == 'rename_id_name':
+        # RENAMESHIP/RENAMEBASE/RENAMEPREFECT: id new_name
+        # Text: RENAMESHIP 52589098 The Indomitable
+        # YAML: {id: 52589098, name: "The Indomitable"} or "52589098 The Indomitable"
+        if isinstance(params, dict):
+            try:
+                target_id = int(params.get('id', params.get('target', 0)))
+                name = str(params.get('name', '')).strip()
+                if target_id <= 0:
+                    return command, params, f"{command}: id must be a positive integer"
+                if not name:
+                    return command, params, f"{command}: name cannot be empty"
+                return command, {'id': target_id, 'name': name}, None
+            except (ValueError, TypeError):
+                return command, params, f"{command}: invalid parameters"
+        elif isinstance(params, str):
+            parts = params.strip().split(None, 1)
+            if len(parts) < 2:
+                return command, params, f"{command}: expected 'id new_name'"
+            try:
+                target_id = int(parts[0])
+                name = parts[1].strip()
+                if target_id <= 0:
+                    return command, params, f"{command}: id must be a positive integer"
+                if not name:
+                    return command, params, f"{command}: name cannot be empty"
+                return command, {'id': target_id, 'name': name}, None
+            except ValueError:
+                return command, params, f"{command}: expected numeric id, got '{parts[0]}'"
+        return command, params, f"{command}: expected parameters (id new_name)"
+
+    elif spec['params'] == 'rename_officer':
+        # RENAMEOFFICER: ship_id crew_number new_name
+        # Text: RENAMEOFFICER 52589098 2 Marcus Varro
+        # YAML: {ship: 52589098, crew_number: 2, name: "Marcus Varro"}
+        if isinstance(params, dict):
+            try:
+                ship_id = int(params.get('ship', params.get('ship_id', 0)))
+                crew_num = int(params.get('crew_number', params.get('number', 0)))
+                name = str(params.get('name', '')).strip()
+                if ship_id <= 0 or crew_num <= 0:
+                    return command, params, f"{command}: ship_id and crew_number must be positive integers"
+                if not name:
+                    return command, params, f"{command}: name cannot be empty"
+                return command, {'ship_id': ship_id, 'crew_number': crew_num, 'name': name}, None
+            except (ValueError, TypeError):
+                return command, params, f"{command}: invalid parameters"
+        elif isinstance(params, str):
+            parts = params.strip().split(None, 2)
+            if len(parts) < 3:
+                return command, params, f"{command}: expected 'ship_id crew_number new_name'"
+            try:
+                ship_id = int(parts[0])
+                crew_num = int(parts[1])
+                name = parts[2].strip()
+                if ship_id <= 0 or crew_num <= 0:
+                    return command, params, f"{command}: ship_id and crew_number must be positive integers"
+                if not name:
+                    return command, params, f"{command}: name cannot be empty"
+                return command, {'ship_id': ship_id, 'crew_number': crew_num, 'name': name}, None
+            except ValueError:
+                return command, params, f"{command}: expected numeric ship_id and crew_number"
+        return command, params, f"{command}: expected parameters (ship_id crew_number new_name)"
+
+    elif spec['params'] == 'changefaction_order':
+        # CHANGEFACTION: faction_id [reason]
+        # Text: CHANGEFACTION 12 Want to join the traders
+        # YAML: {faction: 12, reason: "Want to join"} or "12 Want to join"
+        if isinstance(params, dict):
+            try:
+                faction_id = int(params.get('faction', params.get('faction_id', -1)))
+                reason = str(params.get('reason', '')).strip()
+                if faction_id < 0:
+                    return command, params, f"{command}: faction_id must be a non-negative integer"
+                return command, {'faction_id': faction_id, 'reason': reason}, None
+            except (ValueError, TypeError):
+                return command, params, f"{command}: invalid parameters"
+        elif isinstance(params, str):
+            parts = params.strip().split(None, 1)
+            if len(parts) < 1:
+                return command, params, f"{command}: expected 'faction_id [reason]'"
+            try:
+                faction_id = int(parts[0])
+                reason = parts[1].strip() if len(parts) > 1 else ''
+                if faction_id < 0:
+                    return command, params, f"{command}: faction_id must be a non-negative integer"
+                return command, {'faction_id': faction_id, 'reason': reason}, None
+            except ValueError:
+                return command, params, f"{command}: expected numeric faction_id"
+        return command, params, f"{command}: expected parameters (faction_id [reason])"
+
+    elif spec['params'] == 'moderator_order':
+        # MODERATOR: free-text request to GM
+        # Text: MODERATOR Can I retrofit my ship with better sensors?
+        # YAML: {text: "Can I retrofit my ship?"} or "Can I retrofit?"
+        if isinstance(params, dict):
+            text = str(params.get('text', params.get('message', ''))).strip()
+            if not text:
+                return command, params, f"{command}: request text cannot be empty"
+            return command, {'text': text}, None
+        elif isinstance(params, str):
+            text = params.strip()
+            if not text:
+                return command, params, f"{command}: request text cannot be empty"
+            return command, {'text': text}, None
+        return command, params, f"{command}: expected free-text request"
 
     return command, params, f"Unknown parameter type for {command}"
 
@@ -302,3 +484,7 @@ def parse_orders_file(filepath):
         except Exception:
             pass
         return parse_text_orders(content)
+
+
+# Alias for external callers
+parse_single_order = parse_order
