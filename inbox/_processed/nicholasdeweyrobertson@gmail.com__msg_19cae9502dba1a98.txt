@@ -1,0 +1,6 @@
+GAME OMICRON101
+PLAYER_NAME Nicholas Robertson
+EMAIL nicholasdeweyrobertson@gmail.com
+PREFECT_NAME Father Nicholas
+SHIP_NAME St Paul
+PLANET 412003

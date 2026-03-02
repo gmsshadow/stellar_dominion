@@ -78,6 +78,39 @@ def section_close(width=REPORT_WIDTH):
     return "|" + SECTION_CHAR * (width - 2) + "|"
 
 
+def wrap_log_line(text, indent="    ", width=REPORT_WIDTH):
+    """
+    Word-wrap a turn-log message line to fit within the report width.
+    The first line gets the indent; continuation lines get an extra two
+    spaces so they're visually subordinate.
+    Returns a list of indented strings ready to append to lines[].
+    """
+    max_first = width - len(indent)
+    max_cont = width - len(indent) - 2
+    cont_indent = indent + "  "
+
+    if len(text) <= max_first:
+        return [f"{indent}{text}"]
+
+    result = []
+    words = text.split()
+    current = ""
+    for word in words:
+        test = f"{current} {word}".strip() if current else word
+        limit = max_first if not result else max_cont
+        if len(test) <= limit:
+            current = test
+        else:
+            if current:
+                prefix = indent if not result else cont_indent
+                result.append(f"{prefix}{current}")
+            current = word
+    if current:
+        prefix = indent if not result else cont_indent
+        result.append(f"{prefix}{current}")
+    return result
+
+
 def generate_ship_report(turn_result, db_path=None, game_id="OMICRON101",
                          between_turn_messages=None):
     """
@@ -255,9 +288,9 @@ def generate_ship_report(turn_result, db_path=None, game_id="OMICRON101",
         else:
             lines.append(f">TU {tu_before}: {cmd}")
 
-        # Indent the message
+        # Indent and word-wrap the message
         for msg_line in entry['message'].split('\n'):
-            lines.append(f"    {msg_line}")
+            lines.extend(wrap_log_line(msg_line))
         lines.append("")
 
     # ==========================================
