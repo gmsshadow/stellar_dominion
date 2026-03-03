@@ -446,7 +446,7 @@ class TurnResolver:
             msg = "Cannot move while landed. TAKEOFF first. Order dropped."
         elif steps_taken == 0 and final_step.get('out_of_tu'):
             eff_mc = self._effective_tu_cost(state['move_cost'], state.get('efficiency', 100.0))
-            msg = (f"Insufficient TU for move ({state['tu']} < "
+            msg = (f"Insufficient OC for move ({state['tu']} < "
                    f"{eff_mc}). Order carries forward.")
             tu_exhausted = True
         elif reached:
@@ -799,7 +799,7 @@ class TurnResolver:
                 'tu_before': tu_before, 'tu_after': 0,
                 'tu_cost': cost,
                 'success': True,
-                'message': f"Waiting complete (partial: {cost} of {tu_amount} TU)."
+                'message': f"Waiting complete (partial: {cost} of {tu_amount} OC)."
             }
 
         state['tu'] -= tu_amount
@@ -834,7 +834,7 @@ class TurnResolver:
                 'tu_before': tu_before, 'tu_after': state['tu'],
                 'tu_cost': 0,
                 'success': False, 'tu_exhausted': True,
-                'message': f"Insufficient TU for move ({state['tu']} < {cost_per_step}). Order carries forward."
+                'message': f"Insufficient OC for move ({state['tu']} < {cost_per_step}). Order carries forward."
             }
 
         # If docked, must undock first
@@ -953,7 +953,7 @@ class TurnResolver:
                 'tu_before': tu_before, 'tu_after': state['tu'],
                 'tu_cost': 0,
                 'success': False, 'tu_exhausted': True,
-                'message': f"Insufficient TU for scan ({state['tu']} < {cost}). Order carries forward."
+                'message': f"Insufficient OC for scan ({state['tu']} < {cost}). Order carries forward."
             }
 
         state['tu'] -= cost
@@ -1016,7 +1016,7 @@ class TurnResolver:
                 'tu_before': tu_before, 'tu_after': state['tu'],
                 'tu_cost': 0,
                 'success': False, 'tu_exhausted': True,
-                'message': f"Insufficient TU for system scan ({state['tu']} < {cost}). Order carries forward."
+                'message': f"Insufficient OC for system scan ({state['tu']} < {cost}). Order carries forward."
             }
 
         state['tu'] -= cost
@@ -1062,7 +1062,7 @@ class TurnResolver:
                 'tu_before': tu_before, 'tu_after': state['tu'],
                 'tu_cost': 0,
                 'success': False, 'tu_exhausted': True,
-                'message': f"Insufficient TU for orbit ({state['tu']} < {cost}). Order carries forward."
+                'message': f"Insufficient OC for orbit ({state['tu']} < {cost}). Order carries forward."
             }
 
         # Check body exists and is at ship's location
@@ -1112,7 +1112,7 @@ class TurnResolver:
                 'tu_before': tu_before, 'tu_after': state['tu'],
                 'tu_cost': 0,
                 'success': False, 'tu_exhausted': True,
-                'message': f"Insufficient TU for docking ({state['tu']} < {cost}). Order carries forward."
+                'message': f"Insufficient OC for docking ({state['tu']} < {cost}). Order carries forward."
             }
 
         # Check base exists
@@ -1204,7 +1204,7 @@ class TurnResolver:
                 'tu_before': tu_before, 'tu_after': state['tu'],
                 'tu_cost': 0,
                 'success': False, 'tu_exhausted': True,
-                'message': f"Insufficient TU to undock ({state['tu']} < {cost}). Order carries forward."
+                'message': f"Insufficient OC to undock ({state['tu']} < {cost}). Order carries forward."
             }
 
         base_id = state['docked_at']
@@ -1287,7 +1287,7 @@ class TurnResolver:
                 'command': 'LAND', 'params': params_str,
                 'tu_before': tu_before, 'tu_after': state['tu'],
                 'tu_cost': 0, 'success': False, 'tu_exhausted': True,
-                'message': f"Insufficient TU to land ({state['tu']} < {cost}). Order carries forward."
+                'message': f"Insufficient OC to land ({state['tu']} < {cost}). Order carries forward."
             }
 
         # Future: gravity check would go here
@@ -1334,7 +1334,7 @@ class TurnResolver:
                 'command': 'TAKEOFF', 'params': None,
                 'tu_before': tu_before, 'tu_after': state['tu'],
                 'tu_cost': 0, 'success': False, 'tu_exhausted': True,
-                'message': f"Insufficient TU to take off ({state['tu']} < {cost}). Order carries forward."
+                'message': f"Insufficient OC to take off ({state['tu']} < {cost}). Order carries forward."
             }
 
         body_id = state['landed']
@@ -1376,7 +1376,7 @@ class TurnResolver:
                 'command': 'SURFACESCAN', 'params': None,
                 'tu_before': tu_before, 'tu_after': state['tu'],
                 'tu_cost': 0, 'success': False, 'tu_exhausted': True,
-                'message': f"Insufficient TU for surface scan ({state['tu']} < {cost}). Order carries forward."
+                'message': f"Insufficient OC for surface scan ({state['tu']} < {cost}). Order carries forward."
             }
 
         body = self.conn.execute(
@@ -1536,7 +1536,7 @@ class TurnResolver:
                 'tu_cost': 0, 'success': False,
                 'message': (f"Cannot buy any {item['name']}: "
                             f"stock={available_stock}, credits={prefect['credits']:,.0f} cr, "
-                            f"cargo space={available_mu} MU free{extra_info}.")
+                            f"cargo space={available_mu} ST free{extra_info}.")
             }
 
         # Build capped message
@@ -1547,7 +1547,7 @@ class TurnResolver:
             if buy_price > 0 and int(prefect['credits'] // buy_price) < quantity:
                 cap_reasons.append(f"credits={prefect['credits']:,.0f} cr")
             if item['mass_per_unit'] > 0 and int(available_mu // item['mass_per_unit']) < quantity:
-                cap_reasons.append(f"cargo={available_mu} MU free")
+                cap_reasons.append(f"cargo={available_mu} ST free")
             if item_id == CREW_ITEM_ID:
                 current_crew = self._get_crew_count(state['ship_id'])
                 life_support = ship['life_support_capacity'] if ship['life_support_capacity'] else 20
@@ -1614,7 +1614,7 @@ class TurnResolver:
             'quantity': actual_qty,
             'message': (f"Bought {actual_qty} {item['name']} ({item_id}) "
                         f"at {buy_price} cr each = {total_cost_cr:,} cr total "
-                        f"from {base_name} ({base_id}). [{total_mass} MU]{capped_msg}")
+                        f"from {base_name} ({base_id}). [{total_mass} ST]{capped_msg}")
         }
 
     def _cmd_sell(self, state, params):
@@ -1773,7 +1773,7 @@ class TurnResolver:
             'quantity': actual_qty,
             'message': (f"Sold {actual_qty} {item['name']} ({item_id}) "
                         f"at {sell_price} cr each = {total_income:,} cr total "
-                        f"to {base_name} ({base_id}). [{total_mass} MU freed]{capped_msg}{crew_warning}")
+                        f"to {base_name} ({base_id}). [{total_mass} ST freed]{capped_msg}{crew_warning}")
         }
 
     def _cmd_getmarket(self, state, base_id):
@@ -1989,7 +1989,7 @@ class TurnResolver:
                 'command': 'JUMP', 'params': params_str,
                 'tu_before': tu_before, 'tu_after': state['tu'],
                 'tu_cost': 0, 'success': False, 'tu_exhausted': True,
-                'message': (f"Insufficient TU for jump ({state['tu']} < {total_cost}). "
+                'message': (f"Insufficient OC for jump ({state['tu']} < {total_cost}). "
                             f"Order carries forward.")
             }
 
@@ -2015,7 +2015,7 @@ class TurnResolver:
             'tu_cost': total_cost, 'success': True,
             'message': (f"Hyperspace jump from {origin_name} ({origin_id}) "
                         f"to {target['name']} ({target_system_id}){hop_str}. "
-                        f"Arrived at {arrival_loc}. [{total_cost} TU]")
+                        f"Arrived at {arrival_loc}. [{total_cost} OC]")
         }
 
     def _cmd_message(self, state, params):
@@ -2109,7 +2109,7 @@ class TurnResolver:
                 'command': 'MAKEOFFICER', 'params': params_str,
                 'tu_before': tu_before, 'tu_after': state['tu'],
                 'tu_cost': 0, 'success': False, 'tu_exhausted': True,
-                'message': f"Insufficient TU for officer promotion ({state['tu']} < {cost}). Order carries forward."
+                'message': f"Insufficient OC for officer promotion ({state['tu']} < {cost}). Order carries forward."
             }
 
         # Check crew of that type in cargo
@@ -2142,7 +2142,7 @@ class TurnResolver:
                 (new_qty, cargo['cargo_id'])
             )
 
-        # Update cargo_used (1 MU freed since crew weighs 1 MU)
+        # Update cargo_used (1 ST freed since crew weighs 1 ST)
         self.conn.execute(
             "UPDATE ships SET cargo_used = cargo_used - ? WHERE ship_id = ?",
             (cargo['mass_per_unit'], state['ship_id'])
@@ -2181,7 +2181,7 @@ class TurnResolver:
             'tu_before': tu_before, 'tu_after': state['tu'],
             'tu_cost': cost, 'success': True,
             'message': (f"Promoted {item_name} to officer: Ensign {name} "
-                        f"[{next_cn}] assigned. [{cost} TU]")
+                        f"[{next_cn}] assigned. [{cost} OC]")
         }
 
     def _cmd_renameship(self, state, params):

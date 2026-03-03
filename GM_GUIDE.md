@@ -88,7 +88,7 @@ python pbem.py hold-turn --game OMICRON101        # Lock orders for review
 python pbem.py release-turn --game OMICRON101     # Unlock (from held or processing)
 python pbem.py run-turn --game OMICRON101         # Resolve the turn
 python pbem.py run-turn --game OMICRON101 --force # Override held/completed status
-python pbem.py advance-turn --game OMICRON101     # Move to next week, reset TUs
+python pbem.py advance-turn --game OMICRON101     # Move to next week, reset OCs
 ```
 
 ## Moderator Actions
@@ -313,13 +313,13 @@ When `run-turn` executes, the following phases run in order:
 2. **Phase 1.1: Moderator action check** — Scan all orders for MODERATOR commands. If found, create action records. If any are still pending (unresponded), auto-hold the turn and stop. If all are responded, continue.
 3. **Phase 1.5: Wages** — Deduct crew wages (1 cr/crew + 5 cr/officer per week), calculate efficiency
 4. **Phase 1.6: Faction changes** — Apply approved faction transfers, notify denied requests
-5. **Phase 2: Interleaved resolution** — All ships' orders are placed in a priority queue sorted by TU cost. The cheapest action across all ships executes first, then the next cheapest, and so on. MODERATOR orders resolve here and pick up the GM's response from the database.
+5. **Phase 2: Interleaved resolution** — All ships' orders are placed in a priority queue sorted by OC (Operational Cycle) cost. The cheapest action across all ships executes first, then the next cheapest, and so on. MODERATOR orders resolve here and pick up the GM's response from the database.
 6. **Phase 3: Report generation** — Generate ship reports (ASCII + PDF), prefect reports, and file them in `turns/processed/{turn}/{account}/`
 7. **Phase 4: Cleanup** — Mark orders as processed, save overflow orders, back up game state
 
 ### Overflow Orders
 
-If a ship runs out of TU, its remaining orders are saved to the `pending_orders` table and execute before new orders next turn. Orders that fail for non-TU reasons (wrong location, missing cargo, etc.) are dropped.
+If a ship runs out of OC, its remaining orders are saved to the `pending_orders` table and execute before new orders next turn. Orders that fail for non-OC reasons (wrong location, missing cargo, etc.) are dropped.
 
 ## Email Integration
 
@@ -413,7 +413,7 @@ You decide to approve. First, deduct credits and note the upgrade:
 $ python pbem.py edit-credits --game OMICRON101 --prefect-id 56688690 --credits 8000
 
 $ python pbem.py respond-action --game OMICRON101 --action-id 1 \
-    --response "Approved! Cargo Hold MK II installed (+200 MU). 2000 cr deducted."
+    --response "Approved! Cargo Hold MK II installed (+200 ST). 2000 cr deducted."
 
   All moderator actions responded. Use 'release-turn' then 'run-turn' to continue.
 ```
@@ -450,7 +450,7 @@ $ python pbem.py run-turn --game OMICRON101
 
 === Resolving Turn 500.3 for game OMICRON101 ===
   ...
-  Resolving 2 ships interleaved by TU cost...
+  Resolving 2 ships interleaved by OC cost...
   ...
 
 === Turn 500.3 resolution complete ===
@@ -467,7 +467,7 @@ Alice's ship report will include:
 
 ```
 MODERATOR REQUEST: "Can I buy a cargo hold expansion? Willing to pay 2000 cr."
-  GM RESPONSE: "Approved! Cargo Hold MK II installed (+200 MU). 2000 cr deducted."
+  GM RESPONSE: "Approved! Cargo Hold MK II installed (+200 ST). 2000 cr deducted."
 ```
 
 ### 8. Handle Faction Requests (if any)
@@ -482,7 +482,7 @@ $ python pbem.py faction-requests --game OMICRON101
 ```bash
 $ python pbem.py advance-turn --game OMICRON101
 Turn advanced: 500.3 -> 500.4
-All ship TUs reset.
+All ship OCs reset.
 ```
 
 The pipeline resets to OPEN and the cycle begins again.

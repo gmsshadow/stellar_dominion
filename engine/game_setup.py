@@ -469,17 +469,17 @@ def generate_welcome_reports(db_path, game_id, account_number, prefect_id, ship_
 
         AVAILABLE COMMANDS
         -------------------
-        MOVE <coord>       Move to a grid square (e.g. M13, H04). Costs 2 TU/square.
-        LOCATIONSCAN       Scan nearby space. Costs 20 TU.
-        SYSTEMSCAN         Produce a full system map. Costs 20 TU.
-        ORBIT <body_id>    Enter orbit of a planet, moon, or gas giant. Costs 10 TU.
-        DOCK <base_id>     Dock at a starbase (must be at same location). Costs 30 TU.
-        UNDOCK             Leave a starbase. Costs 10 TU.
-        LAND <body_id> <x> <y>  Land at surface coordinates (must be orbiting). Costs 20 TU.
-        TAKEOFF            Take off from planet surface to orbit. Costs 20 TU.
-        SURFACESCAN        Produce a terrain map (must be orbiting or landed). Costs 20 TU.
-        WAIT <tu>          Wait and do nothing for a number of TU.
-        JUMP <system_id>   Jump to a linked star system. Costs 60 TU. Must be 10+ squares from star.
+        MOVE <coord>       Move to a grid square (e.g. M13, H04). Costs 2 OC/square.
+        LOCATIONSCAN       Scan nearby space. Costs 20 OC.
+        SYSTEMSCAN         Produce a full system map. Costs 20 OC.
+        ORBIT <body_id>    Enter orbit of a planet, moon, or gas giant. Costs 10 OC.
+        DOCK <base_id>     Dock at a starbase (must be at same location). Costs 30 OC.
+        UNDOCK             Leave a starbase. Costs 10 OC.
+        LAND <body_id> <x> <y>  Land at surface coordinates (must be orbiting). Costs 20 OC.
+        TAKEOFF            Take off from planet surface to orbit. Costs 20 OC.
+        SURFACESCAN        Produce a terrain map (must be orbiting or landed). Costs 20 OC.
+        WAIT <oc>          Wait and do nothing for a number of Operational Cycles.
+        JUMP <system_id>   Jump to a linked star system. Costs 60 OC. Must be 10+ squares from star.
 
         TRADING (must be docked)
         -------------------------
@@ -490,7 +490,7 @@ def generate_welcome_reports(db_path, game_id, account_number, prefect_id, ship_
         Trade items:  100101 Tartarus Precious Metals  |  100102 Orion Computer Cores  |  100103 Meridian Food Supplies
         YAML example: - BUY: "45687590 100101 10"
 
-        Your ship has 300 TU per turn. Unspent TU are lost at end of turn.
+        Your ship has 300 OC per turn. Unspent Operational Cycles are lost at end of turn.
         Submit orders by email or file -- see your game moderator for details.
 
         Good luck, Commander.\

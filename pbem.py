@@ -238,7 +238,7 @@ def cmd_run_turn(args):
     
     Flow:
     1. Gather stored orders from database for all ships
-    2. Resolve interleaved by TU cost (cheapest actions first across all ships)
+    2. Resolve interleaved by OC cost (cheapest actions first across all ships)
     3. Generate ship and prefect reports
     4. Store reports in processed/{turn}/{account_number}/
     """
@@ -493,7 +493,7 @@ def cmd_run_turn(args):
         if crew_count < ship['crew_required']:
             msgs.append(
                 f"  WARNING: Ship undermanned! {crew_count}/{ship['crew_required']} crew. "
-                f"Efficiency: {efficiency:.0f}% (+{100 - efficiency:.0f}% TU penalty)."
+                f"Efficiency: {efficiency:.0f}% (+{100 - efficiency:.0f}% OC penalty)."
             )
         life_support = ship['life_support_capacity'] if ship['life_support_capacity'] else 20
         msgs.append(f"  Life support: {crew_count}/{life_support} capacity.")
@@ -577,9 +577,9 @@ def cmd_run_turn(args):
         conn.commit()
         print(f"  Faction changes: {len(approved_requests)} approved, {len(denied_requests)} denied")
 
-    # Phase 2: Interleaved resolution (cheapest TU actions first)
+    # Phase 2: Interleaved resolution (cheapest OC actions first)
     if ship_orders_map:
-        print(f"\n  Resolving {len(ship_orders_map)} ships interleaved by TU cost...")
+        print(f"\n  Resolving {len(ship_orders_map)} ships interleaved by OC cost...")
         results = resolver.resolve_turn_interleaved(ship_orders_map)
     else:
         results = {}
@@ -604,7 +604,7 @@ def cmd_run_turn(args):
             AND subject_type = 'ship' AND subject_id = ? AND status = 'pending'
         """, (args.game, game['current_year'], game['current_week'], ship_id))
 
-        # Save overflow orders (TU exhaustion carry-forward) to pending_orders
+        # Save overflow orders (OC exhaustion carry-forward) to pending_orders
         overflow = result.get('overflow', [])
         if overflow:
             for seq, ov_order in enumerate(overflow, 1):
@@ -612,7 +612,7 @@ def cmd_run_turn(args):
                 conn.execute("""
                     INSERT INTO pending_orders
                     (game_id, subject_type, subject_id, order_sequence, command, parameters, reason)
-                    VALUES (?, 'ship', ?, ?, ?, ?, 'TU overflow')
+                    VALUES (?, 'ship', ?, ?, ?, ?, 'OC overflow')
                 """, (args.game, ship_id, seq, ov_order['command'], params_json))
             print(f"    {display_name}: {len(overflow)} orders carry forward to next turn")
 
@@ -1159,7 +1159,7 @@ def cmd_show_status(args):
             print(f"  Location: {loc} - {ship['system_name']} ({ship['system_id']}){dock_info}{orbit_info}")
             print(f"  Class: {ship['design']} {ship['ship_class']}")
             print(f"  Hull: {ship['hull_count']} {ship['hull_type']} ({ship['hull_damage_pct']:.0f}% damage)")
-            print(f"  TU: {ship['tu_remaining']}/{ship['tu_per_turn']}")
+            print(f"  OC: {ship['tu_remaining']}/{ship['tu_per_turn']}")
             print(f"  Cargo: {ship['cargo_used']}/{ship['cargo_capacity']}")
             print(f"  Crew: {ship['crew_count']}/{ship['crew_required']}")
         else:
@@ -1193,7 +1193,7 @@ def cmd_list_ships(args):
         print(f"No ships in game {args.game}.")
     else:
         print(f"\nShips in game {args.game}:")
-        print(f"{'ID':<12} {'Name':<24} {'Owner':<18} {'Account':<12} {'Location':<10} {'TU':<10} {'Status':<10}")
+        print(f"{'ID':<12} {'Name':<24} {'Owner':<18} {'Account':<12} {'Location':<10} {'OC':<10} {'Status':<10}")
         print("-" * 96)
         for s in ships:
             faction = get_faction(conn, s['faction_id'])
@@ -1222,7 +1222,7 @@ def cmd_advance_turn(args):
     year, week = resolver.advance_turn()
     new_turn = f"{year}.{week}"
 
-    # Reset TU for all ships
+    # Reset OC for all ships
     conn = get_connection(db_path)
     conn.execute(
         "UPDATE ships SET tu_remaining = tu_per_turn WHERE game_id = ?",
@@ -1237,7 +1237,7 @@ def cmd_advance_turn(args):
     conn.close()
 
     print(f"Turn advanced: {old_turn} -> {new_turn}")
-    print("All ship TUs reset.")
+    print("All ship OCs reset.")
     resolver.close()
 
 

@@ -6,7 +6,7 @@ Built in Python with SQLite. No web server required — the entire game runs fro
 
 ## Features
 
-- **Turn-based order resolution** with a Time Unit (TU) system and interleaved priority queue across all ships
+- **Turn-based order resolution** with an Operational Cycle (OC) system and interleaved priority queue across all ships
 - **Play-by-email** — players submit YAML or text order files; the engine validates, resolves, and emails back reports
 - **ASCII + PDF reports** — Phoenix-style ship and prefect reports with system maps, cargo manifests, and crew rosters
 - **Persistent universe** — two-database architecture separating world definition (GM-editable) from live game state (engine-managed)

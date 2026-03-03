@@ -7,7 +7,7 @@ Welcome to Stellar Dominion, a play-by-email (PBEM) space strategy game. You com
 When you join a game you receive:
 
 - A **Prefect** — your in-game persona, with a name and starting credits (10,000 cr)
-- A **Ship** — a Light Trader MK I (50 hull, 500 MU cargo, 300 TU per turn)
+- A **Ship** — a Light Trader MK I (50 hull, 500 ST cargo, 300 OC per turn)
 - A **Starting crew** — 15 Human Crew in cargo plus a Captain officer
 - A **Secret account number** — used to validate your orders. Keep this private.
 
@@ -51,13 +51,13 @@ BUY 45687590 100101 50
 UNDOCK
 ```
 
-Orders are processed in sequence. If an order fails (e.g. you try to dock but aren't at the base's location), that order is dropped and the next one executes. If you run out of TU, remaining orders carry forward to next turn as overflow.
+Orders are processed in sequence. If an order fails (e.g. you try to dock but aren't at the base's location), that order is dropped and the next one executes. If you run out of OC, remaining orders carry forward to next turn as overflow.
 
-## Time Units (TU)
+## Operational Cycles (OC)
 
-Every action costs TU. Your ship starts each turn with 300 TU. Once you run out, remaining orders carry forward to next turn automatically.
+*Operational Cycles (OC)* measure command throughput — crew coordination, power allocation, and shipboard systems availability during a turn. Every action costs OC. Your ship starts each turn with 300 OC. Once you run out, remaining orders carry forward to next turn automatically.
 
-| Command | Base TU Cost | Description |
+| Command | Base OC Cost | Description |
 |---------|-------------|-------------|
 | **MOVE** | 2 per step | Move one grid square toward a target coordinate |
 | **LOCATIONSCAN** | 20 | Scan the area around your current position |
@@ -74,7 +74,7 @@ Every action costs TU. Your ship starts each turn with 300 TU. Once you run out,
 | **GETMARKET** | 0 | View market prices at a starbase (must be docked) |
 | **MESSAGE** | 0 | Send a message to any ship, base, or prefect |
 | **MODERATOR** | 0 | Submit a free-text request to the GM |
-| **WAIT** | variable | Wait a specific number of TU |
+| **WAIT** | variable | Wait a specific number of OC |
 | **RENAMESHIP** | 0 | Rename your ship |
 | **RENAMEBASE** | 0 | Rename a starbase you own |
 | **RENAMEPREFECT** | 0 | Rename your prefect |
@@ -86,9 +86,9 @@ Every action costs TU. Your ship starts each turn with 300 TU. Once you run out,
 
 ### Movement
 
-**MOVE** `<coordinate>` — Move toward a grid coordinate (e.g. `MOVE F10`). The ship pathfinds step by step, costing 2 TU per square. Coordinates use letters A-Y for columns and numbers 01-25 for rows.
+**MOVE** `<coordinate>` — Move toward a grid coordinate (e.g. `MOVE F10`). The ship pathfinds step by step, costing 2 OC per square. Coordinates use letters A-Y for columns and numbers 01-25 for rows.
 
-**JUMP** `<system_id>` — Jump to another star system. Costs 60 TU. Requirements: not docked/landed/orbiting, at least 10 squares from the primary star, and a hyperspace link must exist between systems.
+**JUMP** `<system_id>` — Jump to another star system. Costs 60 OC. Requirements: not docked/landed/orbiting, at least 10 squares from the primary star, and a hyperspace link must exist between systems.
 
 ### Scanning
 
@@ -170,7 +170,7 @@ You can include multiple MODERATOR requests in a single turn, and they can appea
 
 ### Renaming
 
-All rename commands are free (0 TU):
+All rename commands are free (0 OC):
 
 ```
 RENAMESHIP 52589098 The Indomitable
@@ -181,7 +181,7 @@ RENAMEOFFICER 52589098 1 Helena Blackwood    # 1 = crew number from report
 
 ### Faction Changes
 
-**CHANGEFACTION** `<faction_id> [reason]` — Request to join a different faction. This is free (0 TU) but requires GM approval. Only one pending request at a time.
+**CHANGEFACTION** `<faction_id> [reason]` — Request to join a different faction. This is free (0 OC) but requires GM approval. Only one pending request at a time.
 
 ```
 CHANGEFACTION 12 Want to focus on trading routes
@@ -191,23 +191,27 @@ The GM will approve or deny the request, and you'll be notified in your next bet
 
 ## Overflow Orders
 
-If you run out of TU mid-turn, your remaining orders automatically carry forward to next turn. They run before your new orders. Use **CLEAR** to cancel all overflow orders if you change your mind.
+If you run out of OC mid-turn, your remaining orders automatically carry forward to next turn. They run before your new orders. Use **CLEAR** to cancel all overflow orders if you change your mind.
 
 ## Crew & Efficiency
 
-Your ship has a crew requirement based on hull size (1 crew per 5 hull). If you're undermanned, all TU costs increase:
+Your ship has a crew requirement based on hull size (1 crew per 5 hull). If you're undermanned, all OC costs increase:
 
 ```
 Efficiency = crew_count / crew_required × 100%
-TU penalty = (100% - efficiency)
+OC penalty = (100% - efficiency)
 
-Example: 8 crew out of 10 required = 80% efficiency = +20% TU penalty
-  MOVE: 2 TU → 3 TU per step
-  LOCATIONSCAN: 20 TU → 24 TU
-  JUMP: 60 TU → 72 TU
+Example: 8 crew out of 10 required = 80% efficiency = +20% OC penalty
+  MOVE: 2 OC → 3 OC per step
+  LOCATIONSCAN: 20 OC → 24 OC
+  JUMP: 60 OC → 72 OC
 ```
 
 Officers count as crew for efficiency purposes but cost more in wages (5 cr/week vs 1 cr/week for regular crew). Life support capacity (default 20) caps total crew + officers aboard.
+
+## Cargo & Stellar Tons (ST)
+
+*One Stellar Ton (ST)* represents the standardised cargo and structural load metric used across known space. Ship cargo capacity and item weights are expressed in ST. Your Light Trader has 500 ST capacity; trade goods have varying mass per unit (e.g. crew weigh 1 ST each).
 
 ## Trading Economy
 
@@ -247,7 +251,7 @@ Both are available as plain text (.txt) and PDF (.pdf).
 1. Start by scanning — `LOCATIONSCAN` and `SYSTEMSCAN` reveal the map around you.
 2. Dock at a starbase and check prices with `GETMARKET`.
 3. Buy cheap goods at one base, sell dear at another — look for the produce/demand pattern.
-4. Keep your ship crewed — undermanning increases all TU costs.
+4. Keep your ship crewed — undermanning increases all OC costs.
 5. Promote an officer or two — they're worth the extra wages for their crew factors.
 6. Send messages to other players via `MESSAGE` to negotiate trades or alliances.
 7. Use `MODERATOR` to ask the GM for anything non-standard — upgrades, special actions, narrative requests.

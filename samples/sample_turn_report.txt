@@ -50,15 +50,15 @@ into a YAML file and submit it as your first turn:
 
 AVAILABLE COMMANDS
 -------------------
-MOVE <coord>       Move to a grid square (e.g. M13, H04). Costs 2 TU/square.
-LOCATIONSCAN       Scan nearby space. Costs 20 TU.
-SYSTEMSCAN         Produce a full system map. Costs 20 TU.
-ORBIT <body_id>    Enter orbit of a planet, moon, or gas giant. Costs 10 TU.
-DOCK <base_id>     Dock at a starbase (must be at same location). Costs 30 TU.
-UNDOCK             Leave a starbase. Costs 10 TU.
-WAIT <tu>          Wait and do nothing for a number of TU.
+MOVE <coord>       Move to a grid square (e.g. M13, H04). Costs 2 OC/square.
+LOCATIONSCAN       Scan nearby space. Costs 20 OC.
+SYSTEMSCAN         Produce a full system map. Costs 20 OC.
+ORBIT <body_id>    Enter orbit of a planet, moon, or gas giant. Costs 10 OC.
+DOCK <base_id>     Dock at a starbase (must be at same location). Costs 30 OC.
+UNDOCK             Leave a starbase. Costs 10 OC.
+WAIT <oc>          Wait and do nothing for a number of Operational Cycles.
 
-Your ship has 300 TU per turn. Unspent TU are lost at end of turn.
+Your ship has 300 OC per turn. Unspent Operational Cycles are lost at end of turn.
 Submit orders by email or file -- see your game moderator for details.
 
 Good luck, Commander.    
@@ -70,7 +70,7 @@ Good luck, Commander.
 Starting Location:
     I06 - Omicron System (101)
 
->TU 300: SYSTEMSCAN
+>OC 300: SYSTEMSCAN
     System scan complete.
         A  B  C  D  E  F  G  H  I  J  K  L  M  N  O  P  Q  R  S  T  U  V  W  X  Y
     01  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .
@@ -103,7 +103,7 @@ Starting Location:
 |                                                                            |
 | Name: STA Boethius (66232320)         Faction: STA - Stellar Training Academy|
 | Wealth: 10,000 Credits                Ownership: Player owned              |
-| Efficiency: 100%                      TUs left: 280 tus                    |
+| Efficiency: 100%                      OCs left: 280                        |
 |                                                                            |
 | Design: Explorer Mk I Class Scout                                          |
 | Hulls: 50 (Light Hull)                Hull Damage: 0%                      |
@@ -115,7 +115,7 @@ Starting Location:
 | I06 - Omicron System (101)                                                 |
 | Omicron (101) - {I06}                                                      |
 |                                                                            |
-| Sensor Rating: 20%                    Cargo: 0/500                         |
+| Sensor Rating: 20%                    Cargo: 0/500 ST                      |
 |                                                                            |
 |- Crew Report ---------------------------------------------------------------|
 |                                                                            |
@@ -127,7 +127,7 @@ Starting Location:
 |                                                                            |
 |- Cargo Report --------------------------------------------------------------|
 |                                                                            |
-| Cargo: 0/500                                                               |
+| Cargo: 0/500 ST                                                            |
 | Cargo hold empty.                                                          |
 |                                                                            |
 |- Space Combat Report -------------------------------------------------------|
@@ -136,13 +136,13 @@ Starting Location:
 |                                                                            |
 |- Installed Items -----------------------------------------------------------|
 |                                                                            |
-|        1  Bridge (100) - 50 mus                                            |
-|        1  Sensor (103) - 10 mus                                            |
-|        3  ISR Type 2 Engines (155) - 10 mus                                |
-|        1  Jump Drive - Basic (174) - 50 mus                                |
-|        2  Thrust Engine (160) - 20 mus                                     |
-|        2  Quarters (131) - 25 mus                                          |
-|        5  Cargo Hold (180) - 100 mus                                       |
+|        1  Bridge (100) - 50 ST                                             |
+|        1  Sensor (103) - 10 ST                                             |
+|        3  ISR Type 2 Engines (155) - 10 ST                                 |
+|        1  Jump Drive - Basic (174) - 50 ST                                 |
+|        2  Thrust Engine (160) - 20 ST                                      |
+|        2  Quarters (131) - 25 ST                                           |
+|        5  Cargo Hold (180) - 100 ST                                        |
 |                                                                            |
 |- Contacts ------------------------------------------------------------------|
 |                                                                            |
@@ -222,7 +222,7 @@ other players through scanning.
 |- Ships ---------------------------------------------------------------------|
 |                                                                            |
 | STA Boethius (66232320)            Omicron (101) I06                       |
-|    Explorer Mk I Class Scout       TU: 280/300  Hull: 50 (Light Hull)      |
+|    Explorer Mk I Class Scout       OC: 280/300  Hull: 50 (Light Hull)      |
 |                                                                            |
 |- Known Contacts ------------------------------------------------------------|
 |                                                                            |
@@ -253,6 +253,6 @@ NOTES:
 - Ship IDs and account numbers are randomly generated per game.
 - The welcome guide in the BETWEEN TURN REPORT only appears on your first turn.
 - The "Contacts" section grows as you scan and explore the system.
-- Movement costs 2 TU per square. Your ship has 300 TU per turn.
+- Movement costs 2 OC per square. Your ship has 300 OC per turn.
 - To dock at an orbiting base, you must ORBIT the same body first.
 - Orders are submitted as YAML or plain text files with your secret account number.

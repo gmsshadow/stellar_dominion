@@ -284,9 +284,9 @@ def generate_ship_report(turn_result, db_path=None, game_id="OMICRON101",
         tu_before = entry['tu_before']
 
         if params is not None and params != '':
-            lines.append(f">TU {tu_before}: {cmd} {{{params}}}")
+            lines.append(f">OC {tu_before}: {cmd} {{{params}}}")
         else:
-            lines.append(f">TU {tu_before}: {cmd}")
+            lines.append(f">OC {tu_before}: {cmd}")
 
         # Indent and word-wrap the message
         for msg_line in entry['message'].split('\n'):
@@ -306,9 +306,9 @@ def generate_ship_report(turn_result, db_path=None, game_id="OMICRON101",
     eff_str = f"Efficiency: {eff:.0f}%"
     if eff < 100:
         penalty = 100 - eff
-        eff_str += f" (+{penalty:.0f}% TU penalty)"
+        eff_str += f" (+{penalty:.0f}% OC penalty)"
     lines.append(section_line(eff_str.ljust(COL_LEFT) +
-                               f"TUs left: {turn_result['final_tu']} tus"))
+                               f"OCs left: {turn_result['final_tu']}"))
     lines.append(section_line())
 
     hull_info = f"Size: {ship['hull_count']} ({ship['hull_type']})"
@@ -336,7 +336,7 @@ def generate_ship_report(turn_result, db_path=None, game_id="OMICRON101",
     lines.append(section_line(f"{system['name']} ({system_id}) - {{{final_loc}}}"))
     lines.append(section_line())
     lines.append(section_line(f"Sensor Rating: {ship['sensor_rating']}%".ljust(COL_LEFT) +
-                               f"Cargo: {ship['cargo_used']}/{ship['cargo_capacity']} MU"))
+                               f"Cargo: {ship['cargo_used']}/{ship['cargo_capacity']} ST"))
     lines.append(section_line())
 
     # ==========================================
@@ -369,7 +369,7 @@ def generate_ship_report(turn_result, db_path=None, game_id="OMICRON101",
     if ship['crew_count'] < ship['crew_required']:
         penalty = 100.0 - min(100.0, (ship['crew_count'] / max(1, ship['crew_required'])) * 100.0)
         lines.append(section_line(
-            f"*** WARNING: Ship undermanned! +{penalty:.0f}% TU penalty on all actions. ***"
+            f"*** WARNING: Ship undermanned! +{penalty:.0f}% OC penalty on all actions. ***"
         ))
     lines.append(section_line())
 
@@ -378,13 +378,13 @@ def generate_ship_report(turn_result, db_path=None, game_id="OMICRON101",
     # ==========================================
     lines.append(section_header("Cargo Report"))
     lines.append(section_line())
-    lines.append(section_line(f"Cargo: {ship['cargo_used']}/{ship['cargo_capacity']} MU"))
+    lines.append(section_line(f"Cargo: {ship['cargo_used']}/{ship['cargo_capacity']} ST"))
     if cargo:
         for item in cargo:
             total_mu = item['quantity'] * item['mass_per_unit']
             lines.append(section_line(
                 f"{item['quantity']:>8}  {item['item_name']} ({item['item_type_id']})"
-                f" - {item['mass_per_unit']} MU each = {total_mu} MU"
+                f" - {item['mass_per_unit']} ST each = {total_mu} ST"
             ))
     else:
         lines.append(section_line("Cargo hold empty."))
@@ -406,7 +406,7 @@ def generate_ship_report(turn_result, db_path=None, game_id="OMICRON101",
     if installed:
         for item in installed:
             lines.append(section_line(
-                f"{item['quantity']:>8}  {item['item_name']} - {item['mass_per_unit']} mus"
+                f"{item['quantity']:>8}  {item['item_name']} - {item['mass_per_unit']} ST"
             ))
     else:
         lines.append(section_line("No items installed."))
@@ -643,7 +643,7 @@ def generate_prefect_report(prefect_id, db_path=None, game_id="OMICRON101",
         ))
         lines.append(section_line(
             f"   {s['design']}".ljust(COL_LEFT) +
-            f"TU: {s['tu_remaining']}/{s['tu_per_turn']}  "
+            f"OC: {s['tu_remaining']}/{s['tu_per_turn']}  "
             f"Size: {s['hull_count']} ({s['hull_type']})"
         ))
         ls = s['life_support_capacity'] if 'life_support_capacity' in s.keys() else 20

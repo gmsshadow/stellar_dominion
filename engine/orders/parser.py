@@ -10,7 +10,7 @@ from pathlib import Path
 
 # Valid commands and their parameter types
 VALID_COMMANDS = {
-    'WAIT': {'params': 'integer', 'description': 'Wait for n TU'},
+    'WAIT': {'params': 'integer', 'description': 'Wait for n Operational Cycles (OC)'},
     'MOVE': {'params': 'coordinate', 'description': 'Move to grid coordinate'},
     'LOCATIONSCAN': {'params': 'none', 'description': 'Scan nearby cells'},
     'SYSTEMSCAN': {'params': 'none', 'description': 'Produce system map'},

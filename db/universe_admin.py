@@ -158,7 +158,7 @@ def add_trade_good(universe_db_path=None, item_id=None, name=None,
     conn.commit()
     conn.close()
 
-    print(f"  Added trade good: {name} ({item_id}) base={base_price}cr mass={mass_per_unit}MU")
+    print(f"  Added trade good: {name} ({item_id}) base={base_price}cr mass={mass_per_unit}ST")
     return item_id
 
 
@@ -214,7 +214,7 @@ def list_universe(universe_db_path=None):
         for g in goods:
             origin = g['origin_system_id'] if 'origin_system_id' in g.keys() and g['origin_system_id'] else None
             origin_str = f"  origin={origin}" if origin else ""
-            print(f"  {g['item_id']:>6d}  {g['name']:<30s}  base={g['base_price']}cr  mass={g['mass_per_unit']}MU{origin_str}")
+            print(f"  {g['item_id']:>6d}  {g['name']:<30s}  base={g['base_price']}cr  mass={g['mass_per_unit']}ST{origin_str}")
 
     # Planetary resources (GM-only, hidden from players)
     has_res_table = conn.execute(
