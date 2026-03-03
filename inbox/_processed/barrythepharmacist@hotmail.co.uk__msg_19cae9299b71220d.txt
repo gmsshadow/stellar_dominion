@@ -1,6 +1,0 @@
-GAME OMICRON101
-PLAYER_NAME Barry Robertson   
-EMAIL barrythepharmacist@hotmail.co.uk
-PREFECT_NAME Barney Jones
-SHIP_NAME Valiant
-PLANET 301442

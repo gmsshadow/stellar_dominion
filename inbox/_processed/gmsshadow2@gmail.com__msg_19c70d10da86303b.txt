@@ -1,6 +1,0 @@
-game: OMICRON101
-account: 35032008
-ship: 52609874
-orders:
-- MOVE: M13          
-- LOCATIONSCAN: {}
