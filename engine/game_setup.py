@@ -636,7 +636,7 @@ def add_player(db_path=None, game_id="OMICRON101", player_name="Player 1",
          tu_per_turn, tu_remaining, sensor_rating, cargo_capacity, cargo_used,
          crew_count, crew_required, life_support_capacity)
         VALUES (?, ?, ?, ?, 'Trader', 'Light Trader MK I', 'Commercial', 50,
-                ?, ?, ?, ?, ?, 300, 300, 20, 500, 15,
+                ?, ?, ?, ?, ?, 300, 300, 20, 500, 0,
                 16, 10, 20)
     """, (ship_id, game_id, prefect_id, ship_name,
           ship_start_col, ship_start_row, ship_system_id, docked_at, orbiting_body))
@@ -664,10 +664,10 @@ def add_player(db_path=None, game_id="OMICRON101", player_name="Player 1",
             VALUES (?, ?, ?, ?, ?)
         """, (sid, item_type, item_name, qty, mass))
 
-    # Add starting crew as cargo (Human Crew item 401)
+    # Add starting crew as cargo (Human Crew item 401) - mass 0 as crew use life support, not cargo space
     c.execute("""
         INSERT INTO cargo_items (ship_id, item_type_id, item_name, quantity, mass_per_unit)
-        VALUES (?, 401, 'Human Crew', 15, 1)
+        VALUES (?, 401, 'Human Crew', 15, 0)
     """, (ship_id,))
 
     conn.commit()

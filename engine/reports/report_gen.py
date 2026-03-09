@@ -136,7 +136,9 @@ def generate_ship_report(turn_result, db_path=None, game_id="OMICRON101",
     ).fetchone()
     officers = conn.execute("SELECT * FROM officers WHERE ship_id = ?", (ship_id,)).fetchall()
     installed = conn.execute("SELECT * FROM installed_items WHERE ship_id = ?", (ship_id,)).fetchall()
-    cargo = conn.execute("SELECT * FROM cargo_items WHERE ship_id = ?", (ship_id,)).fetchall()
+    cargo = conn.execute(
+        "SELECT * FROM cargo_items WHERE ship_id = ? AND item_type_id != 401", (ship_id,)
+    ).fetchall()
     contacts = conn.execute(
         "SELECT * FROM known_contacts WHERE prefect_id = ? AND location_system = ?",
         (ship['owner_prefect_id'], system_id)

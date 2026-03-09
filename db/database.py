@@ -88,6 +88,20 @@ def get_connection(state_db_path=None, universe_db_path=None):
         conn.execute("ALTER TABLE games ADD COLUMN turn_status TEXT NOT NULL DEFAULT 'open'")
         conn.commit()
 
+    # Migrate: crew (item 401) should not occupy cargo space - fix existing cargo_items and ships
+    crew_cargo = conn.execute(
+        "SELECT cargo_id, ship_id, quantity, mass_per_unit FROM cargo_items WHERE item_type_id = 401 AND mass_per_unit > 0"
+    ).fetchall()
+    if crew_cargo:
+        for row in crew_cargo:
+            freed_mass = row['quantity'] * row['mass_per_unit']
+            conn.execute("UPDATE cargo_items SET mass_per_unit = 0 WHERE cargo_id = ?", (row['cargo_id'],))
+            conn.execute(
+                "UPDATE ships SET cargo_used = MAX(0, cargo_used - ?) WHERE ship_id = ?",
+                (freed_mass, row['ship_id'])
+            )
+        conn.commit()
+
     return conn
 
 

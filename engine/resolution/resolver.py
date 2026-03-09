@@ -1511,9 +1511,9 @@ class TurnResolver:
             max_by_credits = int(prefect['credits'] // buy_price)
             actual_qty = min(actual_qty, max_by_credits)
 
-        # Cap to available cargo space
+        # Cap to available cargo space (crew don't take cargo space)
         available_mu = ship['cargo_capacity'] - ship['cargo_used']
-        if item['mass_per_unit'] > 0:
+        if item['mass_per_unit'] > 0 and item_id != CREW_ITEM_ID:
             max_by_cargo = int(available_mu // item['mass_per_unit'])
             actual_qty = min(actual_qty, max_by_cargo)
 
@@ -1546,7 +1546,7 @@ class TurnResolver:
                 cap_reasons.append(f"stock={available_stock}")
             if buy_price > 0 and int(prefect['credits'] // buy_price) < quantity:
                 cap_reasons.append(f"credits={prefect['credits']:,.0f} cr")
-            if item['mass_per_unit'] > 0 and int(available_mu // item['mass_per_unit']) < quantity:
+            if item['mass_per_unit'] > 0 and item_id != CREW_ITEM_ID and int(available_mu // item['mass_per_unit']) < quantity:
                 cap_reasons.append(f"cargo={available_mu} ST free")
             if item_id == CREW_ITEM_ID:
                 current_crew = self._get_crew_count(state['ship_id'])
@@ -1558,17 +1558,19 @@ class TurnResolver:
             capped_msg = ""
 
         total_cost_cr = buy_price * actual_qty
-        total_mass = item['mass_per_unit'] * actual_qty
+        # Crew don't occupy cargo space - they use life support capacity instead
+        total_mass = 0 if item_id == CREW_ITEM_ID else item['mass_per_unit'] * actual_qty
 
         # Execute purchase
         self.conn.execute(
             "UPDATE prefects SET credits = credits - ? WHERE prefect_id = ?",
             (total_cost_cr, prefect['prefect_id'])
         )
-        self.conn.execute(
-            "UPDATE ships SET cargo_used = cargo_used + ? WHERE ship_id = ?",
-            (total_mass, state['ship_id'])
-        )
+        if total_mass > 0:
+            self.conn.execute(
+                "UPDATE ships SET cargo_used = cargo_used + ? WHERE ship_id = ?",
+                (total_mass, state['ship_id'])
+            )
 
         # Decrement base stock
         self.conn.execute("""
@@ -1587,10 +1589,11 @@ class TurnResolver:
                 (actual_qty, existing['cargo_id'])
             )
         else:
+            stored_mass = 0 if item_id == CREW_ITEM_ID else item['mass_per_unit']
             self.conn.execute("""
                 INSERT INTO cargo_items (ship_id, item_type_id, item_name, quantity, mass_per_unit)
                 VALUES (?, ?, ?, ?, ?)
-            """, (state['ship_id'], item_id, item['name'], actual_qty, item['mass_per_unit']))
+            """, (state['ship_id'], item_id, item['name'], actual_qty, stored_mass))
 
         # Sync crew_count and efficiency if buying crew
         if item_id == CREW_ITEM_ID:
@@ -1712,7 +1715,8 @@ class TurnResolver:
             capped_msg = ""
 
         total_income = sell_price * actual_qty
-        total_mass = item['mass_per_unit'] * actual_qty
+        # Crew don't occupy cargo space - use stored mass_per_unit (0 for crew)
+        total_mass = cargo['mass_per_unit'] * actual_qty
 
         # Execute sale
         ship = self.get_ship(state['ship_id'])
@@ -1720,10 +1724,11 @@ class TurnResolver:
             "UPDATE prefects SET credits = credits + ? WHERE prefect_id = ?",
             (total_income, ship['owner_prefect_id'])
         )
-        self.conn.execute(
-            "UPDATE ships SET cargo_used = cargo_used - ? WHERE ship_id = ?",
-            (total_mass, state['ship_id'])
-        )
+        if total_mass > 0:
+            self.conn.execute(
+                "UPDATE ships SET cargo_used = cargo_used - ? WHERE ship_id = ?",
+                (total_mass, state['ship_id'])
+            )
 
         # Decrement base demand
         self.conn.execute("""
@@ -2142,11 +2147,7 @@ class TurnResolver:
                 (new_qty, cargo['cargo_id'])
             )
 
-        # Update cargo_used (1 ST freed since crew weighs 1 ST)
-        self.conn.execute(
-            "UPDATE ships SET cargo_used = cargo_used - ? WHERE ship_id = ?",
-            (cargo['mass_per_unit'], state['ship_id'])
-        )
+        # Crew don't occupy cargo space, so no cargo_used update needed
 
         # Determine next crew_number
         max_cn = self.conn.execute(
