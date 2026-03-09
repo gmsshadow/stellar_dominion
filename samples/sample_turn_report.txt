@@ -14,15 +14,16 @@ Below are the welcome reports for a new player "Alice".
 
 === BEGIN REPORT ===
 
-                               Stellar Dominion                               
-                              PBEM Strategy Game                              
+                               Stellar Dominion
+                              PBEM Strategy Game
 
-                         STA SHIP Boethius (66232320)                         
+                         STA SHIP Boethius (66232320)
+                           Account: 35846634
 
 Printed on 14 February 2026, Star Date 500.1
 
 ------------------------------------------------------------------------------
-                             BETWEEN TURN REPORT                              
+                             BETWEEN TURN REPORT
 ------------------------------------------------------------------------------
 
 WELCOME TO STELLAR DOMINION
@@ -50,21 +51,33 @@ into a YAML file and submit it as your first turn:
 
 AVAILABLE COMMANDS
 -------------------
-MOVE <coord>       Move to a grid square (e.g. M13, H04). Costs 2 OC/square.
-LOCATIONSCAN       Scan nearby space. Costs 20 OC.
-SYSTEMSCAN         Produce a full system map. Costs 20 OC.
-ORBIT <body_id>    Enter orbit of a planet, moon, or gas giant. Costs 10 OC.
-DOCK <base_id>     Dock at a starbase (must be at same location). Costs 30 OC.
-UNDOCK             Leave a starbase. Costs 10 OC.
-WAIT <oc>          Wait and do nothing for a number of Operational Cycles.
+MOVE <coord>                  Move to a grid square (e.g. M13, H04). Costs 2 OC/square.
+LOCATIONSCAN                  Scan nearby space. Costs 20 OC.
+SYSTEMSCAN                    Produce a full system map. Costs 20 OC.
+JUMP <system_id>              Jump to a linked star system. Costs 150 OC.
+ORBIT <body_id>               Enter orbit of a planet, moon, or gas giant. Costs 10 OC.
+DOCK <base_id>                Dock at a starbase (must be at same location). Costs 30 OC.
+UNDOCK                        Leave a starbase. Costs 10 OC.
+LAND <body_id> <x> <y>        Land on a planet surface at coordinates. Costs 20 OC.
+SURFACESCAN                   Scan terrain at your landing site. Costs 20 OC.
+TAKEOFF                       Take off from surface back to orbit. Costs 20 OC.
+GETMARKET <base_id>           View market prices at a starbase. Costs 10 OC.
+BUY <base_id> <item> <qty>    Buy cargo from a market (must be docked). Costs 10 OC.
+SELL <base_id> <item> <qty>   Sell cargo to a market (must be docked). Costs 10 OC.
+MESSAGE <target_id> <text>    Send a message to another position. Costs 10 OC.
+MAKEOFFICER <ship> <type> <name>  Promote a crew member to officer. Costs 10 OC.
+CHANGEFACTION <faction_id>    Request a faction change (GM-moderated). Costs 0 OC.
+MODERATOR <text>              Submit a free-text request to the GM. Costs 0 OC.
+WAIT <oc>                     Wait and do nothing for a number of Operational Cycles.
+CLEAR                         Cancel all overflow orders from the previous turn.
 
 Your ship has 300 OC per turn. Unspent Operational Cycles are lost at end of turn.
 Submit orders by email or file -- see your game moderator for details.
 
-Good luck, Commander.    
+Good luck, Commander.
 
 ------------------------------------------------------------------------------
-                                 TURN REPORT                                  
+                                 TURN REPORT
 ------------------------------------------------------------------------------
 
 Starting Location:
@@ -90,7 +103,7 @@ Starting Location:
     15  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .
     16  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .
     17  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .
-    18  .  .  .  .  G  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .
+    18  .  .  .  G  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .
     19  .  .  .  .  .  o  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .
     20  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  O  .  .  .  .  .
     21  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .
@@ -106,8 +119,7 @@ Starting Location:
 | Efficiency: 100%                      OCs left: 280                        |
 |                                                                            |
 | Design: Explorer Mk I Class Scout                                          |
-| Hulls: 50 (Light Hull)                Hull Damage: 0%                      |
-| Integrity: 100%                                                            |
+| Size: 50 (Light Hull)                 Integrity: 100%                      |
 |                                                                            |
 |- Navigation Report ---------------------------------------------------------|
 |                                                                            |
@@ -120,10 +132,12 @@ Starting Location:
 |- Crew Report ---------------------------------------------------------------|
 |                                                                            |
 | OFFICERS                                                                   |
-| Li Chen                                           [ Captain (Navigation) 0 Xp ]|
-|    |-Crew Factors                +8 CF                                     |
+| [1] Captain Li Chen                   [ Navigation 0 Xp ] +8 CF  5 cr/wk  |
 |                                                                            |
-| Crew: 15                              Required: 10                         |
+| PREFECT                                                                    |
+| Li Chen (79063795)                                                         |
+|                                                                            |
+| Crew: 15/20                           Required: 10                         |
 |                                                                            |
 |- Cargo Report --------------------------------------------------------------|
 |                                                                            |
@@ -156,9 +170,9 @@ Starting Location:
 | - Base Citadel Station (45687590) at H04                                   |
 | - Base Meridian Waystation (78901234) at T20                               |
 |                                                                            |
-|- Pending Orders ------------------------------------------------------------|
+|- Overflow Orders -----------------------------------------------------------|
 |                                                                            |
-| No pending orders.                                                         |
+| No overflow orders.                                                        |
 |                                                                            |
 |----------------------------------------------------------------------------|
 
@@ -170,15 +184,16 @@ Starting Location:
 
 === BEGIN REPORT ===
 
-                               Stellar Dominion                               
-                              PBEM Strategy Game                              
+                               Stellar Dominion
+                              PBEM Strategy Game
 
-                        STA PREFECT Li Chen (79063795)                        
+                        STA PREFECT Li Chen (79063795)
+                           Account: 35846634
 
 Printed on 14 February 2026, Star Date 500.1
 
 ------------------------------------------------------------------------------
-                             BETWEEN TURN REPORT                              
+                             BETWEEN TURN REPORT
 ------------------------------------------------------------------------------
 
 WELCOME TO STELLAR DOMINION
@@ -192,14 +207,14 @@ Use it to track your credits, monitor your ships, and review contacts.
 
 Your account number is SECRET -- never share it with other players.
 Your prefect ID and ship IDs are public and may be discovered by
-other players through scanning.    
+other players through scanning.
 
 ------------------------------------------------------------------------------
-                                 TURN REPORT                                  
+                                 TURN REPORT
 ------------------------------------------------------------------------------
 
 ------------------------------------------------------------------------------
-                                PLAYER REPORTS                                
+                                PLAYER REPORTS
 ------------------------------------------------------------------------------
 |- Prefect Report ------------------------------------------------------------|
 |                                                                            |
@@ -222,7 +237,8 @@ other players through scanning.
 |- Ships ---------------------------------------------------------------------|
 |                                                                            |
 | STA Boethius (66232320)            Omicron (101) I06                       |
-|    Explorer Mk I Class Scout       OC: 280/300  Hull: 50 (Light Hull)      |
+|    Explorer Mk I Class Scout       OC: 280/300  Size: 50 (Light Hull)      |
+|    Crew: 15/20                     Required: 10                            |
 |                                                                            |
 |- Known Contacts ------------------------------------------------------------|
 |                                                                            |
@@ -255,4 +271,6 @@ NOTES:
 - The "Contacts" section grows as you scan and explore the system.
 - Movement costs 2 OC per square. Your ship has 300 OC per turn.
 - To dock at an orbiting base, you must ORBIT the same body first.
+- To land, you must first ORBIT the planet or moon.
 - Orders are submitted as YAML or plain text files with your secret account number.
+- Overflow orders carry forward automatically; submit CLEAR as your first order to cancel them.
