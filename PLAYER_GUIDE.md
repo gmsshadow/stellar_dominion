@@ -7,23 +7,42 @@ Welcome to Stellar Dominion, a play-by-email (PBEM) space strategy game. You com
 When you join a game you receive:
 
 - A **Prefect** — your in-game persona, with a name and starting credits (10,000 cr)
-- A **Ship** — a Light Trader MK I (50 hull, 500 ST cargo, 300 OC per turn)
+- A **Ship** — a Light Trader MK I (size 10, 500 ST internal capacity, 300 OC per turn)
 - A **Starting crew** — 15 Human Crew in cargo plus a Captain officer
 - A **Secret account number** — used to validate your orders. Keep this private.
 
-Your ship starts in orbit around a planet in one of the game's star systems. From there you can move, scan, dock at starbases, trade, and jump between systems.
+Your ship starts in orbit around a planet in one of the game's star systems.
+
+## Your Ship
+
+Ships are built from modular internal components. Your starting Light Trader MK I (size 10) has 500 ST of internal capacity, fully loaded with:
+
+| Component | Qty | ST Used | Effect |
+|-----------|:---:|--------:|--------|
+| Standard Bridge | 1 | 20 | Required for ship operation |
+| Thruster Array | 1 | 50 | 20 thrust → gravity rating 2.0 |
+| Commercial Sublight Engine | 1 | 60 | 1.0 efficiency (enables movement) |
+| Cargo Bay | 5 | 200 | 500 ST cargo capacity |
+| Crew Quarters | 1 | 30 | 20 crew capacity, 20 life support |
+| Basic Sensor Array | 1 | 20 | Sensor rating 5 |
+| Jump Drive Mk1 | 1 | 120 | Jump range 5, costs 150 OC |
+| **Total** | | **500/500** | |
+
+Ship stats like cargo capacity, sensor rating, life support, and gravity rating are all derived from your installed components. To upgrade one stat, you may need to remove a component to free ST space — for example, removing a Cargo Bay (freeing 40 ST) to install a Deep Space Scanner.
+
+Your ship report shows a full breakdown of all installed components with their stats.
 
 ## Your Identifiers
 
 | Identifier | Visibility | Purpose |
 |------------|-----------|---------|
-| **Account Number** | Secret — only you and the GM know it | Validates your orders. Never shown in reports or scans. |
-| **Prefect ID** | Public — other players can discover it | Your in-game identity for diplomacy and contacts. |
-| **Ship ID** | Public — visible on scans | Identifies your ship on the map. |
+| **Account Number** | Secret — only you and the GM know it | Validates your orders |
+| **Prefect ID** | Public — discoverable by other players | Your in-game identity |
+| **Ship ID** | Public — visible on scans | Identifies your ship |
 
 ## Submitting Orders
 
-Orders can be submitted as YAML or plain text files. Both formats require your ship ID and account number.
+Orders can be submitted as YAML or plain text files.
 
 ### YAML Format
 ```yaml
@@ -51,208 +70,146 @@ BUY 45687590 100101 50
 UNDOCK
 ```
 
-Orders are processed in sequence. If an order fails (e.g. you try to dock but aren't at the base's location), that order is dropped and the next one executes. If you run out of OC, remaining orders carry forward to next turn as overflow.
+Orders are processed in sequence. Failed orders are dropped. If you run out of OC, remaining orders carry forward to next turn as overflow.
 
 ## Operational Cycles (OC)
 
-*Operational Cycles (OC)* measure command throughput — crew coordination, power allocation, and shipboard systems availability during a turn. Every action costs OC. Your ship starts each turn with 300 OC. Once you run out, remaining orders carry forward to next turn automatically.
+Every action costs OC. Your ship starts each turn with 300 OC.
 
 | Command | Base OC Cost | Description |
 |---------|-------------|-------------|
-| **MOVE** | 2 per step | Move one grid square toward a target coordinate |
-| **LOCATIONSCAN** | 20 | Scan the area around your current position |
-| **SYSTEMSCAN** | 20 | Produce a full system map |
-| **ORBIT** | 10 | Enter orbit around a celestial body |
-| **DOCK** | 30 | Dock at a starbase (must be at same location) |
+| **MOVE** | 2 per step | Move one grid square toward a coordinate |
+| **LOCATIONSCAN** | 20 | Scan nearby area |
+| **SYSTEMSCAN** | 20 | Full system map |
+| **ORBIT** | 10 | Enter orbit around a body |
+| **DOCK** | 30 | Dock at a starbase |
 | **UNDOCK** | 10 | Leave a starbase |
-| **LAND** | 20 | Land on a planet surface at specific coordinates |
-| **TAKEOFF** | 20 | Take off from a planet surface back to orbit |
-| **SURFACESCAN** | 20 | Scan the surface of the planet you're landed on |
-| **JUMP** | 60 | Jump to a linked star system via hyperspace |
-| **MAKEOFFICER** | 10 | Promote a crew member to officer |
-| **BUY / SELL** | 0 | Trade at a starbase market (must be docked) |
-| **GETMARKET** | 0 | View market prices at a starbase (must be docked) |
-| **MESSAGE** | 0 | Send a message to any ship, base, or prefect |
-| **MODERATOR** | 0 | Submit a free-text request to the GM |
-| **WAIT** | variable | Wait a specific number of OC |
-| **RENAMESHIP** | 0 | Rename your ship |
-| **RENAMEBASE** | 0 | Rename a starbase you own |
-| **RENAMEPREFECT** | 0 | Rename your prefect |
-| **RENAMEOFFICER** | 0 | Rename an officer on your ship |
-| **CHANGEFACTION** | 0 | Request a faction change (GM-moderated) |
-| **CLEAR** | 0 | Cancel all overflow orders from previous turns |
+| **LAND** | 20 | Land on a planet surface |
+| **TAKEOFF** | 20 | Take off to orbit |
+| **SURFACESCAN** | 20 | Scan planet surface |
+| **JUMP** | 150 | Jump to a linked star system |
+| **MAKEOFFICER** | 10 | Promote a crew member |
+| **INSTALL** | 10 | Install a component from cargo |
+| **UNINSTALL** | 10 | Uninstall a component to cargo |
+| **SCRAP** | 0 | Scrap a component from cargo |
+| **BUY / SELL** | 0 | Trade at market (docked) |
+| **GETMARKET** | 0 | View prices (docked) |
+| **MESSAGE** | 0 | Send message to any position |
+| **MODERATOR** | 0 | Free-text request to GM |
+| **WAIT** | variable | Wait a number of OC |
+| **RENAMESHIP/BASE/PREFECT/OFFICER** | 0 | Rename things |
+| **CHANGEFACTION** | 0 | Request faction change |
+| **CLEAR** | 0 | Cancel overflow orders |
 
 ## Command Reference
 
 ### Movement
 
-**MOVE** `<coordinate>` — Move toward a grid coordinate (e.g. `MOVE F10`). The ship pathfinds step by step, costing 2 OC per square. Coordinates use letters A-Y for columns and numbers 01-25 for rows.
+**MOVE** `<coordinate>` — Move toward a grid coordinate (e.g. `MOVE F10`). Costs 2 OC per square. Ships without a Sublight Engine cannot move.
 
-**JUMP** `<system_id>` — Jump to another star system. Costs 60 OC. Requirements: not docked/landed/orbiting, at least 10 squares from the primary star, and a hyperspace link must exist between systems.
+**JUMP** `<system_id>` — Jump to another star system. Requires a Jump Drive. Cost depends on installed drive (Mk1: 150 OC). Must be at least 10 squares from the primary star.
 
 ### Scanning
 
-**LOCATIONSCAN** — Shows objects near your position (ships, starbases, celestial bodies) and basic details about nearby contacts.
-
-**SYSTEMSCAN** — Produces a full 25×25 ASCII map of the current star system showing all known objects.
-
-**SURFACESCAN** — When landed on a planet, shows the terrain grid, surface ports, and outposts.
+**LOCATIONSCAN** — Shows objects near your position. **SYSTEMSCAN** — Full 25×25 system map. **SURFACESCAN** — Planet terrain (must be landed).
 
 ### Orbital & Docking
 
-**ORBIT** `<body_id>` — Enter orbit around a planet or moon. You must be at the same grid coordinates.
-
-**DOCK** `<base_id>` — Dock at a starbase. You must be at the same location. Docking enables trading (BUY/SELL/GETMARKET).
-
-**UNDOCK** — Leave the starbase you're docked at.
-
-**LAND** `<body_id> <x> <y>` — Land on a planet surface at grid coordinates. You must be orbiting the body.
-
-**TAKEOFF** — Return to orbit from a planet surface.
+**ORBIT** `<body_id>` · **DOCK** `<base_id>` · **UNDOCK** · **LAND** `<body_id> <x> <y>` · **TAKEOFF**
 
 ### Trading
 
-**GETMARKET** `<base_id>` — View current prices, stock, and demand at a starbase. Must be docked.
-
-**BUY** `<base_id> <item_id> <quantity>` — Buy items from the base market. If you request more than available stock or more than your cargo hold can fit, the order is capped to the maximum possible (not rejected).
-
-**SELL** `<base_id> <item_id> <quantity>` — Sell items to the base market. Capped to available demand.
-
-YAML format for trades:
-```yaml
-- BUY: {base: 45687590, item: 100101, qty: 50}
-- SELL: {base: 45687590, item: 100103, qty: 25}
-```
+**GETMARKET** `<base_id>` — View prices. **BUY** `<base_id> <item_id> <quantity>` — Buy items (capped to available stock/cargo). **SELL** `<base_id> <item_id> <quantity>` — Sell items.
 
 ### Crew & Officers
 
-**MAKEOFFICER** `<ship_id> <crew_type_id> [name]` — Promote one crew cargo item to an officer. Consumes 1 crew from cargo, creates a new Ensign. Optionally provide a name, otherwise one is generated randomly.
+**MAKEOFFICER** `<ship_id> <crew_type_id> [name]` — Promote one crew to officer.
+
+### Ship Components
+
+Components can be bought at any starbase at catalogue prices, installed from cargo, uninstalled back to cargo, or scrapped. Components in cargo take up cargo space equal to their ST cost.
+
+**BUY with INSTALL** — Buy a component and install it directly, bypassing cargo. Checks ST capacity.
 
 ```
-MAKEOFFICER 52589098 401 Marcus Varro    # Named officer
-MAKEOFFICER 52589098 401                 # Random name
+BUY 45687590 152 1 INSTALL         # Buy + install a Deep Space Scanner
 ```
 
-### Messaging
+YAML: `{base: 45687590, item: 152, qty: 1, install: true}`
 
-**MESSAGE** `<target_id> <text>` — Send a free-text message to any position (ship, starbase, or prefect). The message is delivered in the recipient's next between-turn report. Messages to starbases are routed to the owning prefect.
+Without the INSTALL flag, bought components go to cargo as normal items.
 
-```
-MESSAGE 78901234 Greetings captain, interested in a trade alliance?
-```
-
-### Moderator Actions
-
-**MODERATOR** `<text>` — Submit a free-text request directly to the Game Master. This is the way to ask for anything that isn't covered by a standard order: ship upgrades, special actions, rule clarifications, narrative requests, or anything else that requires GM adjudication.
+**INSTALL** `<component_id> [quantity]` — Install a component from cargo into the ship. Costs 10 OC. Checks that total installed ST doesn't exceed ship capacity (`ship_size × 50`).
 
 ```
-MODERATOR Can I retrofit my ship with better sensors? Willing to pay 500 cr.
-MODERATOR I want to attempt to negotiate passage through the blockade.
-MODERATOR Requesting permission to establish a mining outpost on Tartarus IV.
+INSTALL 130 2          # Install 2× Cargo Bay from cargo
+INSTALL 152            # Install 1× Deep Space Scanner
 ```
 
-YAML format:
-```yaml
-- MODERATOR: Can I retrofit my ship with better sensors?
-- MODERATOR: {text: "I want to negotiate passage through the blockade."}
-```
-
-When your orders include a MODERATOR request, the turn **automatically pauses** before resolution. The GM reviews your request, writes a response, and then the turn continues. The GM's response appears in your ship report alongside the order result:
+**UNINSTALL** `<component_id> [quantity]` — Remove an installed component to cargo. Costs 10 OC. Checks cargo space is available. Note: uninstalling cargo bays reduces your cargo capacity, so make sure you have room.
 
 ```
-MODERATOR REQUEST: "Can I retrofit my ship with better sensors?"
-  GM RESPONSE: "Approved! Advanced Sensors installed. 500 cr deducted."
+UNINSTALL 130 1        # Uninstall 1× Cargo Bay to cargo
 ```
 
-Because the turn pauses before resolution, the GM can make any necessary game-state changes (editing your ship, adjusting credits, placing items) before your remaining orders execute. This means a MODERATOR request early in your order list can affect the outcome of later orders.
-
-You can include multiple MODERATOR requests in a single turn, and they can appear anywhere in your order sequence. The turn won't proceed until the GM has responded to all of them.
-
-### Renaming
-
-All rename commands are free (0 OC):
+**SCRAP** `<component_id> [quantity]` — Destroy a component from cargo. Free (0 OC). The component is permanently lost.
 
 ```
-RENAMESHIP 52589098 The Indomitable
-RENAMEBASE 45687590 Varro Station
-RENAMEPREFECT 24162199 Lord Varro
-RENAMEOFFICER 52589098 1 Helena Blackwood    # 1 = crew number from report
+SCRAP 130 1            # Destroy 1× Cargo Bay from cargo
+```
+
+**Typical refit sequence** (while docked at a starbase):
+```
+UNINSTALL 130 1              # Free 40 ST internal by removing a Cargo Bay
+BUY 45687590 152 1 INSTALL   # Buy + install Deep Space Scanner (40 ST, 1800 cr)
+SCRAP 130 1                  # Destroy the uninstalled Cargo Bay from cargo
+```
+
+### Messaging & Moderator
+
+**MESSAGE** `<target_id> <text>` — Send a message to any ship, base, or prefect.
+
+**MODERATOR** `<text>` — Submit a free-text request to the GM. The turn auto-pauses for GM review. The response appears in your ship report. Use for anything non-standard: ship upgrades, special actions, negotiations, rule questions.
+
+```
+MODERATOR Can I refit my ship with a Deep Space Scanner? Willing to pay 1800 cr.
 ```
 
 ### Faction Changes
 
-**CHANGEFACTION** `<faction_id> [reason]` — Request to join a different faction. This is free (0 OC) but requires GM approval. Only one pending request at a time.
-
-```
-CHANGEFACTION 12 Want to focus on trading routes
-```
-
-The GM will approve or deny the request, and you'll be notified in your next between-turn report.
-
-## Overflow Orders
-
-If you run out of OC mid-turn, your remaining orders automatically carry forward to next turn. They run before your new orders. Use **CLEAR** to cancel all overflow orders if you change your mind.
+**CHANGEFACTION** `<faction_id> [reason]` — Request to join a different faction (GM-moderated).
 
 ## Crew & Efficiency
 
-Your ship has a crew requirement based on hull size (1 crew per 5 hull). If you're undermanned, all OC costs increase:
+Your ship needs crew based on its size (1 crew per size point). If undermanned, OC costs increase proportionally. Officers count as crew but cost 5 cr/week vs 1 cr/week for regular crew.
 
-```
-Efficiency = crew_count / crew_required × 100%
-OC penalty = (100% - efficiency)
-
-Example: 8 crew out of 10 required = 80% efficiency = +20% OC penalty
-  MOVE: 2 OC → 3 OC per step
-  LOCATIONSCAN: 20 OC → 24 OC
-  JUMP: 60 OC → 72 OC
-```
-
-Officers count as crew for efficiency purposes but cost more in wages (5 cr/week vs 1 cr/week for regular crew). Life support capacity (default 20) caps total crew + officers aboard.
-
-## Cargo & Stellar Tons (ST)
-
-*One Stellar Ton (ST)* represents the standardised cargo and structural load metric used across known space. Ship cargo capacity and item weights are expressed in ST. Your Light Trader has 500 ST capacity; trade goods have varying mass per unit (e.g. crew weigh 1 ST each).
+Life support capacity (from Crew Quarters) caps total crew + officers aboard.
 
 ## Trading Economy
 
-Starbases have markets with rotating prices on a 4-week cycle. Each base specialises in one good (cheap to buy), trades another at average price, and demands a third (expensive to buy from you). This creates profitable circular trade routes.
-
-**Human Crew** is a special fixed-price item available at all starbases: buy at 5 cr, sell at 3 cr, 100 stock per cycle.
-
-Markets refresh every 4 weeks. Stock depletes as players buy, demand depletes as players sell. GETMARKET shows a countdown to the next refresh.
+Starbases have markets with rotating prices on a 4-week cycle. Each base specialises in one good (cheap), trades another at average, and demands a third (expensive). Human Crew is fixed-price at all bases (buy 5 cr, sell 3 cr).
 
 ## Factions
 
-Every prefect belongs to a faction. New players start in the **Stellar Training Academy (STA)**. Available factions:
-
-| ID | Abbrev | Name | Description |
-|----|--------|------|-------------|
-| 0 | IND | Independent | No faction affiliation |
-| 11 | STA | Stellar Training Academy | Default starting faction |
-| 12 | MTG | Merchant Trade Guild | Traders and commerce captains |
-| 13 | IMP | Imperial Navy | Military arm of the Terran Empire |
-| 14 | FRN | Frontier Coalition | Settlers and explorers |
-| 15 | SYN | Syndicate | Smugglers, pirates, and opportunists |
-
-Your faction prefix appears on your ship name in reports and scans (e.g. "STA Boethius", "MTG Resolute").
+| ID | Abbrev | Name |
+|----|--------|------|
+| 0 | IND | Independent |
+| 11 | STA | Stellar Training Academy (default) |
+| 12 | MTG | Merchant Trade Guild |
+| 13 | IMP | Imperial Navy |
+| 14 | FRN | Frontier Coalition |
+| 15 | SYN | Syndicate |
 
 ## Reading Your Reports
 
-Each turn you receive two reports:
+**Ship Report** — Order results, status block (size, ST capacity, components breakdown), navigation, crew, cargo, and contacts.
 
-**Ship Report** — Detailed results of every order you submitted, plus a full status block showing your ship's position, hull, cargo, crew, officers, and installed systems. If you submitted a MODERATOR request, the GM's response is shown inline with your order results.
+**Prefect Report** — Finances, all ships, between-turn messages, wage deductions, faction notifications.
 
-**Prefect Report** — Overview of your prefect's finances, all ships under your command, and a between-turn section showing wage deductions, incoming messages, and faction change notifications.
+## Tips
 
-Both are available as plain text (.txt) and PDF (.pdf).
-
-## Tips for New Players
-
-1. Start by scanning — `LOCATIONSCAN` and `SYSTEMSCAN` reveal the map around you.
-2. Dock at a starbase and check prices with `GETMARKET`.
-3. Buy cheap goods at one base, sell dear at another — look for the produce/demand pattern.
-4. Keep your ship crewed — undermanning increases all OC costs.
-5. Promote an officer or two — they're worth the extra wages for their crew factors.
-6. Send messages to other players via `MESSAGE` to negotiate trades or alliances.
-7. Use `MODERATOR` to ask the GM for anything non-standard — upgrades, special actions, narrative requests.
-8. Use `CLEAR` if your overflow orders from last turn no longer make sense.
+1. Scan first — `LOCATIONSCAN` and `SYSTEMSCAN` reveal the map.
+2. Trade between bases — buy where goods are produced, sell where they're demanded.
+3. Keep your ship crewed — undermanning increases all OC costs.
+4. Use `MODERATOR` for anything non-standard — the GM can modify your ship between orders.
+5. Your ship is fully loaded at 500/500 ST — to add components, you'll need to remove something first.

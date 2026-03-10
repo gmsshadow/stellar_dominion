@@ -1,5 +1,8 @@
 # Stellar Dominion - Sample Orders (Alice)
 #
+# A typical early-game trading run: scan, navigate to a base,
+# dock, buy trade goods, undock, and head to the next system.
+#
 # Submit with:
 #   python pbem.py submit-orders samples/alice_orders.yaml --email alice@example.com
 #
@@ -10,8 +13,11 @@ game: OMICRON101
 account: ACCOUNT_NUMBER
 ship: SHIP_ID
 orders:
-  - MOVE: M13
-  - LOCATIONSCAN: {}
-  - MOVE: H04
-  - ORBIT: 247985
-  - DOCK: 45687590
+  - LOCATIONSCAN                         # 20 OC - scan nearby area
+  - MOVE: H04                            # 2 OC/square - head to Orion (planet)
+  - ORBIT: 247985                        # 10 OC - enter orbit
+  - DOCK: 45687590                       # 30 OC - dock at Citadel Station
+  - GETMARKET: 45687590                  # 0 OC - check prices
+  - BUY: {base: 45687590, item: 100102, qty: 50}  # 0 OC - buy Computer Cores
+  - UNDOCK                               # 10 OC - leave base
+  - MESSAGE: 78901234 Heading to Meridian with cargo, anyone need supplies?

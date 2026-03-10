@@ -12,22 +12,31 @@ Below are the welcome reports for a new player "Alice".
 
 ================================================================================
 
-=== BEGIN REPORT ===
+                             === BEGIN REPORT ===                             
 
-                               Stellar Dominion
-                              PBEM Strategy Game
+                               Stellar Dominion                               
+                              PBEM Strategy Game                              
 
-                         STA SHIP Boethius (66232320)
-                           Account: 35846634
+                         STA SHIP Resolute (94669139)                         
+                              Account: 13231510                               
 
-Printed on 14 February 2026, Star Date 500.1
+Printed on 09 March 2026, Star Date 500.1
 
 ------------------------------------------------------------------------------
-                             BETWEEN TURN REPORT
+                             BETWEEN TURN REPORT                              
 ------------------------------------------------------------------------------
 
 WELCOME TO STELLAR DOMINION
 ===========================
+
+Boarding the ship the captain smiles at you warmly. "She's a fine ship
+to be sure," he states, as you watch a panel on the all behind him
+fall off, revealing freyed wiring. He looks back at you slighlty more
+nervous now. "Well, she might not be the newest ship on the market,
+but she'll get you where you want to go.
+
+This perhaps wasn't the state of the art vessel you had always dreamed
+of, but at least it was a start.                                                                                                                                                                               
 
 You have been assigned command of this vessel. Your ship has completed
 an initial system scan -- see the TURN REPORT below for what was found.
@@ -51,114 +60,130 @@ into a YAML file and submit it as your first turn:
 
 AVAILABLE COMMANDS
 -------------------
-MOVE <coord>                  Move to a grid square (e.g. M13, H04). Costs 2 OC/square.
-LOCATIONSCAN                  Scan nearby space. Costs 20 OC.
-SYSTEMSCAN                    Produce a full system map. Costs 20 OC.
-JUMP <system_id>              Jump to a linked star system. Costs 150 OC.
-ORBIT <body_id>               Enter orbit of a planet, moon, or gas giant. Costs 10 OC.
-DOCK <base_id>                Dock at a starbase (must be at same location). Costs 30 OC.
-UNDOCK                        Leave a starbase. Costs 10 OC.
-LAND <body_id> <x> <y>        Land on a planet surface at coordinates. Costs 20 OC.
-SURFACESCAN                   Scan terrain at your landing site. Costs 20 OC.
-TAKEOFF                       Take off from surface back to orbit. Costs 20 OC.
-GETMARKET <base_id>           View market prices at a starbase. Costs 10 OC.
-BUY <base_id> <item> <qty>    Buy cargo from a market (must be docked). Costs 10 OC.
-SELL <base_id> <item> <qty>   Sell cargo to a market (must be docked). Costs 10 OC.
-MESSAGE <target_id> <text>    Send a message to another position. Costs 10 OC.
-MAKEOFFICER <ship> <type> <name>  Promote a crew member to officer. Costs 10 OC.
-CHANGEFACTION <faction_id>    Request a faction change (GM-moderated). Costs 0 OC.
-MODERATOR <text>              Submit a free-text request to the GM. Costs 0 OC.
-WAIT <oc>                     Wait and do nothing for a number of Operational Cycles.
-CLEAR                         Cancel all overflow orders from the previous turn.
+MOVE <coord>       Move to a grid square (e.g. M13, H04). Costs 2 OC/square.
+LOCATIONSCAN       Scan nearby space. Costs 20 OC.
+SYSTEMSCAN         Produce a full system map. Costs 20 OC.
+ORBIT <body_id>    Enter orbit of a planet, moon, or gas giant. Costs 10 OC.
+DOCK <base_id>     Dock at a starbase (must be at same location). Costs 30 OC.
+UNDOCK             Leave a starbase. Costs 10 OC.
+LAND <body_id> <x> <y>  Land at surface coordinates (must be orbiting). Costs 20 OC.
+TAKEOFF            Take off from planet surface to orbit. Costs 20 OC.
+SURFACESCAN        Produce a terrain map (must be orbiting or landed). Costs 20 OC.
+WAIT <oc>          Wait and do nothing for a number of Operational Cycles.
+JUMP <system_id>   Jump to a linked star system. Costs 60 OC. Must be 10+ squares from star.
+
+TRADING (must be docked)
+-------------------------
+GETMARKET <base_id>                 View buy/sell prices at a base market.
+BUY <base_id> <item_id> <qty>       Buy items from a base market.
+SELL <base_id> <item_id> <qty>      Sell items to a base market.
+
+Trade items:  100101 Tartarus Precious Metals  |  100102 Orion Computer Cores  |  100103 Meridian Food Supplies
+YAML example: - BUY: "45687590 100101 10"
 
 Your ship has 300 OC per turn. Unspent Operational Cycles are lost at end of turn.
 Submit orders by email or file -- see your game moderator for details.
 
-Good luck, Commander.
+Good luck, Commander.    
 
 ------------------------------------------------------------------------------
-                                 TURN REPORT
+                                 TURN REPORT                                  
 ------------------------------------------------------------------------------
 
 Starting Location:
-    I06 - Omicron System (101)
+    P15 - Omicron System (101)
 
 >OC 300: SYSTEMSCAN
     System scan complete.
-        A  B  C  D  E  F  G  H  I  J  K  L  M  N  O  P  Q  R  S  T  U  V  W  X  Y
-    01  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .
-    02  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .
-    03  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .
-    04  .  .  .  .  .  .  .  O  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .
-    05  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .
-    06  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .
-    07  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .
-    08  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  O  .  .  .  .  .  .  .
-    09  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .
-    10  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .
-    11  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .
-    12  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .
-    13  .  .  .  .  .  .  .  .  .  .  .  .  *  .  .  .  .  .  .  .  .  .  .  .  .
-    14  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .
-    15  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .
-    16  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .
-    17  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .
-    18  .  .  .  G  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .
-    19  .  .  .  .  .  o  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .
-    20  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  O  .  .  .  .  .
-    21  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .
-    22  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .
-    23  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .
-    24  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .
-    25  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .
+    A B C D E F G H I J K L M N O P Q R S T U V W X Y
+    01 . . . . . . . . . . . . . . . . . . . . . . . . .
+    02 . . . . . . . . . . . . . . . . . . . . . . . . .
+    03 . . . . . . . . . . . . . . . . . . . . . . . . .
+    04 . . . . . . . O . . . . . . . . . . . . . . . . .
+    05 . . . . . . . . . . . . . . . . . . . . . . . . .
+    06 . . . . . . . . . . . . . . . . . . . . . . . . .
+    07 . . . . . . . . . . . . . . . . . . . . . . . . .
+    08 . . . . . . . . . . . . . . . . . O . . . . . . .
+    09 . . . . . . . . . . . . . . . . . . . . . . . . .
+    10 . . . . . . . . . . . . . . . . . . . . . . . . .
+    11 . . . . . . . . . . . . . . . . . . . . . . . . .
+    12 . . . . . . . . . . . . . . . . . . . . . . . . .
+    13 . . . . . . . . . . . . * . . . . . . . . . . . .
+    14 . . . . . . . . . . . . . . . . . . . . . . . . .
+    15 . . . . . . . . . . . . . . . . . . . . . . . . .
+    16 . . . . . . . . . . . . . . . . . . . . . . . . .
+    17 . . . . . . . . . . . . . . . . . . . . . . . . .
+    18 . . . . G . . . . . . . . . . . . . . . . . . . .
+    19 . . . . . o . . . . . . . . . . . . . . . . . . .
+    20 . . . . . . . . . . . . . . . . . . . O . . . . .
+    21 . . . . . . . . . . . . . . . . . . . . . . . . .
+    22 . . . . . . . . . . . . . . . . . . . . . . . . .
+    23 . . . . . . . . . . . . . . . . . . . . . . . . .
+    24 . . . . . . . . . . . . . . . . . . . . . . . . .
+    25 . . . . . . . . . . . . . . . . . . . . . . . . .
 
-|- Command Report ------------------------------------------------------------|
+|------------------------------ Command Report ------------------------------|
 |                                                                            |
-| Name: STA Boethius (66232320)         Faction: STA - Stellar Training Academy|
-| Wealth: 10,000 Credits                Ownership: Player owned              |
-| Efficiency: 100%                      OCs left: 280                        |
+| Name: STA Resolute (94669139)      Faction: Stellar Training Academy       |
+| Wealth: 10,000 Credits             Ownership: Player owned                 |
+| Efficiency: 100%                   OCs left: 280                           |
 |                                                                            |
-| Design: Explorer Mk I Class Scout                                          |
-| Size: 50 (Light Hull)                 Integrity: 100%                      |
+| Design: Light Trader MK I                                                  |
+| Size: 10 (Commercial)              Integrity: 100%                         |
+| Internal: 500/500 ST               Gravity Rating: 2.0                     |
 |                                                                            |
-|- Navigation Report ---------------------------------------------------------|
+|---------------------------- Navigation Report -----------------------------|
 |                                                                            |
 | LOCATION                                                                   |
-| I06 - Omicron System (101)                                                 |
-| Omicron (101) - {I06}                                                      |
+| P15 - Omicron System (101)                                                 |
+| Omicron (101) - {P15}                                                      |
 |                                                                            |
-| Sensor Rating: 20%                    Cargo: 0/500 ST                      |
+| Sensor Rating: 5%                  Cargo: 0/500 ST                         |
 |                                                                            |
-|- Crew Report ---------------------------------------------------------------|
+|------------------------------- Crew Report --------------------------------|
 |                                                                            |
 | OFFICERS                                                                   |
-| [1] Captain Li Chen                   [ Navigation 0 Xp ] +8 CF  5 cr/wk  |
+| [1] Captain Thea Cruz [ Navigation 0 Xp ] +8 CF 5 cr/wk                    |
 |                                                                            |
 | PREFECT                                                                    |
-| Li Chen (79063795)                                                         |
+| Erik Voss (82996337)                                                       |
 |                                                                            |
-| Crew: 15/20                           Required: 10                         |
+| Crew: 16/20                        Required: 10                            |
 |                                                                            |
-|- Cargo Report --------------------------------------------------------------|
+|------------------------------- Cargo Report -------------------------------|
 |                                                                            |
 | Cargo: 0/500 ST                                                            |
 | Cargo hold empty.                                                          |
 |                                                                            |
-|- Space Combat Report -------------------------------------------------------|
+|--------------------------- Space Combat Report ----------------------------|
 |                                                                            |
 | No combat this turn.                                                       |
 |                                                                            |
-|- Installed Items -----------------------------------------------------------|
+|----------------------------- Ship Components ------------------------------|
+| Internal Capacity: 500/500 ST (0 ST free)                                  |
 |                                                                            |
-|        1  Bridge (100) - 50 ST                                             |
-|        1  Sensor (103) - 10 ST                                             |
-|        3  ISR Type 2 Engines (155) - 10 ST                                 |
-|        1  Jump Drive - Basic (174) - 50 ST                                 |
-|        2  Thrust Engine (160) - 20 ST                                      |
-|        2  Quarters (131) - 25 ST                                           |
-|        5  Cargo Hold (180) - 100 ST                                        |
+|   COMMAND                                                                  |
+|     [100] Standard Bridge                    20 ST                         |
 |                                                                            |
-|- Contacts ------------------------------------------------------------------|
+|   THRUSTERS                                                                |
+|     [110] Thruster Array                     50 ST (20 thrust)             |
+|                                                                            |
+|   PROPULSION                                                               |
+|     [120] Commercial Sublight Engine         60 ST (1.0 eff)               |
+|                                                                            |
+|   CARGO SYSTEMS                                                            |
+|     [130] Cargo Bay                    ×5  200 ST (500 ST cargo)           |
+|                                                                            |
+|   CREW & LIFE SUPPORT                                                      |
+| [140] Crew Quarters 30 ST (20 crew cap, 20 life sup)                       |
+|                                                                            |
+|   SENSORS                                                                  |
+|     [150] Basic Sensor Array                 20 ST (5 rating)              |
+|                                                                            |
+|   JUMP DRIVES                                                              |
+|     [160] Jump Drive Mk1                    120 ST (range 5, 150 OC)       |
+|                                                                            |
+|--------------------------------- Contacts ---------------------------------|
 |                                                                            |
 | - Star Omicron Prime (101) at M13                                          |
 | - Moon Callyx (88341) at F19                                               |
@@ -169,35 +194,42 @@ Starting Location:
 | - Base Tartarus Depot (12340001) at R08                                    |
 | - Base Citadel Station (45687590) at H04                                   |
 | - Base Meridian Waystation (78901234) at T20                               |
+| - Ship STA Boethius (65473109) at I06                                      |
 |                                                                            |
-|- Overflow Orders -----------------------------------------------------------|
+|----------------------------- Overflow Orders ------------------------------|
 |                                                                            |
 | No overflow orders.                                                        |
 |                                                                            |
 |----------------------------------------------------------------------------|
 
-=== END REPORT ===
-
+                              === END REPORT ===                              
 ================================================================================
   The above was the SHIP report. Below is the PREFECT (player overview) report.
 ================================================================================
 
-=== BEGIN REPORT ===
+                             === BEGIN REPORT ===                             
 
-                               Stellar Dominion
-                              PBEM Strategy Game
+                               Stellar Dominion                               
+                              PBEM Strategy Game                              
 
-                        STA PREFECT Li Chen (79063795)
-                           Account: 35846634
+                       STA PREFECT Erik Voss (82996337)                       
+                              Account: 13231510                               
 
-Printed on 14 February 2026, Star Date 500.1
+Printed on 09 March 2026, Star Date 500.1
 
 ------------------------------------------------------------------------------
-                             BETWEEN TURN REPORT
+                             BETWEEN TURN REPORT                              
 ------------------------------------------------------------------------------
 
 WELCOME TO STELLAR DOMINION
 ===========================
+
+They warned you at the Stellar Academy that is was a big universe out
+there. Looks like it was time to find out. The Academy also offered                                                        
+for you to use their designation (STA) on your ship for now, as a mark
+of safety in your first steps. You know you'll have to join another 
+faction at some point, but for now you can get out own your own and
+explore.                                                                                    
 
 This is your Prefect report. It provides an overview of your position:
 your finances, your fleet, and everything you have discovered so far.
@@ -207,40 +239,40 @@ Use it to track your credits, monitor your ships, and review contacts.
 
 Your account number is SECRET -- never share it with other players.
 Your prefect ID and ship IDs are public and may be discovered by
-other players through scanning.
+other players through scanning.    
 
 ------------------------------------------------------------------------------
-                                 TURN REPORT
+                                 TURN REPORT                                  
 ------------------------------------------------------------------------------
 
 ------------------------------------------------------------------------------
-                                PLAYER REPORTS
+                                PLAYER REPORTS                                
 ------------------------------------------------------------------------------
-|- Prefect Report ------------------------------------------------------------|
+|------------------------------ Prefect Report ------------------------------|
 |                                                                            |
-| Name: Li Chen (79063795)              Faction: STA - Stellar Training Academy|
-| Rank: Citizen                         Influence: 0                         |
+| Name: Erik Voss (82996337)         Faction: Stellar Training Academy       |
+| Rank: Citizen                      Influence: 0                            |
 | Created: 500.1                                                             |
 |                                                                            |
 | LOCATION                                                                   |
-| Aboard STA Boethius (66232320) - Omicron System (101)                      |
+| Aboard STA Resolute (94669139) - Omicron System (101)                      |
 |                                                                            |
-|- Financial Report ----------------------------------------------------------|
+|----------------------------- Financial Report -----------------------------|
 |                                                                            |
-| POSITION                                   INCOME  EXPENSES       NET      |
-| STA Boethius (66232320)                        0         0         0       |
-|                                           -------   -------   -------      |
-|                                                 0         0         0      |
+| POSITION                                 INCOME  EXPENSES       NET        |
+| STA Resolute (94669139)                      0         0         0         |
+|                                         -------   -------   -------        |
+|                                               0         0         0        |
 |                                                                            |
 | Wealth: 10,000 Credits                                                     |
 |                                                                            |
-|- Ships ---------------------------------------------------------------------|
+|---------------------------------- Ships -----------------------------------|
 |                                                                            |
-| STA Boethius (66232320)            Omicron (101) I06                       |
-|    Explorer Mk I Class Scout       OC: 280/300  Size: 50 (Light Hull)      |
-|    Crew: 15/20                     Required: 10                            |
+| STA Resolute (94669139)            Omicron (101) P15                       |
+|    Light Trader MK I               OC: 280/300  Size: 10 (Commercial)      |
+|    Crew: 16/20                     Required: 10                            |
 |                                                                            |
-|- Known Contacts ------------------------------------------------------------|
+|------------------------------ Known Contacts ------------------------------|
 |                                                                            |
 | BASES:                                                                     |
 |   Citadel Station (45687590) at H04                                        |
@@ -254,13 +286,14 @@ other players through scanning.
 |   Meridian (412003) at T20                                                 |
 |   Orion (247985) at H04                                                    |
 |   Tartarus (301442) at R08                                                 |
+| SHIPS:                                                                     |
+|   STA Boethius (65473109) at I06                                           |
 | STARS:                                                                     |
 |   Omicron Prime (101) at M13                                               |
 |                                                                            |
 |----------------------------------------------------------------------------|
 
-=== END REPORT ===
-
+                              === END REPORT ===                              
 ================================================================================
                          END OF SAMPLE REPORTS
 ================================================================================
@@ -274,3 +307,5 @@ NOTES:
 - To land, you must first ORBIT the planet or moon.
 - Orders are submitted as YAML or plain text files with your secret account number.
 - Overflow orders carry forward automatically; submit CLEAR as your first order to cancel them.
+- Ship stats (cargo, sensors, life support, gravity) are derived from installed components.
+- Your starting ship uses 500/500 ST — to add components, remove something first.

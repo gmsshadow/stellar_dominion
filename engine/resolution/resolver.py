@@ -32,6 +32,9 @@ TU_COSTS = {
     'JUMP': 60,        # hyperspace jump between systems
     'MESSAGE': 0,      # sending messages is free
     'MAKEOFFICER': 10, # promoting crew takes some time
+    'INSTALL': 10,     # installing a component
+    'UNINSTALL': 10,   # removing a component
+    'SCRAP': 0,        # scrapping cargo
     'RENAMESHIP': 0,
     'RENAMEBASE': 0,
     'RENAMEPREFECT': 0,
@@ -257,7 +260,7 @@ class TurnResolver:
                     for d in detected:
                         loc = f"{d['col']}{d['row']:02d}"
                         enc_entry = (loc, d['name'], d['id'],
-                                     d.get('hull_count', '?'),
+                                     d.get('ship_size', d.get('hull_count', '?')),
                                      d.get('hull_type', ''))
                         if enc_entry not in acc['encounters']:
                             acc['encounters'].append(enc_entry)
@@ -302,7 +305,7 @@ class TurnResolver:
                     for d in detected:
                         det_lines.append(
                             f"        {d['name']} ({d['id']}) "
-                            f"- {{{d.get('hull_count', '?')} {d.get('hull_type', '')}}}"
+                            f"- {{{d.get('ship_size', d.get('hull_count', '?'))} {d.get('hull_type', '')}}}"
                         )
                     result['message'] += (
                         "\n    Detected:\n" + "\n".join(det_lines)
@@ -613,7 +616,7 @@ class TurnResolver:
                 'col': s['grid_col'], 'row': s['grid_row'],
                 'symbol': '@',
                 'ship_class': s['ship_class'],
-                'hull_count': s['hull_count'],
+                'ship_size': s['ship_size'] if 'ship_size' in s.keys() else s['hull_count'], 'hull_count': s['hull_count'],
                 'hull_type': s['hull_type']
             })
 
@@ -758,6 +761,12 @@ class TurnResolver:
             return self._cmd_message(state, params)
         elif cmd == 'MAKEOFFICER':
             return self._cmd_makeofficer(state, params)
+        elif cmd == 'INSTALL':
+            return self._cmd_install(state, params)
+        elif cmd == 'UNINSTALL':
+            return self._cmd_uninstall(state, params)
+        elif cmd == 'SCRAP':
+            return self._cmd_scrap(state, params)
         elif cmd == 'RENAMESHIP':
             return self._cmd_renameship(state, params)
         elif cmd == 'RENAMEBASE':
@@ -1171,7 +1180,7 @@ class TurnResolver:
             lines = ["    Scanned:"]
             for c in dock_contacts:
                 if c['type'] == 'ship':
-                    lines.append(f"        {c['name']} ({c['id']}) - {{{c.get('hull_count', '?')} {c.get('hull_type', 'Hulls')}}}")
+                    lines.append(f"        {c['name']} ({c['id']}) - {{{c.get('ship_size', c.get('hull_count', '?'))} {c.get('hull_type', 'Hulls')}}}")
                 elif c['type'] == 'base':
                     lines.append(f"        {c['name']} ({c['id']})")
             contact_msg = "\n" + "\n".join(lines)
@@ -1441,12 +1450,14 @@ class TurnResolver:
         }
 
     def _cmd_buy(self, state, params):
-        """BUY <base_id> <item_id> <quantity> - buy items from base market."""
+        """BUY <base_id> <item_id> <quantity> [INSTALL] - buy items from base market."""
         tu_before = state['tu']
         base_id = params['base_id']
         item_id = params['item_id']
         quantity = params['quantity']
-        params_str = f"{base_id} {item_id} {quantity}"
+        install = params.get('install', False)
+        install_str = " INSTALL" if install else ""
+        params_str = f"{base_id} {item_id} {quantity}{install_str}"
 
         # Must be docked at this base
         if state['docked_at'] != base_id:
@@ -1456,6 +1467,13 @@ class TurnResolver:
                 'tu_cost': 0, 'success': False,
                 'message': f"Cannot buy: ship is not docked at base {base_id}."
             }
+
+        # Check if item_id is a ship component
+        component = self.conn.execute(
+            "SELECT * FROM ship_components WHERE component_id = ?", (item_id,)
+        ).fetchone()
+        if component:
+            return self._cmd_buy_component(state, params_str, base_id, component, quantity, install)
 
         # Look up item
         item = self.conn.execute(
@@ -2185,6 +2203,423 @@ class TurnResolver:
                         f"[{next_cn}] assigned. [{cost} OC]")
         }
 
+    def _cmd_buy_component(self, state, params_str, base_id, component, quantity, install):
+        """Buy a ship component from a starbase at catalogue base_price."""
+        tu_before = state['tu']
+        comp_id = component['component_id']
+        comp_name = component['name']
+        price_each = component['base_price']
+        st_cost_each = component['st_cost']
+        total_cost = price_each * quantity
+
+        ship = self.get_ship(state['ship_id'])
+        prefect = self.conn.execute(
+            "SELECT * FROM prefects WHERE prefect_id = ?",
+            (ship['owner_prefect_id'],)
+        ).fetchone()
+
+        # Check hull restriction
+        if component['hull_restriction'] and ship['hull_type'].lower() != component['hull_restriction'].lower():
+            return {
+                'command': 'BUY', 'params': params_str,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': False,
+                'message': f"Cannot buy {comp_name}: requires {component['hull_restriction']} hull (ship is {ship['hull_type']})."
+            }
+
+        # Check credits
+        if prefect['credits'] < total_cost:
+            max_afford = int(prefect['credits'] // price_each) if price_each > 0 else 0
+            if max_afford <= 0:
+                return {
+                    'command': 'BUY', 'params': params_str,
+                    'tu_before': tu_before, 'tu_after': state['tu'],
+                    'tu_cost': 0, 'success': False,
+                    'message': f"Cannot buy {comp_name}: costs {price_each} cr each, only {prefect['credits']:.0f} cr available."
+                }
+            quantity = max_afford
+            total_cost = price_each * quantity
+
+        if install:
+            # Install directly — check ST capacity
+            from db.database import get_ship_st_used, get_ship_st_capacity
+            st_used = get_ship_st_used(self.conn, state['ship_id'])
+            st_cap = get_ship_st_capacity(self.conn, state['ship_id'])
+            st_needed = st_cost_each * quantity
+            st_free = st_cap - st_used
+
+            if st_needed > st_free:
+                max_fit = st_free // st_cost_each if st_cost_each > 0 else 0
+                if max_fit <= 0:
+                    return {
+                        'command': 'BUY', 'params': params_str,
+                        'tu_before': tu_before, 'tu_after': state['tu'],
+                        'tu_cost': 0, 'success': False,
+                        'message': f"Cannot buy+install {comp_name}: {st_needed} ST needed, only {st_free} ST free."
+                    }
+                quantity = max_fit
+                total_cost = price_each * quantity
+
+            # Deduct credits
+            self.conn.execute(
+                "UPDATE prefects SET credits = credits - ? WHERE prefect_id = ?",
+                (total_cost, prefect['prefect_id'])
+            )
+
+            # Install component
+            existing = self.conn.execute(
+                "SELECT * FROM installed_items WHERE ship_id = ? AND component_id = ?",
+                (state['ship_id'], comp_id)
+            ).fetchone()
+            if existing:
+                self.conn.execute(
+                    "UPDATE installed_items SET quantity = quantity + ? WHERE item_install_id = ?",
+                    (quantity, existing['item_install_id'])
+                )
+            else:
+                self.conn.execute(
+                    "INSERT INTO installed_items (ship_id, component_id, quantity) VALUES (?, ?, ?)",
+                    (state['ship_id'], comp_id, quantity)
+                )
+
+            # Recalculate ship stats
+            from db.database import recalculate_ship_stats
+            recalculate_ship_stats(self.conn, state['ship_id'])
+            self.conn.commit()
+
+            return {
+                'command': 'BUY', 'params': params_str,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': True,
+                'message': (f"Bought and installed {quantity}x {comp_name} [{comp_id}] "
+                            f"from base {base_id} for {total_cost} cr ({price_each} cr each). "
+                            f"[{st_cost_each * quantity} ST installed]")
+            }
+        else:
+            # Put in cargo — components take st_cost as cargo mass
+            cargo_mass = st_cost_each
+            total_mass = cargo_mass * quantity
+            available = ship['cargo_capacity'] - ship['cargo_used']
+            if total_mass > available:
+                max_fit = available // cargo_mass if cargo_mass > 0 else 0
+                if max_fit <= 0:
+                    return {
+                        'command': 'BUY', 'params': params_str,
+                        'tu_before': tu_before, 'tu_after': state['tu'],
+                        'tu_cost': 0, 'success': False,
+                        'message': f"Cannot buy {comp_name}: {total_mass} ST cargo needed, only {available} ST free."
+                    }
+                quantity = max_fit
+                total_cost = price_each * quantity
+                total_mass = cargo_mass * quantity
+
+            # Deduct credits
+            self.conn.execute(
+                "UPDATE prefects SET credits = credits - ? WHERE prefect_id = ?",
+                (total_cost, prefect['prefect_id'])
+            )
+
+            # Add to cargo
+            self.conn.execute(
+                "UPDATE ships SET cargo_used = cargo_used + ? WHERE ship_id = ?",
+                (total_mass, state['ship_id'])
+            )
+            existing = self.conn.execute(
+                "SELECT * FROM cargo_items WHERE ship_id = ? AND item_type_id = ?",
+                (state['ship_id'], comp_id)
+            ).fetchone()
+            if existing:
+                self.conn.execute(
+                    "UPDATE cargo_items SET quantity = quantity + ? WHERE cargo_id = ?",
+                    (quantity, existing['cargo_id'])
+                )
+            else:
+                self.conn.execute("""
+                    INSERT INTO cargo_items (ship_id, item_type_id, item_name, quantity, mass_per_unit)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (state['ship_id'], comp_id, comp_name, quantity, cargo_mass))
+
+            self.conn.commit()
+            return {
+                'command': 'BUY', 'params': params_str,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': True,
+                'message': (f"Bought {quantity}x {comp_name} [{comp_id}] "
+                            f"from base {base_id} for {total_cost} cr ({price_each} cr each). "
+                            f"[{total_mass} ST cargo]")
+            }
+
+    def _cmd_install(self, state, params):
+        """INSTALL <component_id> [qty] - install a component from cargo."""
+        tu_before = state['tu']
+        comp_id = params['component_id']
+        quantity = params.get('quantity', 1)
+        cost = self._effective_tu_cost(TU_COSTS['INSTALL'], state['efficiency'])
+        params_str = f"{comp_id} {quantity}"
+
+        if state['tu'] < cost:
+            return {
+                'command': 'INSTALL', 'params': params_str,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': False,
+                'message': f"Insufficient OC for install ({state['tu']} < {cost}). Order carries forward."
+            }
+
+        # Look up component
+        component = self.conn.execute(
+            "SELECT * FROM ship_components WHERE component_id = ?", (comp_id,)
+        ).fetchone()
+        if not component:
+            return {
+                'command': 'INSTALL', 'params': params_str,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': False,
+                'message': f"Component {comp_id} not found in catalogue. Order dropped."
+            }
+
+        # Check hull restriction
+        ship = self.get_ship(state['ship_id'])
+        if component['hull_restriction'] and ship['hull_type'].lower() != component['hull_restriction'].lower():
+            return {
+                'command': 'INSTALL', 'params': params_str,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': False,
+                'message': f"Cannot install {component['name']}: requires {component['hull_restriction']} hull. Order dropped."
+            }
+
+        # Check cargo has the component
+        cargo = self.conn.execute(
+            "SELECT * FROM cargo_items WHERE ship_id = ? AND item_type_id = ?",
+            (state['ship_id'], comp_id)
+        ).fetchone()
+        if not cargo or cargo['quantity'] < quantity:
+            avail = cargo['quantity'] if cargo else 0
+            return {
+                'command': 'INSTALL', 'params': params_str,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': False,
+                'message': f"Cannot install: only {avail}x {component['name']} in cargo (need {quantity}). Order dropped."
+            }
+
+        # Check ST capacity
+        from db.database import get_ship_st_used, get_ship_st_capacity
+        st_used = get_ship_st_used(self.conn, state['ship_id'])
+        st_cap = get_ship_st_capacity(self.conn, state['ship_id'])
+        st_needed = component['st_cost'] * quantity
+        st_free = st_cap - st_used
+        if st_needed > st_free:
+            return {
+                'command': 'INSTALL', 'params': params_str,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': False,
+                'message': (f"Cannot install {quantity}x {component['name']}: "
+                            f"{st_needed} ST needed, only {st_free} ST free. Order dropped.")
+            }
+
+        # Deduct TU
+        state['tu'] -= cost
+
+        # Remove from cargo
+        cargo_mass = cargo['mass_per_unit'] * quantity
+        if cargo['quantity'] == quantity:
+            self.conn.execute("DELETE FROM cargo_items WHERE cargo_id = ?", (cargo['cargo_id'],))
+        else:
+            self.conn.execute(
+                "UPDATE cargo_items SET quantity = quantity - ? WHERE cargo_id = ?",
+                (quantity, cargo['cargo_id'])
+            )
+        self.conn.execute(
+            "UPDATE ships SET cargo_used = MAX(0, cargo_used - ?) WHERE ship_id = ?",
+            (cargo_mass, state['ship_id'])
+        )
+
+        # Add to installed
+        existing = self.conn.execute(
+            "SELECT * FROM installed_items WHERE ship_id = ? AND component_id = ?",
+            (state['ship_id'], comp_id)
+        ).fetchone()
+        if existing:
+            self.conn.execute(
+                "UPDATE installed_items SET quantity = quantity + ? WHERE item_install_id = ?",
+                (quantity, existing['item_install_id'])
+            )
+        else:
+            self.conn.execute(
+                "INSERT INTO installed_items (ship_id, component_id, quantity) VALUES (?, ?, ?)",
+                (state['ship_id'], comp_id, quantity)
+            )
+
+        # Recalculate ship stats
+        from db.database import recalculate_ship_stats
+        recalculate_ship_stats(self.conn, state['ship_id'])
+        self.conn.commit()
+
+        return {
+            'command': 'INSTALL', 'params': params_str,
+            'tu_before': tu_before, 'tu_after': state['tu'],
+            'tu_cost': cost, 'success': True,
+            'message': (f"Installed {quantity}x {component['name']} [{comp_id}]. "
+                        f"[{st_needed} ST, {cost} OC]")
+        }
+
+    def _cmd_uninstall(self, state, params):
+        """UNINSTALL <component_id> [qty] - uninstall a component to cargo."""
+        tu_before = state['tu']
+        comp_id = params['component_id']
+        quantity = params.get('quantity', 1)
+        cost = self._effective_tu_cost(TU_COSTS['UNINSTALL'], state['efficiency'])
+        params_str = f"{comp_id} {quantity}"
+
+        if state['tu'] < cost:
+            return {
+                'command': 'UNINSTALL', 'params': params_str,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': False,
+                'message': f"Insufficient OC for uninstall ({state['tu']} < {cost}). Order carries forward."
+            }
+
+        # Look up component
+        component = self.conn.execute(
+            "SELECT * FROM ship_components WHERE component_id = ?", (comp_id,)
+        ).fetchone()
+        if not component:
+            return {
+                'command': 'UNINSTALL', 'params': params_str,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': False,
+                'message': f"Component {comp_id} not found. Order dropped."
+            }
+
+        # Check component is installed
+        installed = self.conn.execute(
+            "SELECT * FROM installed_items WHERE ship_id = ? AND component_id = ?",
+            (state['ship_id'], comp_id)
+        ).fetchone()
+        if not installed or installed['quantity'] < quantity:
+            avail = installed['quantity'] if installed else 0
+            return {
+                'command': 'UNINSTALL', 'params': params_str,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': False,
+                'message': f"Cannot uninstall: only {avail}x {component['name']} installed (need {quantity}). Order dropped."
+            }
+
+        # Check cargo capacity for the uninstalled component
+        ship = self.get_ship(state['ship_id'])
+        cargo_mass = component['st_cost'] * quantity
+        available_cargo = ship['cargo_capacity'] - ship['cargo_used']
+        if cargo_mass > available_cargo:
+            return {
+                'command': 'UNINSTALL', 'params': params_str,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': False,
+                'message': (f"Cannot uninstall {quantity}x {component['name']}: "
+                            f"{cargo_mass} ST cargo needed, only {available_cargo} ST free. Order dropped.")
+            }
+
+        # Deduct TU
+        state['tu'] -= cost
+
+        # Remove from installed
+        if installed['quantity'] == quantity:
+            self.conn.execute(
+                "DELETE FROM installed_items WHERE item_install_id = ?",
+                (installed['item_install_id'],)
+            )
+        else:
+            self.conn.execute(
+                "UPDATE installed_items SET quantity = quantity - ? WHERE item_install_id = ?",
+                (quantity, installed['item_install_id'])
+            )
+
+        # Add to cargo
+        self.conn.execute(
+            "UPDATE ships SET cargo_used = cargo_used + ? WHERE ship_id = ?",
+            (cargo_mass, state['ship_id'])
+        )
+        existing_cargo = self.conn.execute(
+            "SELECT * FROM cargo_items WHERE ship_id = ? AND item_type_id = ?",
+            (state['ship_id'], comp_id)
+        ).fetchone()
+        if existing_cargo:
+            self.conn.execute(
+                "UPDATE cargo_items SET quantity = quantity + ? WHERE cargo_id = ?",
+                (quantity, existing_cargo['cargo_id'])
+            )
+        else:
+            self.conn.execute("""
+                INSERT INTO cargo_items (ship_id, item_type_id, item_name, quantity, mass_per_unit)
+                VALUES (?, ?, ?, ?, ?)
+            """, (state['ship_id'], comp_id, component['name'], quantity, component['st_cost']))
+
+        # Recalculate ship stats (cargo_capacity may decrease!)
+        from db.database import recalculate_ship_stats
+        recalculate_ship_stats(self.conn, state['ship_id'])
+        self.conn.commit()
+
+        return {
+            'command': 'UNINSTALL', 'params': params_str,
+            'tu_before': tu_before, 'tu_after': state['tu'],
+            'tu_cost': cost, 'success': True,
+            'message': (f"Uninstalled {quantity}x {component['name']} [{comp_id}] to cargo. "
+                        f"[{cargo_mass} ST cargo, {cost} OC]")
+        }
+
+    def _cmd_scrap(self, state, params):
+        """SCRAP <component_id> [qty] - scrap a component from cargo."""
+        tu_before = state['tu']
+        comp_id = params['component_id']
+        quantity = params.get('quantity', 1)
+        params_str = f"{comp_id} {quantity}"
+
+        # Look up component
+        component = self.conn.execute(
+            "SELECT * FROM ship_components WHERE component_id = ?", (comp_id,)
+        ).fetchone()
+        if not component:
+            return {
+                'command': 'SCRAP', 'params': params_str,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': False,
+                'message': f"Component {comp_id} not found. Order dropped."
+            }
+
+        # Check cargo
+        cargo = self.conn.execute(
+            "SELECT * FROM cargo_items WHERE ship_id = ? AND item_type_id = ?",
+            (state['ship_id'], comp_id)
+        ).fetchone()
+        if not cargo or cargo['quantity'] < quantity:
+            avail = cargo['quantity'] if cargo else 0
+            return {
+                'command': 'SCRAP', 'params': params_str,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': False,
+                'message': f"Cannot scrap: only {avail}x {component['name']} in cargo (need {quantity}). Order dropped."
+            }
+
+        # Remove from cargo
+        cargo_mass = cargo['mass_per_unit'] * quantity
+        if cargo['quantity'] == quantity:
+            self.conn.execute("DELETE FROM cargo_items WHERE cargo_id = ?", (cargo['cargo_id'],))
+        else:
+            self.conn.execute(
+                "UPDATE cargo_items SET quantity = quantity - ? WHERE cargo_id = ?",
+                (quantity, cargo['cargo_id'])
+            )
+        self.conn.execute(
+            "UPDATE ships SET cargo_used = MAX(0, cargo_used - ?) WHERE ship_id = ?",
+            (cargo_mass, state['ship_id'])
+        )
+        self.conn.commit()
+
+        return {
+            'command': 'SCRAP', 'params': params_str,
+            'tu_before': tu_before, 'tu_after': state['tu'],
+            'tu_cost': 0, 'success': True,
+            'message': f"Scrapped {quantity}x {component['name']} [{comp_id}]. [{cargo_mass} ST freed]"
+        }
+
     def _cmd_renameship(self, state, params):
         """RENAMESHIP <ship_id> <new_name> - rename a ship."""
         tu_before = state['tu']
@@ -2502,7 +2937,7 @@ class TurnResolver:
                 'name': display_name,
                 'col': s['grid_col'], 'row': s['grid_row'],
                 'symbol': '^',
-                'hull_count': s['hull_count'],
+                'ship_size': s['ship_size'] if 'ship_size' in s.keys() else s['hull_count'], 'hull_count': s['hull_count'],
                 'hull_type': s['hull_type'],
             }
             detected.append(contact)

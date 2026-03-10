@@ -69,6 +69,51 @@ def get_connection(state_db_path=None, universe_db_path=None):
             )""")
             conn.commit()
 
+        # Migrate universe.db: create ship_components table if missing
+        has_components = conn.execute(
+            "SELECT name FROM universe.sqlite_master WHERE type='table' AND name='ship_components'"
+        ).fetchone()
+        if not has_components:
+            conn.execute("""CREATE TABLE IF NOT EXISTS ship_components (
+                component_id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                category TEXT NOT NULL,
+                st_cost INTEGER NOT NULL,
+                cargo_capacity INTEGER DEFAULT 0,
+                crew_capacity INTEGER DEFAULT 0,
+                life_capacity INTEGER DEFAULT 0,
+                thrust INTEGER DEFAULT 0,
+                engine_efficiency REAL DEFAULT 0,
+                sensor_rating INTEGER DEFAULT 0,
+                jump_range INTEGER DEFAULT 0,
+                jump_oc_cost INTEGER DEFAULT 0,
+                hull_restriction TEXT DEFAULT NULL,
+                base_price INTEGER DEFAULT 0,
+                description TEXT DEFAULT ''
+            )""")
+            # Seed default components
+            seed_components = [
+                (100, 'Standard Bridge', 'bridge', 20, 0, 0, 0, 0, 0, 0, 0, 0, None, 500, 'Basic command centre.'),
+                (110, 'Thruster Array', 'thruster', 50, 0, 0, 0, 20, 0, 0, 0, 0, None, 800, 'Standard thruster pack.'),
+                (111, 'Heavy Thruster Pack', 'thruster', 80, 0, 0, 0, 40, 0, 0, 0, 0, None, 1500, 'High-output thrusters.'),
+                (120, 'Commercial Sublight Engine', 'engine', 60, 0, 0, 0, 0, 1.0, 0, 0, 0, None, 1200, 'Standard propulsion.'),
+                (121, 'Military Sublight Engine', 'engine', 70, 0, 0, 0, 0, 1.5, 0, 0, 0, 'military', 2500, 'High-performance drive.'),
+                (130, 'Cargo Bay', 'cargo', 40, 100, 0, 0, 0, 0, 0, 0, 0, None, 600, 'Standard cargo bay.'),
+                (131, 'Reinforced Cargo Bay', 'cargo', 50, 120, 0, 0, 0, 0, 0, 0, 0, None, 900, 'Armoured cargo storage.'),
+                (140, 'Crew Quarters', 'quarters', 30, 0, 20, 20, 0, 0, 0, 0, 0, None, 400, 'Standard crew accommodation.'),
+                (141, 'Military Bunks', 'quarters', 30, 0, 40, 25, 0, 0, 0, 0, 0, 'military', 500, 'Compact military berths.'),
+                (142, 'Luxury Cabins', 'quarters', 30, 0, 10, 15, 0, 0, 0, 0, 0, None, 700, 'Comfortable passenger cabins.'),
+                (150, 'Basic Sensor Array', 'sensor', 20, 0, 0, 0, 0, 0, 5, 0, 0, None, 300, 'Standard detection suite.'),
+                (151, 'Military Sensor Suite', 'sensor', 30, 0, 0, 0, 0, 0, 10, 0, 0, 'military', 1000, 'Advanced military sensors.'),
+                (152, 'Deep Space Scanner', 'sensor', 40, 0, 0, 0, 0, 0, 15, 0, 0, None, 1800, 'Long-range detection.'),
+                (160, 'Jump Drive Mk1', 'jump_drive', 120, 0, 0, 0, 0, 0, 0, 5, 150, None, 5000, 'Basic hyperspace drive.'),
+                (161, 'Jump Drive Mk2', 'jump_drive', 150, 0, 0, 0, 0, 0, 0, 10, 100, None, 12000, 'Advanced jump drive.'),
+            ]
+            for c in seed_components:
+                conn.execute("""INSERT OR IGNORE INTO ship_components VALUES
+                    (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", c)
+            conn.commit()
+
     # Migrate game_state.db: add life_support_capacity to ships if missing
     ship_cols = [r[1] for r in conn.execute("PRAGMA table_info(ships)").fetchall()]
     if 'life_support_capacity' not in ship_cols:
@@ -101,6 +146,50 @@ def get_connection(state_db_path=None, universe_db_path=None):
                 (freed_mass, row['ship_id'])
             )
         conn.commit()
+
+    # Migrate game_state.db: add ship_size to ships if missing
+    ship_cols = [r[1] for r in conn.execute("PRAGMA table_info(ships)").fetchall()]
+    if 'ship_size' not in ship_cols:
+        conn.execute("ALTER TABLE ships ADD COLUMN ship_size INTEGER DEFAULT 50")
+        conn.execute("UPDATE ships SET ship_size = hull_count WHERE ship_size IS NULL OR ship_size = 0")
+        conn.commit()
+    else:
+        # Repair: previous migration incorrectly set ship_size=10 for all ships
+        # Fix any ship where ship_size=10 but hull_count differs
+        conn.execute("UPDATE ships SET ship_size = hull_count WHERE ship_size = 10 AND hull_count != 10")
+        conn.commit()
+
+    # Migrate installed_items: if old schema (has item_type_id), rework to component_id
+    ii_cols = [r[1] for r in conn.execute("PRAGMA table_info(installed_items)").fetchall()]
+    if 'item_type_id' in ii_cols and 'component_id' not in ii_cols:
+        # Old schema → new schema migration
+        # Map old item_type_ids to new component_ids
+        old_to_new = {
+            100: 100,   # Bridge → Standard Bridge
+            103: 150,   # Sensor → Basic Sensor Array
+            155: 120,   # Sublight Engines → Commercial Sublight Engine
+            174: 160,   # Jump Drive - Basic → Jump Drive Mk1
+            160: 110,   # Thrust Engine → Thruster Array
+            131: 140,   # Quarters → Crew Quarters
+            180: 130,   # Cargo Hold → Cargo Bay
+        }
+        old_items = conn.execute("SELECT * FROM installed_items").fetchall()
+        conn.execute("DROP TABLE installed_items")
+        conn.execute("""CREATE TABLE IF NOT EXISTS installed_items (
+            item_install_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ship_id INTEGER, base_id INTEGER,
+            component_id INTEGER NOT NULL, quantity INTEGER NOT NULL DEFAULT 1
+        )""")
+        for item in old_items:
+            new_id = old_to_new.get(item['item_type_id'], item['item_type_id'])
+            conn.execute(
+                "INSERT INTO installed_items (ship_id, base_id, component_id, quantity) VALUES (?, ?, ?, ?)",
+                (item['ship_id'], item['base_id'], new_id, item['quantity'])
+            )
+        conn.commit()
+        # Recalculate stats for all ships
+        for ship in conn.execute("SELECT ship_id FROM ships").fetchall():
+            recalculate_ship_stats(conn, ship['ship_id'])
 
     return conn
 
@@ -214,6 +303,61 @@ VALUES (15, 'SYN', 'Syndicate', 'A shadowy network of smugglers, pirates, and op
 INSERT OR IGNORE INTO factions (faction_id, abbreviation, name, description)
 VALUES (0, 'IND', 'Independent', 'No faction affiliation');
 
+-- Ship component catalogue (what components can be installed on ships)
+-- 3-digit IDs for future trading. Category groups:
+--   100-109: Bridge/Command   110-119: Thrusters    120-129: Sublight Engines
+--   130-139: Cargo Systems    140-149: Crew/Life    150-159: Sensors
+--   160-169: Jump Drives      170-179: Reserved (weapons/shields)
+CREATE TABLE IF NOT EXISTS ship_components (
+    component_id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    category TEXT NOT NULL,
+    st_cost INTEGER NOT NULL,
+    cargo_capacity INTEGER DEFAULT 0,
+    crew_capacity INTEGER DEFAULT 0,
+    life_capacity INTEGER DEFAULT 0,
+    thrust INTEGER DEFAULT 0,
+    engine_efficiency REAL DEFAULT 0,
+    sensor_rating INTEGER DEFAULT 0,
+    jump_range INTEGER DEFAULT 0,
+    jump_oc_cost INTEGER DEFAULT 0,
+    hull_restriction TEXT DEFAULT NULL,
+    base_price INTEGER DEFAULT 0,
+    description TEXT DEFAULT ''
+);
+
+-- Seed ship components
+INSERT OR IGNORE INTO ship_components VALUES
+    (100, 'Standard Bridge', 'bridge', 20, 0, 0, 0, 0, 0, 0, 0, 0, NULL, 500, 'Basic command centre. Required for ship operation.');
+INSERT OR IGNORE INTO ship_components VALUES
+    (110, 'Thruster Array', 'thruster', 50, 0, 0, 0, 20, 0, 0, 0, 0, NULL, 800, 'Standard thruster pack. Provides thrust for gravity rating.');
+INSERT OR IGNORE INTO ship_components VALUES
+    (111, 'Heavy Thruster Pack', 'thruster', 80, 0, 0, 0, 40, 0, 0, 0, 0, NULL, 1500, 'High-output thrusters for larger vessels or heavy landing.');
+INSERT OR IGNORE INTO ship_components VALUES
+    (120, 'Commercial Sublight Engine', 'engine', 60, 0, 0, 0, 0, 1.0, 0, 0, 0, NULL, 1200, 'Standard propulsion. 1.0 efficiency.');
+INSERT OR IGNORE INTO ship_components VALUES
+    (121, 'Military Sublight Engine', 'engine', 70, 0, 0, 0, 0, 1.5, 0, 0, 0, 'military', 2500, 'High-performance drive. 1.5 efficiency. Military hulls only.');
+INSERT OR IGNORE INTO ship_components VALUES
+    (130, 'Cargo Bay', 'cargo', 40, 100, 0, 0, 0, 0, 0, 0, 0, NULL, 600, 'Standard modular cargo bay. 100 ST capacity.');
+INSERT OR IGNORE INTO ship_components VALUES
+    (131, 'Reinforced Cargo Bay', 'cargo', 50, 120, 0, 0, 0, 0, 0, 0, 0, NULL, 900, 'Armoured cargo storage. 120 ST capacity.');
+INSERT OR IGNORE INTO ship_components VALUES
+    (140, 'Crew Quarters', 'quarters', 30, 0, 20, 20, 0, 0, 0, 0, 0, NULL, 400, 'Standard crew accommodation with life support.');
+INSERT OR IGNORE INTO ship_components VALUES
+    (141, 'Military Bunks', 'quarters', 30, 0, 40, 25, 0, 0, 0, 0, 0, 'military', 500, 'Compact military berths. High crew capacity.');
+INSERT OR IGNORE INTO ship_components VALUES
+    (142, 'Luxury Cabins', 'quarters', 30, 0, 10, 15, 0, 0, 0, 0, 0, NULL, 700, 'Comfortable passenger cabins. Low density.');
+INSERT OR IGNORE INTO ship_components VALUES
+    (150, 'Basic Sensor Array', 'sensor', 20, 0, 0, 0, 0, 0, 5, 0, 0, NULL, 300, 'Standard detection and scanning suite.');
+INSERT OR IGNORE INTO ship_components VALUES
+    (151, 'Military Sensor Suite', 'sensor', 30, 0, 0, 0, 0, 0, 10, 0, 0, 'military', 1000, 'Advanced military-grade sensors.');
+INSERT OR IGNORE INTO ship_components VALUES
+    (152, 'Deep Space Scanner', 'sensor', 40, 0, 0, 0, 0, 0, 15, 0, 0, NULL, 1800, 'Long-range deep space detection system.');
+INSERT OR IGNORE INTO ship_components VALUES
+    (160, 'Jump Drive Mk1', 'jump_drive', 120, 0, 0, 0, 0, 0, 0, 5, 150, NULL, 5000, 'Basic hyperspace jump drive. Range 5, costs 150 OC.');
+INSERT OR IGNORE INTO ship_components VALUES
+    (161, 'Jump Drive Mk2', 'jump_drive', 150, 0, 0, 0, 0, 0, 0, 10, 100, NULL, 12000, 'Advanced jump drive. Range 10, costs 100 OC.');
+
 -- Indexes
 CREATE INDEX IF NOT EXISTS idx_bodies_system ON celestial_bodies(system_id);
 CREATE INDEX IF NOT EXISTS idx_links_a ON system_links(system_a);
@@ -292,6 +436,7 @@ CREATE TABLE IF NOT EXISTS ships (
     ship_class TEXT DEFAULT 'Trader',
     design TEXT DEFAULT 'Light Trader MK I',
     hull_type TEXT DEFAULT 'Commercial',
+    ship_size INTEGER DEFAULT 50,
     hull_count INTEGER DEFAULT 50,
     hull_damage_pct REAL DEFAULT 0.0,
     grid_col TEXT NOT NULL,
@@ -387,10 +532,8 @@ CREATE TABLE IF NOT EXISTS installed_items (
     item_install_id INTEGER PRIMARY KEY AUTOINCREMENT,
     ship_id INTEGER,
     base_id INTEGER,
-    item_type_id INTEGER NOT NULL,
-    item_name TEXT NOT NULL,
-    quantity INTEGER NOT NULL DEFAULT 1,
-    mass_per_unit INTEGER DEFAULT 10
+    component_id INTEGER NOT NULL,
+    quantity INTEGER NOT NULL DEFAULT 1
 );
 
 -- Cargo items
@@ -619,6 +762,139 @@ def backup_state(turn_label=None, state_db_path=None):
     backup_path = saves_dir / backup_name
     shutil.copy2(str(state_path), str(backup_path))
     return backup_path
+
+
+# ======================================================================
+# SHIP COMPONENT HELPERS
+# ======================================================================
+
+def get_component(conn, component_id):
+    """Get component details from the catalogue."""
+    result = conn.execute(
+        "SELECT * FROM ship_components WHERE component_id = ?", (component_id,)
+    ).fetchone()
+    return dict(result) if result else None
+
+
+def get_ship_components(conn, ship_id):
+    """Get all installed components for a ship, joined with catalogue data."""
+    return conn.execute("""
+        SELECT ii.item_install_id, ii.component_id, ii.quantity,
+               sc.name, sc.category, sc.st_cost,
+               sc.cargo_capacity, sc.crew_capacity, sc.life_capacity,
+               sc.thrust, sc.engine_efficiency, sc.sensor_rating,
+               sc.jump_range, sc.jump_oc_cost, sc.hull_restriction
+        FROM installed_items ii
+        JOIN ship_components sc ON ii.component_id = sc.component_id
+        WHERE ii.ship_id = ?
+        ORDER BY sc.category, sc.component_id
+    """, (ship_id,)).fetchall()
+
+
+def get_ship_st_capacity(conn, ship_id):
+    """Get a ship's total ST capacity from ship_size."""
+    ship = conn.execute(
+        "SELECT ship_size FROM ships WHERE ship_id = ?", (ship_id,)
+    ).fetchone()
+    if not ship:
+        return 0
+    return (ship['ship_size'] or 50) * 50
+
+
+def get_ship_st_used(conn, ship_id):
+    """Get total ST used by installed components."""
+    result = conn.execute("""
+        SELECT COALESCE(SUM(ii.quantity * sc.st_cost), 0) as total
+        FROM installed_items ii
+        JOIN ship_components sc ON ii.component_id = sc.component_id
+        WHERE ii.ship_id = ?
+    """, (ship_id,)).fetchone()
+    return result['total']
+
+
+def recalculate_ship_stats(conn, ship_id):
+    """
+    Recalculate all ship stats from installed components.
+    
+    Updates: cargo_capacity, life_support_capacity, sensor_rating,
+             gravity_rating, crew_required.
+    """
+    ship = conn.execute(
+        "SELECT ship_size, hull_type FROM ships WHERE ship_id = ?", (ship_id,)
+    ).fetchone()
+    if not ship:
+        return
+
+    ship_size = ship['ship_size'] or 50
+    components = get_ship_components(conn, ship_id)
+
+    # Sum up component contributions
+    total_cargo = 0
+    total_crew_cap = 0
+    total_life_cap = 0
+    total_thrust = 0
+    total_sensor = 0
+    total_engine_eff = 0.0
+    engine_count = 0
+    best_jump_range = 0
+    best_jump_oc = 0
+
+    for c in components:
+        qty = c['quantity']
+        total_cargo += c['cargo_capacity'] * qty
+        total_crew_cap += c['crew_capacity'] * qty
+        total_life_cap += c['life_capacity'] * qty
+        total_thrust += c['thrust'] * qty
+        total_sensor += c['sensor_rating'] * qty
+        if c['category'] == 'engine':
+            engine_count += qty
+            total_engine_eff += c['engine_efficiency'] * qty
+        if c['category'] == 'jump_drive':
+            for _ in range(qty):
+                if c['jump_range'] > best_jump_range:
+                    best_jump_range = c['jump_range']
+                    best_jump_oc = c['jump_oc_cost']
+
+    # Engine efficiency caps at 1 engine per 10 ship_size
+    max_engines = max(1, ship_size // 10)
+    if engine_count > max_engines:
+        # Scale efficiency back to max_engines worth
+        total_engine_eff = total_engine_eff * max_engines / engine_count
+
+    # Gravity rating = thrust / ship_size (mass approximated by size)
+    gravity_rating = total_thrust / ship_size if ship_size > 0 else 0
+
+    # Crew required = ship_size (1 crew per size point)
+    crew_required = ship_size
+
+    conn.execute("""
+        UPDATE ships SET
+            cargo_capacity = ?,
+            life_support_capacity = ?,
+            sensor_rating = ?,
+            gravity_rating = ?,
+            crew_required = ?
+        WHERE ship_id = ?
+    """, (total_cargo, total_life_cap, total_sensor,
+          round(gravity_rating, 2), crew_required, ship_id))
+    conn.commit()
+
+    return {
+        'cargo_capacity': total_cargo,
+        'life_support_capacity': total_life_cap,
+        'crew_capacity': total_crew_cap,
+        'sensor_rating': total_sensor,
+        'gravity_rating': round(gravity_rating, 2),
+        'thrust': total_thrust,
+        'engine_efficiency': round(total_engine_eff, 2),
+        'engine_count': engine_count,
+        'max_engines': max_engines,
+        'jump_range': best_jump_range,
+        'jump_oc_cost': best_jump_oc,
+        'crew_required': crew_required,
+        'st_used': get_ship_st_used(conn, ship_id),
+        'st_capacity': ship_size * 50,
+    }
 
 
 # ======================================================================

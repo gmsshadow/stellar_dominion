@@ -6,9 +6,10 @@ Built in Python with SQLite. No web server required — the entire game runs fro
 
 ## Features
 
+- **Modular ship components** — ships built from internal components (thrusters, engines, cargo bays, sensors, jump drives) that determine all ship stats. Buy, install, uninstall, and scrap components at starbases. Components use 3-digit IDs for trading.
 - **Turn-based order resolution** with an Operational Cycle (OC) system and interleaved priority queue across all ships
 - **Play-by-email** — players submit YAML or text order files; the engine validates, resolves, and emails back reports
-- **ASCII + PDF reports** — Phoenix-style ship and prefect reports with system maps, cargo manifests, and crew rosters
+- **ASCII + PDF reports** — Phoenix-style ship and prefect reports with system maps, cargo manifests, crew rosters, and component breakdowns
 - **Persistent universe** — two-database architecture separating world definition (GM-editable) from live game state (engine-managed)
 - **Trading economy** — market cycles, base specialisation, price fluctuation, cargo capacity, and circular trade routes
 - **Crew management** — hire crew at starbases, promote officers, pay wages, and manage ship efficiency
@@ -21,22 +22,12 @@ Built in Python with SQLite. No web server required — the entire game runs fro
 ## Quick Start
 
 ```bash
-# Set up a demo game with 2 players, 3 star systems, and 3 starbases
 python pbem.py setup-game --demo
-
-# View the system map
 python pbem.py show-map --game OMICRON101
-
-# Check turn pipeline status
+python pbem.py list-components                     # View ship component catalogue
 python pbem.py turn-pipeline --game OMICRON101
-
-# Submit orders for a player
 python pbem.py submit-orders orders.yaml --email alice@example.com
-
-# Resolve the turn and generate reports
 python pbem.py run-turn --game OMICRON101
-
-# Advance to the next turn
 python pbem.py advance-turn --game OMICRON101
 ```
 
@@ -51,24 +42,31 @@ python pbem.py advance-turn --game OMICRON101
 
 | Guide | Audience | Contents |
 |-------|----------|----------|
-| [Player Guide](PLAYER_GUIDE.md) | Players | Orders reference, ship commands, trading, crew, factions, moderator actions |
-| [GM Guide](GM_GUIDE.md) | Game Masters | Turn pipeline, moderation tools, moderator actions, universe management, worked example |
+| [Player Guide](PLAYER_GUIDE.md) | Players | Ship components, orders reference, trading, crew, factions |
+| [GM Guide](GM_GUIDE.md) | Game Masters | Turn pipeline, moderation tools, universe management, worked example |
+
+## Ship Component System
+
+Ships are built from modular internal components. Each ship has an ST (Stellar Ton) capacity determined by its size: `ST_capacity = ship_size × 50`. A size 10 ship has 500 ST for components.
+
+Component categories: Bridge, Thrusters, Sublight Engines, Cargo Bays, Crew Quarters, Sensors, and Jump Drives. All components have 3-digit IDs (100-169 range) for future trading support.
+
+Ship stats (cargo capacity, sensor rating, life support, gravity rating) are derived entirely from installed components.
+
+```bash
+python pbem.py list-components    # View the full component catalogue
+```
 
 ## Project Structure
 
 ```
 stellar_dominion/
-├── pbem.py                          # Main CLI entry point (all commands)
-├── gmail_fetch.py                   # Standalone Gmail fetch helper
+├── pbem.py                          # Main CLI entry point
 ├── db/
-│   ├── database.py                  # Two-DB schema, connections & migrations
+│   ├── database.py                  # Two-DB schema, connections, migrations, component helpers
 │   └── universe_admin.py            # Universe content management
 ├── engine/
 │   ├── game_setup.py                # Game/player creation, market generation
-│   ├── gmail.py                     # Gmail API integration
-│   ├── order_processor.py           # Order validation & filing logic
-│   ├── registration.py              # Registration form parser
-│   ├── turn_folders.py              # Turn folder manager (incoming/processed)
 │   ├── maps/
 │   │   ├── system_map.py            # 25×25 ASCII grid renderer
 │   │   └── surface_gen.py           # Planet surface terrain generator
@@ -77,59 +75,32 @@ stellar_dominion/
 │   ├── resolution/
 │   │   └── resolver.py              # Turn resolution engine
 │   └── reports/
-│       └── report_gen.py            # ASCII + PDF report generator
-└── game_data/                       # Created at runtime
-    ├── universe.db                  # World definition (GM-editable)
-    ├── game_state.db                # Live game state (engine-managed)
-    ├── saves/                       # Auto-backups after each run-turn
-    └── turns/
-        ├── incoming/                # Player orders (keyed by email)
-        └── processed/               # Generated reports (keyed by account)
+│       ├── report_gen.py            # ASCII report generator
+│       └── pdf_export.py            # PDF export
+└── game_data/
+    ├── universe.db                  # World definition + component catalogue
+    ├── game_state.db                # Live game state
+    └── turns/                       # Orders and reports
 ```
 
 ## Database Architecture
 
-The game uses a **two-database model**:
+**universe.db** — World definition. Star systems, celestial bodies, hyperspace links, factions, trade goods, planetary resources, and the **ship component catalogue**. GM-editable.
 
-**universe.db** — World definition. Contains star systems, celestial bodies, hyperspace links, factions, trade goods, and planetary resources. GM-editable — you can open this in DB Browser for SQLite, add a system, and it's live next turn.
-
-**game_state.db** — Live game state. Contains players, prefects, ships, starbases, officers, cargo, market prices, orders, messages, moderator actions, faction requests, and turn logs. Automatically backed up after each `run-turn`.
-
-The engine ATTACHes `universe.db` to the `game_state.db` connection, so all queries work through a single handle.
+**game_state.db** — Live game state. Players, ships, installed components, cargo, officers, orders, messages, moderator actions. Auto-backed up after each turn.
 
 ## CLI Command Summary
 
-### Game Management
-| Command | Description |
-|---------|-------------|
-| `setup-game --demo` | Create a demo game with sample data |
-| `join-game --game ID` | Interactive new player registration |
-| `list-players` | List all players |
-| `list-ships --game ID` | List all ships with positions |
-| `show-map --game ID` | Display ASCII system map |
+### Game & Universe
+`setup-game --demo` · `join-game` · `list-players` · `list-ships` · `show-map` · `list-universe` · `list-factions` · `list-components`
 
 ### Turn Processing
-| Command | Description |
-|---------|-------------|
-| `submit-orders FILE --email EMAIL` | Submit player orders |
-| `turn-pipeline --game ID` | Pipeline dashboard |
-| `hold-turn` / `release-turn` | GM turn locking |
-| `review-orders` | Inspect all pending orders |
-| `edit-order` / `delete-order` / `inject-order` | GM order editing |
-| `list-actions` | List moderator action requests |
-| `respond-action --action-id N --response "..."` | Respond to a moderator action |
-| `run-turn --game ID` | Resolve turn and generate reports |
-| `advance-turn --game ID` | Move to next week |
+`submit-orders` · `turn-pipeline` · `hold-turn` / `release-turn` · `review-orders` · `edit-order` / `delete-order` / `inject-order` · `list-actions` / `respond-action` · `run-turn` · `advance-turn`
 
-### Universe & Factions
-| Command | Description |
-|---------|-------------|
-| `list-universe` | Show all systems, bodies, links |
-| `add-system` / `add-body` / `add-link` | Build the universe |
-| `list-factions` | Show available factions |
-| `approve-faction` / `deny-faction` | Moderate faction requests |
+### Factions & Moderation
+`faction-requests` · `approve-faction` / `deny-faction` · `edit-credits` · `suspend-player` / `reinstate-player`
 
-See the [GM Guide](GM_GUIDE.md) for detailed usage of all commands.
+See the [GM Guide](GM_GUIDE.md) for detailed usage.
 
 ## Licence
 

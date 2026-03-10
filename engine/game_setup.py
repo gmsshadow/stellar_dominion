@@ -628,16 +628,14 @@ def add_player(db_path=None, game_id="OMICRON101", player_name="Player 1",
     """, (prefect_id, player_id, game_id, prefect_name, ship_id,
           game['current_year'], game['current_week']))
 
-    # Create ship
+    # Create ship (stats will be recalculated from components)
     c.execute("""
         INSERT INTO ships 
         (ship_id, game_id, owner_prefect_id, name, ship_class, design, hull_type,
-         hull_count, grid_col, grid_row, system_id, docked_at_base_id, orbiting_body_id,
-         tu_per_turn, tu_remaining, sensor_rating, cargo_capacity, cargo_used,
-         crew_count, crew_required, life_support_capacity)
-        VALUES (?, ?, ?, ?, 'Trader', 'Light Trader MK I', 'Commercial', 50,
-                ?, ?, ?, ?, ?, 300, 300, 20, 500, 0,
-                16, 10, 20)
+         ship_size, hull_count, grid_col, grid_row, system_id, docked_at_base_id, orbiting_body_id,
+         tu_per_turn, tu_remaining, cargo_used, crew_count)
+        VALUES (?, ?, ?, ?, 'Trader', 'Light Trader MK I', 'Commercial', 50, 50,
+                ?, ?, ?, ?, ?, 300, 300, 0, 16)
     """, (ship_id, game_id, prefect_id, ship_name,
           ship_start_col, ship_start_row, ship_system_id, docked_at, orbiting_body))
 
@@ -648,21 +646,27 @@ def add_player(db_path=None, game_id="OMICRON101", player_name="Player 1",
         VALUES (?, 1, ?, 'Captain', 'Navigation', 0, 8, 401, 5)
     """, (ship_id, captain_name))
 
-    # Add starting installed items
-    starting_items = [
-        (ship_id, 100, 'Bridge', 1, 5),
-        (ship_id, 103, 'Sensor', 1, 1),
-        (ship_id, 155, 'Sublight Engines', 3, 1),
-        (ship_id, 174, 'Jump Drive - Basic', 1, 5),
-        (ship_id, 160, 'Thrust Engine', 2, 2),
-        (ship_id, 131, 'Quarters', 2, 3),
-        (ship_id, 180, 'Cargo Hold', 5, 10),
+    # Install starting components (Light Trader MK I, size 10 = 500 ST)
+    # Bridge(20) + Thruster(50) + Engine(60) + 5×Cargo(200) + Quarters(30) + Sensor(20) + Jump(120) = 500 ST
+    starting_components = [
+        (ship_id, 100, 1),   # Standard Bridge ×1
+        (ship_id, 110, 1),   # Thruster Array ×1
+        (ship_id, 120, 1),   # Commercial Sublight Engine ×1
+        (ship_id, 130, 5),   # Cargo Bay ×5 (500 ST cargo)
+        (ship_id, 140, 1),   # Crew Quarters ×1 (20 crew, 20 life support)
+        (ship_id, 150, 1),   # Basic Sensor Array ×1
+        (ship_id, 160, 1),   # Jump Drive Mk1 ×1
     ]
-    for sid, item_type, item_name, qty, mass in starting_items:
+    for sid, comp_id, qty in starting_components:
         c.execute("""
-            INSERT INTO installed_items (ship_id, item_type_id, item_name, quantity, mass_per_unit)
-            VALUES (?, ?, ?, ?, ?)
-        """, (sid, item_type, item_name, qty, mass))
+            INSERT INTO installed_items (ship_id, component_id, quantity)
+            VALUES (?, ?, ?)
+        """, (sid, comp_id, qty))
+
+    # Recalculate ship stats from installed components
+    conn.commit()
+    from db.database import recalculate_ship_stats
+    recalculate_ship_stats(conn, ship_id)
 
     # Add starting crew as cargo (Human Crew item 401) - mass 0 as crew use life support, not cargo space
     c.execute("""

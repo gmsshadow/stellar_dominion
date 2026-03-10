@@ -1949,6 +1949,51 @@ def cmd_list_factions(args):
     conn.close()
 
 
+def cmd_list_components(args):
+    """List all ship components in the catalogue."""
+    from db.database import get_universe_connection
+    conn = get_universe_connection()
+    components = conn.execute("SELECT * FROM ship_components ORDER BY component_id").fetchall()
+
+    cat_labels = {
+        'bridge': 'COMMAND', 'thruster': 'THRUSTERS', 'engine': 'PROPULSION',
+        'cargo': 'CARGO SYSTEMS', 'quarters': 'CREW & LIFE SUPPORT',
+        'sensor': 'SENSORS', 'jump_drive': 'JUMP DRIVES',
+    }
+    print(f"\nShip Component Catalogue:")
+    print(f"{'ID':<6} {'Name':<30} {'Category':<12} {'ST':<6} {'Price':<8} Stats")
+    print("-" * 100)
+
+    current_cat = None
+    for c in components:
+        cat = c['category']
+        if cat != current_cat:
+            current_cat = cat
+            print(f"\n  --- {cat_labels.get(cat, cat.upper())} ---")
+
+        stats = []
+        if c['cargo_capacity']:
+            stats.append(f"cargo={c['cargo_capacity']}")
+        if c['crew_capacity']:
+            stats.append(f"crew={c['crew_capacity']}")
+        if c['life_capacity']:
+            stats.append(f"life={c['life_capacity']}")
+        if c['thrust']:
+            stats.append(f"thrust={c['thrust']}")
+        if c['engine_efficiency']:
+            stats.append(f"eff={c['engine_efficiency']}")
+        if c['sensor_rating']:
+            stats.append(f"sensor={c['sensor_rating']}")
+        if c['jump_range']:
+            stats.append(f"range={c['jump_range']}, oc={c['jump_oc_cost']}")
+        if c['hull_restriction']:
+            stats.append(f"[{c['hull_restriction']} only]")
+        stats_str = ', '.join(stats)
+
+        print(f"{c['component_id']:<6} {c['name']:<30} {cat:<12} {c['st_cost']:<6} {c['base_price']:<8} {stats_str}")
+    conn.close()
+
+
 def cmd_faction_requests(args):
     """List faction change requests."""
     from db.database import get_connection
@@ -2733,6 +2778,9 @@ Gmail integration (two-stage workflow):
     # --- list-factions ---
     sp = subparsers.add_parser('list-factions', help='List all available factions')
 
+    # --- list-components ---
+    sp = subparsers.add_parser('list-components', help='List all ship components in the catalogue')
+
     # --- faction-requests ---
     sp = subparsers.add_parser('faction-requests', help='List faction change requests')
     sp.add_argument('--game', required=True, help='Game ID')
@@ -2833,6 +2881,7 @@ Gmail integration (two-stage workflow):
         'add-outpost': cmd_add_outpost,
         'list-universe': cmd_list_universe,
         'list-factions': cmd_list_factions,
+        'list-components': cmd_list_components,
         'faction-requests': cmd_faction_requests,
         'approve-faction': cmd_approve_faction,
         'deny-faction': cmd_deny_faction,

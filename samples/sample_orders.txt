@@ -16,7 +16,7 @@ WAIT 30                    # Wait 30 OC (do nothing)
 MOVE M13                   # Move to grid square M13 (2 OC per square)
 LOCATIONSCAN               # Scan nearby area (20 OC)
 SYSTEMSCAN                 # Full system map (20 OC)
-JUMP 102                   # Jump to linked star system by system_id (150 OC)
+JUMP 102                   # Jump to linked star system by system_id (60 OC)
 ORBIT 247985               # Enter orbit of a planet/moon/gas giant by body_id (10 OC)
 DOCK 45687590              # Dock at a starbase by base_id (must be at same location, 30 OC)
 UNDOCK                     # Leave docked starbase (10 OC)
@@ -26,24 +26,31 @@ LAND 247985 15 15          # Land on a body at surface coordinates x y (20 OC)
 SURFACESCAN                # Scan surface terrain at landing site (20 OC)
 TAKEOFF                    # Take off from surface back to orbit (20 OC)
 
-# --- TRADING ---
-GETMARKET 45687590         # View market prices at a starbase by base_id (10 OC)
-BUY 45687590 101 10        # Buy: base_id item_id quantity (must be docked, 10 OC)
-SELL 45687590 101 5        # Sell: base_id item_id quantity (must be docked, 10 OC)
+# --- TRADING (must be docked, all 0 OC) ---
+GETMARKET 45687590         # View market prices at a starbase by base_id (0 OC)
+BUY 45687590 100101 10     # Buy: base_id item_id quantity (0 OC)
+SELL 45687590 100101 5     # Sell: base_id item_id quantity (0 OC)
 
 # --- CREW ---
 MAKEOFFICER 52589098 401 Marcus Varro   # Promote crew to officer: ship_id crew_type_id name (10 OC)
 RENAMEOFFICER 52589098 2 Elena Voss     # Rename officer: ship_id crew_number new_name (0 OC)
 
-# --- RENAME ---
+# --- SHIP COMPONENTS (use list-components to see catalogue) ---
+UNINSTALL 130 1                         # Uninstall component from ship to cargo: component_id qty (10 OC)
+BUY 45687590 152 1 INSTALL              # Buy + install component: base_id component_id qty INSTALL (0 OC)
+BUY 45687590 130 1                      # Buy component to cargo: base_id component_id qty (0 OC)
+INSTALL 130 1                           # Install component from cargo: component_id qty (10 OC)
+SCRAP 130 1                             # Scrap component from cargo: component_id qty (0 OC)
+
+# --- RENAME (all 0 OC) ---
 RENAMESHIP 52589098 The Indomitable     # Rename a ship: ship_id new_name (0 OC)
 RENAMEBASE 45687590 Frontier Station    # Rename a starbase: base_id new_name (0 OC)
-RENAMEPREFECT 79063795 Commander Chen  # Rename prefect: prefect_id new_name (0 OC)
+RENAMEPREFECT 79063795 Commander Chen   # Rename prefect: prefect_id new_name (0 OC)
 
 # --- COMMUNICATIONS ---
-MESSAGE 75695302 Hello there captain, are you trading at Citadel?  # Send message: target_id text (10 OC)
+MESSAGE 75695302 Hello there captain, are you trading at Citadel?  # Send message: target_id text (0 OC)
 
-# --- MODERATION ---
+# --- MODERATION (all 0 OC) ---
 CHANGEFACTION 12 I want to join the Merchant Trade Guild   # Request faction change: faction_id reason (0 OC)
 MODERATOR Can I refit my ship with additional cargo holds?  # Free-text request to GM (0 OC)
 

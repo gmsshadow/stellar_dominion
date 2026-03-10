@@ -26,6 +26,9 @@ VALID_COMMANDS = {
     'JUMP': {'params': 'system_id', 'description': 'Jump to a linked star system'},
     'MESSAGE': {'params': 'message_order', 'description': 'Send a message to another position'},
     'MAKEOFFICER': {'params': 'makeofficer_order', 'description': 'Promote a crew member to officer'},
+    'INSTALL': {'params': 'component_order', 'description': 'Install a component from cargo'},
+    'UNINSTALL': {'params': 'component_order', 'description': 'Uninstall a component to cargo'},
+    'SCRAP': {'params': 'component_order', 'description': 'Scrap a component from cargo'},
     'RENAMESHIP': {'params': 'rename_id_name', 'description': 'Rename a ship'},
     'RENAMEBASE': {'params': 'rename_id_name', 'description': 'Rename a starbase'},
     'RENAMEPREFECT': {'params': 'rename_id_name', 'description': 'Rename a prefect'},
@@ -93,30 +96,32 @@ def parse_order(command_str, params):
             return command, params, f"{command}: expected numeric ID, got '{params}'"
 
     elif spec['params'] == 'trade_order':
-        # BUY/SELL: needs base_id, item_id, quantity
-        # YAML: {base: 45687590, item: 101, qty: 10} or "45687590 101 10"
-        # Text: BUY 45687590 101 10
+        # BUY/SELL: needs base_id, item_id, quantity [INSTALL]
+        # YAML: {base: 45687590, item: 101, qty: 10, install: true} or "45687590 101 10 INSTALL"
+        # Text: BUY 45687590 101 10  or  BUY 45687590 130 2 INSTALL
         if isinstance(params, dict):
             try:
                 base_id = int(params.get('base', params.get('base_id', 0)))
                 item_id = int(params.get('item', params.get('item_id', 0)))
                 qty = int(params.get('qty', params.get('quantity', 0)))
+                install = bool(params.get('install', False))
                 if base_id <= 0 or item_id <= 0 or qty <= 0:
                     return command, params, f"{command}: base, item, and qty must be positive integers"
-                return command, {'base_id': base_id, 'item_id': item_id, 'quantity': qty}, None
+                return command, {'base_id': base_id, 'item_id': item_id, 'quantity': qty, 'install': install}, None
             except (ValueError, TypeError):
                 return command, params, f"{command}: invalid trade parameters"
         elif isinstance(params, str):
             parts = params.strip().split()
-            if len(parts) != 3:
-                return command, params, f"{command}: expected 'base_id item_id quantity', got '{params}'"
+            if len(parts) < 3:
+                return command, params, f"{command}: expected 'base_id item_id quantity [INSTALL]', got '{params}'"
+            install = len(parts) >= 4 and parts[3].upper() == 'INSTALL'
             try:
                 base_id = int(parts[0])
                 item_id = int(parts[1])
                 qty = int(parts[2])
                 if base_id <= 0 or item_id <= 0 or qty <= 0:
                     return command, params, f"{command}: base, item, and qty must be positive integers"
-                return command, {'base_id': base_id, 'item_id': item_id, 'quantity': qty}, None
+                return command, {'base_id': base_id, 'item_id': item_id, 'quantity': qty, 'install': install}, None
             except ValueError:
                 return command, params, f"{command}: expected numeric values, got '{params}'"
         return command, params, f"{command}: expected trade parameters (base_id item_id quantity)"
@@ -230,6 +235,39 @@ def parse_order(command_str, params):
             except ValueError:
                 return command, params, f"{command}: expected numeric values for ship_id and crew_type_id"
         return command, params, f"{command}: expected parameters (ship_id crew_type_id [name])"
+
+    elif spec['params'] == 'component_order':
+        # INSTALL/UNINSTALL/SCRAP: component_id [quantity]
+        # Text: INSTALL 130 2  or  INSTALL 130
+        # YAML: {component: 130, qty: 2} or "130 2" or 130
+        if isinstance(params, dict):
+            try:
+                comp_id = int(params.get('component', params.get('component_id', 0)))
+                qty = int(params.get('qty', params.get('quantity', 1)))
+                if comp_id <= 0:
+                    return command, params, f"{command}: component_id must be a positive integer"
+                if qty <= 0:
+                    return command, params, f"{command}: quantity must be positive"
+                return command, {'component_id': comp_id, 'quantity': qty}, None
+            except (ValueError, TypeError):
+                return command, params, f"{command}: invalid parameters"
+        elif isinstance(params, (int, float)):
+            return command, {'component_id': int(params), 'quantity': 1}, None
+        elif isinstance(params, str):
+            parts = params.strip().split()
+            if len(parts) < 1:
+                return command, params, f"{command}: expected 'component_id [quantity]'"
+            try:
+                comp_id = int(parts[0])
+                qty = int(parts[1]) if len(parts) > 1 else 1
+                if comp_id <= 0:
+                    return command, params, f"{command}: component_id must be a positive integer"
+                if qty <= 0:
+                    return command, params, f"{command}: quantity must be positive"
+                return command, {'component_id': comp_id, 'quantity': qty}, None
+            except ValueError:
+                return command, params, f"{command}: expected numeric component_id"
+        return command, params, f"{command}: expected parameters (component_id [quantity])"
 
     elif spec['params'] == 'rename_id_name':
         # RENAMESHIP/RENAMEBASE/RENAMEPREFECT: id new_name

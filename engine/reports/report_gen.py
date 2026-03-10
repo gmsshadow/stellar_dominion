@@ -135,7 +135,16 @@ def generate_ship_report(turn_result, db_path=None, game_id="OMICRON101",
         (ship['owner_prefect_id'],)
     ).fetchone()
     officers = conn.execute("SELECT * FROM officers WHERE ship_id = ?", (ship_id,)).fetchall()
-    installed = conn.execute("SELECT * FROM installed_items WHERE ship_id = ?", (ship_id,)).fetchall()
+    installed = conn.execute("""
+        SELECT ii.quantity, sc.component_id, sc.name, sc.category, sc.st_cost,
+               sc.cargo_capacity, sc.crew_capacity, sc.life_capacity,
+               sc.thrust, sc.engine_efficiency, sc.sensor_rating,
+               sc.jump_range, sc.jump_oc_cost
+        FROM installed_items ii
+        JOIN ship_components sc ON ii.component_id = sc.component_id
+        WHERE ii.ship_id = ?
+        ORDER BY sc.category, sc.component_id
+    """, (ship_id,)).fetchall()
     cargo = conn.execute(
         "SELECT * FROM cargo_items WHERE ship_id = ? AND item_type_id != 401", (ship_id,)
     ).fetchall()
@@ -313,10 +322,15 @@ def generate_ship_report(turn_result, db_path=None, game_id="OMICRON101",
                                f"OCs left: {turn_result['final_tu']}"))
     lines.append(section_line())
 
-    hull_info = f"Size: {ship['hull_count']} ({ship['hull_type']})"
+    ship_size = ship['ship_size'] if 'ship_size' in ship.keys() else ship['hull_count']
+    st_capacity = ship_size * 50
+    st_used = sum(c['st_cost'] * c['quantity'] for c in installed)
+    hull_info = f"Size: {ship_size} ({ship['hull_type']})"
     lines.append(section_line(f"Design: {ship['design']}"))
     lines.append(section_line(f"{hull_info}".ljust(COL_LEFT) +
                                f"Integrity: {ship['integrity']:.0f}%"))
+    lines.append(section_line(f"Internal: {st_used}/{st_capacity} ST".ljust(COL_LEFT) +
+                               f"Gravity Rating: {ship['gravity_rating']:.1f}"))
     lines.append(section_line())
 
     # ==========================================
@@ -401,18 +415,57 @@ def generate_ship_report(turn_result, db_path=None, game_id="OMICRON101",
     lines.append(section_line())
 
     # ==========================================
-    # INSTALLED ITEMS
+    # INSTALLED COMPONENTS
     # ==========================================
-    lines.append(section_header("Installed Items"))
+    lines.append(section_header("Ship Components"))
+    lines.append(section_line(f"Internal Capacity: {st_used}/{st_capacity} ST ({st_capacity - st_used} ST free)"))
     lines.append(section_line())
     if installed:
+        # Group by category
+        categories = {}
         for item in installed:
-            lines.append(section_line(
-                f"{item['quantity']:>8}  {item['item_name']} - {item['mass_per_unit']} ST"
-            ))
+            cat = item['category']
+            if cat not in categories:
+                categories[cat] = []
+            categories[cat].append(item)
+
+        cat_order = ['bridge', 'thruster', 'engine', 'cargo', 'quarters', 'sensor', 'jump_drive']
+        cat_labels = {
+            'bridge': 'COMMAND', 'thruster': 'THRUSTERS', 'engine': 'PROPULSION',
+            'cargo': 'CARGO SYSTEMS', 'quarters': 'CREW & LIFE SUPPORT',
+            'sensor': 'SENSORS', 'jump_drive': 'JUMP DRIVES',
+        }
+        for cat in cat_order:
+            if cat not in categories:
+                continue
+            lines.append(section_line(f"  {cat_labels.get(cat, cat.upper())}"))
+            for item in categories[cat]:
+                qty = item['quantity']
+                total_st = item['st_cost'] * qty
+                stat_parts = []
+                if item['cargo_capacity']:
+                    stat_parts.append(f"{item['cargo_capacity'] * qty} ST cargo")
+                if item['crew_capacity']:
+                    stat_parts.append(f"{item['crew_capacity'] * qty} crew cap")
+                if item['life_capacity']:
+                    stat_parts.append(f"{item['life_capacity'] * qty} life sup")
+                if item['thrust']:
+                    stat_parts.append(f"{item['thrust'] * qty} thrust")
+                if item['engine_efficiency']:
+                    stat_parts.append(f"{item['engine_efficiency']:.1f} eff")
+                if item['sensor_rating']:
+                    stat_parts.append(f"{item['sensor_rating'] * qty} rating")
+                if item['jump_range']:
+                    stat_parts.append(f"range {item['jump_range']}, {item['jump_oc_cost']} OC")
+                stats_str = f" ({', '.join(stat_parts)})" if stat_parts else ""
+                qty_str = f"×{qty}" if qty > 1 else "   "
+                lines.append(section_line(
+                    f"    [{item['component_id']:>3}] {item['name']:<28s} {qty_str}  {total_st:>3} ST{stats_str}"
+                ))
+            lines.append(section_line())
     else:
-        lines.append(section_line("No items installed."))
-    lines.append(section_line())
+        lines.append(section_line("No components installed."))
+        lines.append(section_line())
 
     # ==========================================
     # CONTACTS
@@ -646,7 +699,7 @@ def generate_prefect_report(prefect_id, db_path=None, game_id="OMICRON101",
         lines.append(section_line(
             f"   {s['design']}".ljust(COL_LEFT) +
             f"OC: {s['tu_remaining']}/{s['tu_per_turn']}  "
-            f"Size: {s['hull_count']} ({s['hull_type']})"
+            f"Size: {s['ship_size'] if 'ship_size' in s.keys() else s['hull_count']} ({s['hull_type']})"
         ))
         ls = s['life_support_capacity'] if 'life_support_capacity' in s.keys() else 20
         crew_status = ""
