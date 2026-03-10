@@ -299,9 +299,13 @@ def generate_ship_report(turn_result, db_path=None, game_id="OMICRON101",
         else:
             lines.append(f">OC {tu_before}: {cmd}")
 
-        # Indent and word-wrap the message
-        for msg_line in entry['message'].split('\n'):
-            lines.extend(wrap_log_line(msg_line))
+        # Indent and word-wrap the message (skip wrapping for map output - preserves grid alignment)
+        if entry['command'] in ('SURFACESCAN', 'SYSTEMSCAN'):
+            for msg_line in entry['message'].split('\n'):
+                lines.append(msg_line)
+        else:
+            for msg_line in entry['message'].split('\n'):
+                lines.extend(wrap_log_line(msg_line))
         lines.append("")
 
     # ==========================================
