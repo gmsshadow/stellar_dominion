@@ -421,48 +421,21 @@ def generate_ship_report(turn_result, db_path=None, game_id="OMICRON101",
     lines.append(section_line(f"Internal Capacity: {st_used}/{st_capacity} ST ({st_capacity - st_used} ST free)"))
     lines.append(section_line())
     if installed:
-        # Group by category
-        categories = {}
+        # Header
+        comp_fmt = "{:<30s} {:>5s} {:>3s} {:>6s} {:>6s}"
+        lines.append(section_line(comp_fmt.format("Component", "ID", "Qty", "Each", "Total")))
+        lines.append(section_line(comp_fmt.format("-"*30, "-"*5, "-"*3, "-"*6, "-"*6)))
         for item in installed:
-            cat = item['category']
-            if cat not in categories:
-                categories[cat] = []
-            categories[cat].append(item)
-
-        cat_order = ['bridge', 'thruster', 'engine', 'cargo', 'quarters', 'sensor', 'jump_drive']
-        cat_labels = {
-            'bridge': 'COMMAND', 'thruster': 'THRUSTERS', 'engine': 'PROPULSION',
-            'cargo': 'CARGO SYSTEMS', 'quarters': 'CREW & LIFE SUPPORT',
-            'sensor': 'SENSORS', 'jump_drive': 'JUMP DRIVES',
-        }
-        for cat in cat_order:
-            if cat not in categories:
-                continue
-            lines.append(section_line(f"  {cat_labels.get(cat, cat.upper())}"))
-            for item in categories[cat]:
-                qty = item['quantity']
-                total_st = item['st_cost'] * qty
-                stat_parts = []
-                if item['cargo_capacity']:
-                    stat_parts.append(f"{item['cargo_capacity'] * qty} ST cargo")
-                if item['crew_capacity']:
-                    stat_parts.append(f"{item['crew_capacity'] * qty} crew cap")
-                if item['life_capacity']:
-                    stat_parts.append(f"{item['life_capacity'] * qty} life sup")
-                if item['thrust']:
-                    stat_parts.append(f"{item['thrust'] * qty} thrust")
-                if item['engine_efficiency']:
-                    stat_parts.append(f"{item['engine_efficiency']:.1f} eff")
-                if item['sensor_rating']:
-                    stat_parts.append(f"{item['sensor_rating'] * qty} rating")
-                if item['jump_range']:
-                    stat_parts.append(f"range {item['jump_range']}, {item['jump_oc_cost']} OC")
-                stats_str = f" ({', '.join(stat_parts)})" if stat_parts else ""
-                qty_str = f"×{qty}" if qty > 1 else "   "
-                lines.append(section_line(
-                    f"    [{item['component_id']:>3}] {item['name']:<28s} {qty_str}  {total_st:>3} ST{stats_str}"
-                ))
-            lines.append(section_line())
+            qty = item['quantity']
+            total_st = item['st_cost'] * qty
+            lines.append(section_line(comp_fmt.format(
+                item['name'][:30],
+                str(item['component_id']),
+                str(qty),
+                f"{item['st_cost']} ST",
+                f"{total_st} ST"
+            )))
+        lines.append(section_line())
     else:
         lines.append(section_line("No components installed."))
         lines.append(section_line())

@@ -17,10 +17,10 @@ Below are the welcome reports for a new player "Alice".
                                Stellar Dominion                               
                               PBEM Strategy Game                              
 
-                         STA SHIP Resolute (94669139)                         
-                              Account: 13231510                               
+                         STA SHIP Resolute (50838081)                         
+                              Account: 16693854                               
 
-Printed on 09 March 2026, Star Date 500.1
+Printed on 10 March 2026, Star Date 500.1
 
 ------------------------------------------------------------------------------
                              BETWEEN TURN REPORT                              
@@ -124,13 +124,13 @@ Starting Location:
 
 |------------------------------ Command Report ------------------------------|
 |                                                                            |
-| Name: STA Resolute (94669139)      Faction: Stellar Training Academy       |
+| Name: STA Resolute (50838081)      Faction: Stellar Training Academy       |
 | Wealth: 10,000 Credits             Ownership: Player owned                 |
-| Efficiency: 100%                   OCs left: 280                           |
+| Efficiency: 100%                   OCs left: 266                           |
 |                                                                            |
 | Design: Light Trader MK I                                                  |
-| Size: 10 (Commercial)              Integrity: 100%                         |
-| Internal: 500/500 ST               Gravity Rating: 2.0                     |
+| Size: 50 (Commercial)              Integrity: 100%                         |
+| Internal: 500/2500 ST              Gravity Rating: 0.4                     |
 |                                                                            |
 |---------------------------- Navigation Report -----------------------------|
 |                                                                            |
@@ -143,12 +143,13 @@ Starting Location:
 |------------------------------- Crew Report --------------------------------|
 |                                                                            |
 | OFFICERS                                                                   |
-| [1] Captain Thea Cruz [ Navigation 0 Xp ] +8 CF 5 cr/wk                    |
+| [1] Captain Anya Larsson [ Navigation 0 Xp ] +8 CF 5 cr/wk                 |
 |                                                                            |
 | PREFECT                                                                    |
-| Erik Voss (82996337)                                                       |
+| Erik Voss (55605243)                                                       |
 |                                                                            |
-| Crew: 16/20                        Required: 10                            |
+| Crew: 16/20                        Required: 50                            |
+| *** WARNING: Ship undermanned! +68% OC penalty on all actions. ***         |
 |                                                                            |
 |------------------------------- Cargo Report -------------------------------|
 |                                                                            |
@@ -160,28 +161,17 @@ Starting Location:
 | No combat this turn.                                                       |
 |                                                                            |
 |----------------------------- Ship Components ------------------------------|
-| Internal Capacity: 500/500 ST (0 ST free)                                  |
+| Internal Capacity: 500/2500 ST (2000 ST free)                              |
 |                                                                            |
-|   COMMAND                                                                  |
-|     [100] Standard Bridge                    20 ST                         |
-|                                                                            |
-|   THRUSTERS                                                                |
-|     [110] Thruster Array                     50 ST (20 thrust)             |
-|                                                                            |
-|   PROPULSION                                                               |
-|     [120] Commercial Sublight Engine         60 ST (1.0 eff)               |
-|                                                                            |
-|   CARGO SYSTEMS                                                            |
-|     [130] Cargo Bay                    ×5  200 ST (500 ST cargo)           |
-|                                                                            |
-|   CREW & LIFE SUPPORT                                                      |
-| [140] Crew Quarters 30 ST (20 crew cap, 20 life sup)                       |
-|                                                                            |
-|   SENSORS                                                                  |
-|     [150] Basic Sensor Array                 20 ST (5 rating)              |
-|                                                                            |
-|   JUMP DRIVES                                                              |
-|     [160] Jump Drive Mk1                    120 ST (range 5, 150 OC)       |
+| Component                         ID Qty   Each  Total                     |
+| ------------------------------ ----- --- ------ ------                     |
+| Standard Bridge                  100   1  20 ST  20 ST                     |
+| Cargo Bay                        130   5  40 ST 200 ST                     |
+| Commercial Sublight Engine       120   1  60 ST  60 ST                     |
+| Jump Drive Mk1                   160   1 120 ST 120 ST                     |
+| Crew Quarters                    140   1  30 ST  30 ST                     |
+| Basic Sensor Array               150   1  20 ST  20 ST                     |
+| Thruster Array                   110   1  50 ST  50 ST                     |
 |                                                                            |
 |--------------------------------- Contacts ---------------------------------|
 |                                                                            |
@@ -194,7 +184,7 @@ Starting Location:
 | - Base Tartarus Depot (12340001) at R08                                    |
 | - Base Citadel Station (45687590) at H04                                   |
 | - Base Meridian Waystation (78901234) at T20                               |
-| - Ship STA Boethius (65473109) at I06                                      |
+| - Ship STA Boethius (42113971) at I06                                      |
 |                                                                            |
 |----------------------------- Overflow Orders ------------------------------|
 |                                                                            |
@@ -212,10 +202,10 @@ Starting Location:
                                Stellar Dominion                               
                               PBEM Strategy Game                              
 
-                       STA PREFECT Erik Voss (82996337)                       
-                              Account: 13231510                               
+                       STA PREFECT Erik Voss (55605243)                       
+                              Account: 16693854                               
 
-Printed on 09 March 2026, Star Date 500.1
+Printed on 10 March 2026, Star Date 500.1
 
 ------------------------------------------------------------------------------
                              BETWEEN TURN REPORT                              
@@ -250,17 +240,17 @@ other players through scanning.
 ------------------------------------------------------------------------------
 |------------------------------ Prefect Report ------------------------------|
 |                                                                            |
-| Name: Erik Voss (82996337)         Faction: Stellar Training Academy       |
+| Name: Erik Voss (55605243)         Faction: Stellar Training Academy       |
 | Rank: Citizen                      Influence: 0                            |
 | Created: 500.1                                                             |
 |                                                                            |
 | LOCATION                                                                   |
-| Aboard STA Resolute (94669139) - Omicron System (101)                      |
+| Aboard STA Resolute (50838081) - Omicron System (101)                      |
 |                                                                            |
 |----------------------------- Financial Report -----------------------------|
 |                                                                            |
 | POSITION                                 INCOME  EXPENSES       NET        |
-| STA Resolute (94669139)                      0         0         0         |
+| STA Resolute (50838081)                      0         0         0         |
 |                                         -------   -------   -------        |
 |                                               0         0         0        |
 |                                                                            |
@@ -268,9 +258,9 @@ other players through scanning.
 |                                                                            |
 |---------------------------------- Ships -----------------------------------|
 |                                                                            |
-| STA Resolute (94669139)            Omicron (101) P15                       |
-|    Light Trader MK I               OC: 280/300  Size: 10 (Commercial)      |
-|    Crew: 16/20                     Required: 10                            |
+| STA Resolute (50838081)            Omicron (101) P15                       |
+|    Light Trader MK I               OC: 266/300  Size: 50 (Commercial)      |
+|    Crew: 16/20                     Required: 50 [UNDERMANNED]              |
 |                                                                            |
 |------------------------------ Known Contacts ------------------------------|
 |                                                                            |
@@ -287,7 +277,7 @@ other players through scanning.
 |   Orion (247985) at H04                                                    |
 |   Tartarus (301442) at R08                                                 |
 | SHIPS:                                                                     |
-|   STA Boethius (65473109) at I06                                           |
+|   STA Boethius (42113971) at I06                                           |
 | STARS:                                                                     |
 |   Omicron Prime (101) at M13                                               |
 |                                                                            |
@@ -303,9 +293,6 @@ NOTES:
 - The welcome guide in the BETWEEN TURN REPORT only appears on your first turn.
 - The "Contacts" section grows as you scan and explore the system.
 - Movement costs 2 OC per square. Your ship has 300 OC per turn.
-- To dock at an orbiting base, you must ORBIT the same body first.
-- To land, you must first ORBIT the planet or moon.
-- Orders are submitted as YAML or plain text files with your secret account number.
-- Overflow orders carry forward automatically; submit CLEAR as your first order to cancel them.
 - Ship stats (cargo, sensors, life support, gravity) are derived from installed components.
-- Your starting ship uses 500/500 ST — to add components, remove something first.
+- Ship internal capacity = ship_size × 50 ST. Starting ship is size 50 = 2500 ST.
+- Orders are submitted as YAML or plain text files with your secret account number.
