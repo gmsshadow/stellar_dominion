@@ -440,7 +440,7 @@ def generate_welcome_reports(db_path, game_id, account_number, prefect_id, ship_
 
         Boarding the ship the captain smiles at you warmly. "She's a fine ship
         to be sure," he states, as you watch a panel on the all behind him
-        fall off, revealing freyed wiring. He looks back at you slighlty more
+        fall off, revealing frayed wiring. He looks back at you slightly more
         nervous now. "Well, she might not be the newest ship on the market,
         but she'll get you where you want to go.
 
