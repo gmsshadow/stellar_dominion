@@ -4,8 +4,10 @@ Stellar Dominion - PDF Report Export
 Renders plaintext turn reports to A4 portrait PDFs with:
 - Monospace font throughout
 - Map blocks rendered at a smaller font size so 31x31 grids fit
+- Large maps (e.g. 50x50 planets) are auto-scaled down to fit page width
 - Map block left-whitespace trimmed for cleaner layout
 - Body text at a comfortable reading size
+- Maps never wrap (preserves grid alignment for coordinates)
 
 Based on export_report_pdf.py by ChatGPT, integrated into the engine.
 """
@@ -54,6 +56,28 @@ def _trim_common_left_indent(lines):
     if min_indent <= 0:
         return lines
     return [ln[min_indent:] if ln.strip() != "" else ln for ln in lines]
+
+
+MIN_MAP_FONT_SIZE = 5.0  # Floor for readability when scaling down large maps
+
+
+def _font_size_to_fit_map(map_text, font_name, base_font_size, usable_width_pt):
+    """
+    Compute font size so the widest line of a map fits within the page.
+    Uses actual font metrics. Returns a size between MIN_MAP_FONT_SIZE and base_font_size.
+    """
+    lines = map_text.splitlines()
+    if not lines:
+        return base_font_size
+    longest = max(lines, key=len)
+    if not longest:
+        return base_font_size
+    width_pt = pdfmetrics.stringWidth(longest, font_name, base_font_size)
+    if width_pt <= usable_width_pt:
+        return base_font_size
+    scale = usable_width_pt / width_pt
+    fitted = base_font_size * scale
+    return max(MIN_MAP_FONT_SIZE, min(base_font_size, fitted))
 
 
 def _split_body_and_maps(text):
@@ -156,18 +180,25 @@ def text_to_pdf(text, output_path, font_size=10.0, map_font_size=7.0, margin_mm=
         fontSize=font_size,
         leading=font_size,
     )
-    map_style = ParagraphStyle(
-        "Map",
-        fontName=font_name,
-        fontSize=map_font_size,
-        leading=map_font_size,
-    )
 
+    usable_width_pt = A4[0] - 2 * margin_pt
     segments = _split_body_and_maps(text)
 
     story = []
     for seg_text, kind in segments:
-        style = map_style if kind == "map" else body_style
+        if kind == "map":
+            # Scale down font size if map would run off the page (e.g. 50x50 planets)
+            fitted_size = _font_size_to_fit_map(
+                seg_text, font_name, map_font_size, usable_width_pt
+            )
+            style = ParagraphStyle(
+                "Map",
+                fontName=font_name,
+                fontSize=fitted_size,
+                leading=fitted_size,
+            )
+        else:
+            style = body_style
         story.append(Preformatted(seg_text, style, maxLineLength=100000))
 
     doc.build(story)
