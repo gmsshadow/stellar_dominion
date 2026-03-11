@@ -1,7 +1,7 @@
 """
 Stellar Dominion - Database Layer
 Two-database model:
-  universe.db   — World definition (GM-editable): systems, bodies, links, factions, trade goods
+  universe.db   — World definition (GM-editable): systems, bodies, links, factions, trade goods, planet surfaces
   game_state.db — Live game state (engine-managed): ships, players, markets, orders, etc.
 
 The engine opens game_state.db as the main connection and ATTACHes universe.db.
@@ -129,6 +129,34 @@ def get_connection(state_db_path=None, universe_db_path=None):
             for c in seed_components:
                 conn.execute("""INSERT OR IGNORE INTO universe.ship_components VALUES
                     (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", c)
+            conn.commit()
+
+        # Migrate planet_surface: create in universe.db if missing
+        has_planet_surface = conn.execute(
+            "SELECT name FROM universe.sqlite_master WHERE type='table' AND name='planet_surface'"
+        ).fetchone()
+        if not has_planet_surface:
+            conn.execute("""CREATE TABLE IF NOT EXISTS universe.planet_surface (
+                body_id INTEGER NOT NULL,
+                x INTEGER NOT NULL,
+                y INTEGER NOT NULL,
+                terrain_type TEXT NOT NULL,
+                PRIMARY KEY (body_id, x, y),
+                FOREIGN KEY (body_id) REFERENCES celestial_bodies(body_id)
+            )""")
+            conn.commit()
+
+        # Migrate planet_surface: if it exists in game_state.db, copy to universe and drop from main
+        main_has_planet_surface = conn.execute(
+            "SELECT name FROM main.sqlite_master WHERE type='table' AND name='planet_surface'"
+        ).fetchone()
+        if main_has_planet_surface:
+            for row in conn.execute("SELECT body_id, x, y, terrain_type FROM main.planet_surface").fetchall():
+                conn.execute(
+                    "INSERT OR REPLACE INTO universe.planet_surface (body_id, x, y, terrain_type) VALUES (?, ?, ?, ?)",
+                    (row['body_id'], row['x'], row['y'], row['terrain_type'])
+                )
+            conn.execute("DROP TABLE main.planet_surface")
             conn.commit()
 
     # Migrate game_state.db: add life_support_capacity to ships if missing
@@ -375,6 +403,17 @@ INSERT OR IGNORE INTO ship_components VALUES
 INSERT OR IGNORE INTO ship_components VALUES
     (161, 'Jump Drive Mk2', 'jump_drive', 150, 0, 0, 0, 0, 0, 0, 10, 100, NULL, 12000, 'Advanced jump drive. Range 10, costs 100 OC.');
 
+-- Planet surface grid (31x31 terrain tiles per body, generated lazily)
+-- Intrinsic to the universe: terrain is world definition, not game state.
+CREATE TABLE IF NOT EXISTS planet_surface (
+    body_id INTEGER NOT NULL,
+    x INTEGER NOT NULL,
+    y INTEGER NOT NULL,
+    terrain_type TEXT NOT NULL,
+    PRIMARY KEY (body_id, x, y),
+    FOREIGN KEY (body_id) REFERENCES celestial_bodies(body_id)
+);
+
 -- Indexes
 CREATE INDEX IF NOT EXISTS idx_bodies_system ON celestial_bodies(system_id);
 CREATE INDEX IF NOT EXISTS idx_links_a ON system_links(system_a);
@@ -587,15 +626,6 @@ CREATE TABLE IF NOT EXISTS market_prices (
     stock INTEGER NOT NULL DEFAULT 0,
     demand INTEGER NOT NULL DEFAULT 0,
     FOREIGN KEY (game_id) REFERENCES games(game_id)
-);
-
--- Planet surface grid (31x31 terrain tiles, generated lazily)
-CREATE TABLE IF NOT EXISTS planet_surface (
-    body_id INTEGER NOT NULL,
-    x INTEGER NOT NULL,
-    y INTEGER NOT NULL,
-    terrain_type TEXT NOT NULL,
-    PRIMARY KEY (body_id, x, y)
 );
 
 -- Known contacts per prefect
@@ -1046,6 +1076,14 @@ def split_legacy_db(legacy_path):
                 VALUES (?, ?, ?, ?)
             """, (row['item_id'], row['name'], row['base_price'], row['mass_per_unit']))
 
+    # Copy planet_surface (terrain is universe data, not game state)
+    if legacy.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='planet_surface'").fetchone():
+        for row in legacy.execute("SELECT body_id, x, y, terrain_type FROM planet_surface").fetchall():
+            uni_conn.execute(
+                "INSERT OR REPLACE INTO planet_surface (body_id, x, y, terrain_type) VALUES (?, ?, ?, ?)",
+                (row['body_id'], row['x'], row['y'], row['terrain_type'])
+            )
+
     uni_conn.commit()
     uni_conn.close()
     print(f"  Created {uni_path.name}")
@@ -1059,7 +1097,7 @@ def split_legacy_db(legacy_path):
     state_tables = [
         'games', 'players', 'prefects', 'ships', 'starbases', 'surface_ports', 'outposts',
         'officers', 'installed_items', 'cargo_items',
-        'base_trade_config', 'market_prices', 'planet_surface',
+        'base_trade_config', 'market_prices',
         'known_contacts', 'turn_orders', 'pending_orders', 'messages', 'faction_requests', 'moderator_actions', 'turn_log',
     ]
 
