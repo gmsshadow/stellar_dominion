@@ -1855,7 +1855,7 @@ def cmd_add_link(args):
 
 
 def cmd_add_port(args):
-    """Add a surface port to a planet."""
+    """Add a surface port to a planet. A starbase can be built above it later."""
     conn = get_connection(Path(args.db) if args.db else None)
 
     # Verify the body exists
@@ -1867,16 +1867,6 @@ def cmd_add_port(args):
         conn.close()
         return
 
-    # Verify parent base exists if specified
-    if args.parent_base:
-        base = conn.execute(
-            "SELECT * FROM starbases WHERE base_id = ?", (args.parent_base,)
-        ).fetchone()
-        if not base:
-            print(f"Error: Starbase {args.parent_base} not found.")
-            conn.close()
-            return
-
     # Auto-detect game_id
     game = conn.execute("SELECT game_id FROM games LIMIT 1").fetchone()
     game_id = game['game_id'] if game else 'DEFAULT'
@@ -1884,18 +1874,16 @@ def cmd_add_port(args):
     conn.execute("""
         INSERT INTO surface_ports
         (port_id, game_id, name, body_id, surface_x, surface_y,
-         parent_base_id, complexes, workers, troops)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         complexes, workers, troops)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (args.port_id, game_id, args.name, args.body_id,
-          args.x, args.y, args.parent_base,
+          args.x, args.y,
           args.complexes or 0, args.workers or 0, args.troops or 0))
     conn.commit()
 
     print(f"Surface Port '{args.name}' ({args.port_id}) added:")
     print(f"  Body: {body['name']} ({args.body_id})")
     print(f"  Position: ({args.x},{args.y})")
-    if args.parent_base:
-        print(f"  Parent Starbase: {args.parent_base}")
     conn.close()
 
 
@@ -2751,13 +2739,12 @@ Gmail integration (two-stage workflow):
     sp.add_argument('--no-turn-stamp', action='store_true', help='Skip created_turn provenance')
 
     # --- add-port ---
-    sp = subparsers.add_parser('add-port', help='Add a surface port to a planet')
+    sp = subparsers.add_parser('add-port', help='Add a surface port to a planet (starbase can be built above it later)')
     sp.add_argument('port_id', type=int, help='Unique port ID')
     sp.add_argument('body_id', type=int, help='Planet/moon body ID')
     sp.add_argument('name', help='Port name')
     sp.add_argument('x', type=int, help='Surface X coordinate')
     sp.add_argument('y', type=int, help='Surface Y coordinate')
-    sp.add_argument('--parent-base', type=int, help='Linked orbital starbase ID')
     sp.add_argument('--complexes', type=int, default=0, help='Number of complexes')
     sp.add_argument('--workers', type=int, default=0, help='Worker count')
     sp.add_argument('--troops', type=int, default=0, help='Troop count')

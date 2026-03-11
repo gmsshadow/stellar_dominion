@@ -204,6 +204,50 @@ def get_connection(state_db_path=None, universe_db_path=None):
         conn.execute("UPDATE ships SET ship_size = hull_count WHERE ship_size = 10 AND hull_count != 10")
         conn.commit()
 
+    # Migrate surface_port <-> starbase relationship: invert so starbase references surface_port
+    base_cols = [r[1] for r in conn.execute("PRAGMA table_info(starbases)").fetchall()]
+    sp_cols = [r[1] for r in conn.execute("PRAGMA table_info(surface_ports)").fetchall()]
+    if 'surface_port_id' not in base_cols:
+        conn.execute("ALTER TABLE starbases ADD COLUMN surface_port_id INTEGER")
+        conn.commit()
+    if 'parent_base_id' in sp_cols:
+        # Populate starbases.surface_port_id from surface_ports.parent_base_id
+        for row in conn.execute(
+            "SELECT port_id, parent_base_id FROM surface_ports WHERE parent_base_id IS NOT NULL"
+        ).fetchall():
+            conn.execute(
+                "UPDATE starbases SET surface_port_id = ? WHERE base_id = ?",
+                (row['port_id'], row['parent_base_id'])
+            )
+        conn.commit()
+        # Recreate surface_ports without parent_base_id
+        conn.execute("""
+            CREATE TABLE surface_ports_new (
+                port_id INTEGER PRIMARY KEY,
+                game_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                body_id INTEGER NOT NULL,
+                surface_x INTEGER NOT NULL,
+                surface_y INTEGER NOT NULL,
+                owner_prefect_id INTEGER,
+                complexes INTEGER DEFAULT 0,
+                workers INTEGER DEFAULT 0,
+                troops INTEGER DEFAULT 0,
+                FOREIGN KEY (game_id) REFERENCES games(game_id)
+            )
+        """)
+        conn.execute("""
+            INSERT INTO surface_ports_new
+            (port_id, game_id, name, body_id, surface_x, surface_y,
+             owner_prefect_id, complexes, workers, troops)
+            SELECT port_id, game_id, name, body_id, surface_x, surface_y,
+                   owner_prefect_id, complexes, workers, troops
+            FROM surface_ports
+        """)
+        conn.execute("DROP TABLE surface_ports")
+        conn.execute("ALTER TABLE surface_ports_new RENAME TO surface_ports")
+        conn.commit()
+
     # Migrate installed_items: if old schema (has item_type_id), rework to component_id
     ii_cols = [r[1] for r in conn.execute("PRAGMA table_info(installed_items)").fetchall()]
     if 'item_type_id' in ii_cols and 'component_id' not in ii_cols:
@@ -518,7 +562,22 @@ CREATE TABLE IF NOT EXISTS ships (
     FOREIGN KEY (owner_prefect_id) REFERENCES prefects(prefect_id)
 );
 
--- Starbases
+-- Surface ports (ground facilities; built first, starbase constructed above)
+CREATE TABLE IF NOT EXISTS surface_ports (
+    port_id INTEGER PRIMARY KEY,
+    game_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    body_id INTEGER NOT NULL,
+    surface_x INTEGER NOT NULL,
+    surface_y INTEGER NOT NULL,
+    owner_prefect_id INTEGER,
+    complexes INTEGER DEFAULT 0,
+    workers INTEGER DEFAULT 0,
+    troops INTEGER DEFAULT 0,
+    FOREIGN KEY (game_id) REFERENCES games(game_id)
+);
+
+-- Starbases (orbital facilities; may be built above a surface port)
 CREATE TABLE IF NOT EXISTS starbases (
     base_id INTEGER PRIMARY KEY,
     game_id TEXT NOT NULL,
@@ -529,29 +588,14 @@ CREATE TABLE IF NOT EXISTS starbases (
     grid_col TEXT NOT NULL,
     grid_row INTEGER NOT NULL,
     orbiting_body_id INTEGER,
+    surface_port_id INTEGER,
     complexes INTEGER DEFAULT 0,
     workers INTEGER DEFAULT 0,
     troops INTEGER DEFAULT 0,
     has_market INTEGER DEFAULT 0,
     docking_capacity INTEGER DEFAULT 10,
-    FOREIGN KEY (game_id) REFERENCES games(game_id)
-);
-
--- Surface ports (ground facilities linked to orbital starbases)
-CREATE TABLE IF NOT EXISTS surface_ports (
-    port_id INTEGER PRIMARY KEY,
-    game_id TEXT NOT NULL,
-    name TEXT NOT NULL,
-    body_id INTEGER NOT NULL,
-    surface_x INTEGER NOT NULL,
-    surface_y INTEGER NOT NULL,
-    parent_base_id INTEGER,
-    owner_prefect_id INTEGER,
-    complexes INTEGER DEFAULT 0,
-    workers INTEGER DEFAULT 0,
-    troops INTEGER DEFAULT 0,
     FOREIGN KEY (game_id) REFERENCES games(game_id),
-    FOREIGN KEY (parent_base_id) REFERENCES starbases(base_id)
+    FOREIGN KEY (surface_port_id) REFERENCES surface_ports(port_id)
 );
 
 -- Outposts (lightweight surface installations, smaller than surface ports)
@@ -1094,8 +1138,18 @@ def split_legacy_db(legacy_path):
     # Disable FK constraints during bulk import
     state_conn.execute("PRAGMA foreign_keys = OFF")
 
+    # Build port_id -> base_id mapping from legacy (for starbase.surface_port_id)
+    port_to_base = {}
+    if legacy.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='surface_ports'").fetchone():
+        sp_cols = [r[1] for r in legacy.execute("PRAGMA table_info(surface_ports)").fetchall()]
+        if 'parent_base_id' in sp_cols:
+            for row in legacy.execute(
+                "SELECT port_id, parent_base_id FROM surface_ports WHERE parent_base_id IS NOT NULL"
+            ).fetchall():
+                port_to_base[row['parent_base_id']] = row['port_id']
+
     state_tables = [
-        'games', 'players', 'prefects', 'ships', 'starbases', 'surface_ports', 'outposts',
+        'games', 'players', 'prefects', 'ships', 'surface_ports', 'starbases', 'outposts',
         'officers', 'installed_items', 'cargo_items',
         'base_trade_config', 'market_prices',
         'known_contacts', 'turn_orders', 'pending_orders', 'messages', 'faction_requests', 'moderator_actions', 'turn_log',
@@ -1124,6 +1178,13 @@ def split_legacy_db(legacy_path):
                 )
             except sqlite3.IntegrityError:
                 pass
+
+    # Set starbases.surface_port_id from legacy port->base mapping
+    for base_id, port_id in port_to_base.items():
+        state_conn.execute(
+            "UPDATE starbases SET surface_port_id = ? WHERE base_id = ?",
+            (port_id, base_id)
+        )
 
     state_conn.commit()
     state_conn.close()

@@ -256,17 +256,25 @@ def list_universe(universe_db_path=None):
             ports = sc.execute("SELECT * FROM surface_ports ORDER BY port_id").fetchall()
             if ports:
                 print(f"\nSurface Ports ({len(ports)}):")
+                base_cols = [c[1] for c in sc.execute("PRAGMA table_info(starbases)").fetchall()]
+                sp_cols = [c[1] for c in sc.execute("PRAGMA table_info(surface_ports)").fetchall()]
                 for p in ports:
-                    parent = ""
-                    if p['parent_base_id']:
+                    # Starbase built above this port (new: starbase.surface_port_id; legacy: port.parent_base_id)
+                    base = None
+                    if 'surface_port_id' in base_cols:
                         base = sc.execute(
-                            "SELECT name FROM starbases WHERE base_id = ?",
+                            "SELECT base_id, name FROM starbases WHERE surface_port_id = ?",
+                            (p['port_id'],)
+                        ).fetchone()
+                    elif 'parent_base_id' in sp_cols and p.get('parent_base_id'):
+                        base = sc.execute(
+                            "SELECT base_id, name FROM starbases WHERE base_id = ?",
                             (p['parent_base_id'],)
                         ).fetchone()
-                        parent = f"  -> {base['name']} ({p['parent_base_id']})" if base else f"  -> base {p['parent_base_id']}"
+                    above = f"  <- {base['name']} ({base['base_id']})" if base else ""
                     print(f"  {p['port_id']:>8d}  {p['name']:<20s}  on body {p['body_id']}  "
                           f"at ({p['surface_x']},{p['surface_y']})  "
-                          f"cx={p['complexes']} wk={p['workers']} tp={p['troops']}{parent}")
+                          f"cx={p['complexes']} wk={p['workers']} tp={p['troops']}{above}")
         # Outposts
         has_op = sc.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='outposts'"

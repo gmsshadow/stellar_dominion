@@ -244,66 +244,66 @@ def create_game(db_path=None, game_id="OMICRON101", game_name="Stellar Dominion 
     """)
 
     # =============================================
-    # STARBASES (3 dockable bases)
+    # SURFACE PORTS (ground facilities; built first, starbase above)
     # =============================================
+    # One per planet that will have a starbase; placed near centre of surface grid
 
-    # Citadel Station - orbiting Orion at H04
-    c.execute("""
-        INSERT INTO starbases 
-        (base_id, game_id, name, base_type, system_id, grid_col, grid_row, orbiting_body_id,
-         complexes, workers, troops, has_market, docking_capacity)
-        VALUES (45687590, ?, 'Citadel Station', 'Starbase', 101, 'H', 4, 247985,
-                25, 500, 100, 1, 5)
-    """, (game_id,))
-
-    # Tartarus Depot - orbiting Tartarus at R08
-    c.execute("""
-        INSERT INTO starbases 
-        (base_id, game_id, name, base_type, system_id, grid_col, grid_row, orbiting_body_id,
-         complexes, workers, troops, has_market, docking_capacity)
-        VALUES (12340001, ?, 'Tartarus Depot', 'Starbase', 101, 'R', 8, 301442,
-                10, 200, 50, 1, 3)
-    """, (game_id,))
-
-    # Meridian Waystation - orbiting Meridian at T20
-    c.execute("""
-        INSERT INTO starbases 
-        (base_id, game_id, name, base_type, system_id, grid_col, grid_row, orbiting_body_id,
-         complexes, workers, troops, has_market, docking_capacity)
-        VALUES (78901234, ?, 'Meridian Waystation', 'Starbase', 101, 'T', 20, 412003,
-                8, 150, 30, 1, 3)
-    """, (game_id,))
-
-    # =============================================
-    # SURFACE PORTS (ground facilities linked to orbital starbases)
-    # =============================================
-    # One per planet that has a starbase; placed near centre of surface grid
-
-    # Orion Landing (on Orion, 31x31 grid) - linked to Citadel Station
+    # Orion Landing (on Orion, 31x31 grid) - Citadel Station built above
     c.execute("""
         INSERT INTO surface_ports
         (port_id, game_id, name, body_id, surface_x, surface_y,
-         parent_base_id, complexes, workers, troops)
+         complexes, workers, troops)
         VALUES (30100001, ?, 'Orion Landing', 247985, 16, 16,
-                45687590, 10, 200, 50)
+                10, 200, 50)
     """, (game_id,))
 
-    # Tartarus Foundry (on Tartarus, 31x31 grid) - linked to Tartarus Depot
+    # Tartarus Foundry (on Tartarus, 31x31 grid) - Tartarus Depot built above
     c.execute("""
         INSERT INTO surface_ports
         (port_id, game_id, name, body_id, surface_x, surface_y,
-         parent_base_id, complexes, workers, troops)
+         complexes, workers, troops)
         VALUES (30100002, ?, 'Tartarus Foundry', 301442, 13, 13,
-                12340001, 5, 100, 25)
+                5, 100, 25)
     """, (game_id,))
 
-    # Meridian Harbour (on Meridian, 31x31 grid) - linked to Meridian Waystation
+    # Meridian Harbour (on Meridian, 31x31 grid) - Meridian Waystation built above
     c.execute("""
         INSERT INTO surface_ports
         (port_id, game_id, name, body_id, surface_x, surface_y,
-         parent_base_id, complexes, workers, troops)
+         complexes, workers, troops)
         VALUES (30100003, ?, 'Meridian Harbour', 412003, 11, 11,
-                78901234, 4, 80, 15)
+                4, 80, 15)
+    """, (game_id,))
+
+    # =============================================
+    # STARBASES (3 dockable bases; built above surface ports)
+    # =============================================
+
+    # Citadel Station - orbiting Orion at H04, above Orion Landing
+    c.execute("""
+        INSERT INTO starbases 
+        (base_id, game_id, name, base_type, system_id, grid_col, grid_row, orbiting_body_id,
+         surface_port_id, complexes, workers, troops, has_market, docking_capacity)
+        VALUES (45687590, ?, 'Citadel Station', 'Starbase', 101, 'H', 4, 247985,
+                30100001, 25, 500, 100, 1, 5)
+    """, (game_id,))
+
+    # Tartarus Depot - orbiting Tartarus at R08, above Tartarus Foundry
+    c.execute("""
+        INSERT INTO starbases 
+        (base_id, game_id, name, base_type, system_id, grid_col, grid_row, orbiting_body_id,
+         surface_port_id, complexes, workers, troops, has_market, docking_capacity)
+        VALUES (12340001, ?, 'Tartarus Depot', 'Starbase', 101, 'R', 8, 301442,
+                30100002, 10, 200, 50, 1, 3)
+    """, (game_id,))
+
+    # Meridian Waystation - orbiting Meridian at T20, above Meridian Harbour
+    c.execute("""
+        INSERT INTO starbases 
+        (base_id, game_id, name, base_type, system_id, grid_col, grid_row, orbiting_body_id,
+         surface_port_id, complexes, workers, troops, has_market, docking_capacity)
+        VALUES (78901234, ?, 'Meridian Waystation', 'Starbase', 101, 'T', 20, 412003,
+                30100003, 8, 150, 30, 1, 3)
     """, (game_id,))
 
     # =============================================
