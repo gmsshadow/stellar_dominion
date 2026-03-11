@@ -49,19 +49,19 @@ def get_connection(state_db_path=None, universe_db_path=None):
         # Migrate universe.db: add origin_system_id to trade_goods if missing
         tg_cols = [r[1] for r in conn.execute("PRAGMA universe.table_info(trade_goods)").fetchall()]
         if 'origin_system_id' not in tg_cols:
-            conn.execute("ALTER TABLE trade_goods ADD COLUMN origin_system_id INTEGER DEFAULT NULL")
+            conn.execute("ALTER TABLE universe.trade_goods ADD COLUMN origin_system_id INTEGER DEFAULT NULL")
             conn.commit()
         # Migrate universe.db: add resource_id to celestial_bodies if missing
         cb_cols = [r[1] for r in conn.execute("PRAGMA universe.table_info(celestial_bodies)").fetchall()]
         if 'resource_id' not in cb_cols:
-            conn.execute("ALTER TABLE celestial_bodies ADD COLUMN resource_id INTEGER DEFAULT NULL")
+            conn.execute("ALTER TABLE universe.celestial_bodies ADD COLUMN resource_id INTEGER DEFAULT NULL")
             conn.commit()
         # Migrate universe.db: create resources table if missing
         has_resources = conn.execute(
             "SELECT name FROM universe.sqlite_master WHERE type='table' AND name='resources'"
         ).fetchone()
         if not has_resources:
-            conn.execute("""CREATE TABLE IF NOT EXISTS resources (
+            conn.execute("""CREATE TABLE IF NOT EXISTS universe.resources (
                 resource_id INTEGER PRIMARY KEY,
                 name TEXT NOT NULL,
                 description TEXT DEFAULT '',
@@ -69,12 +69,29 @@ def get_connection(state_db_path=None, universe_db_path=None):
             )""")
             conn.commit()
 
+        # Cleanup: if ship_components was incorrectly created in game_state.db (main),
+        # drop it — it belongs in universe.db only
+        main_has_components = conn.execute(
+            "SELECT name FROM main.sqlite_master WHERE type='table' AND name='ship_components'"
+        ).fetchone()
+        if main_has_components:
+            conn.execute("DROP TABLE IF EXISTS main.ship_components")
+            conn.commit()
+
+        # Cleanup: same for resources table
+        main_has_resources = conn.execute(
+            "SELECT name FROM main.sqlite_master WHERE type='table' AND name='resources'"
+        ).fetchone()
+        if main_has_resources:
+            conn.execute("DROP TABLE IF EXISTS main.resources")
+            conn.commit()
+
         # Migrate universe.db: create ship_components table if missing
         has_components = conn.execute(
             "SELECT name FROM universe.sqlite_master WHERE type='table' AND name='ship_components'"
         ).fetchone()
         if not has_components:
-            conn.execute("""CREATE TABLE IF NOT EXISTS ship_components (
+            conn.execute("""CREATE TABLE IF NOT EXISTS universe.ship_components (
                 component_id INTEGER PRIMARY KEY,
                 name TEXT NOT NULL,
                 category TEXT NOT NULL,
@@ -110,7 +127,7 @@ def get_connection(state_db_path=None, universe_db_path=None):
                 (161, 'Jump Drive Mk2', 'jump_drive', 150, 0, 0, 0, 0, 0, 0, 10, 100, None, 12000, 'Advanced jump drive.'),
             ]
             for c in seed_components:
-                conn.execute("""INSERT OR IGNORE INTO ship_components VALUES
+                conn.execute("""INSERT OR IGNORE INTO universe.ship_components VALUES
                     (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", c)
             conn.commit()
 
