@@ -14,8 +14,8 @@ SHIP SHIP_ID
 # --- NAVIGATION ---
 WAIT 30                    # Wait 30 OC (do nothing)
 MOVE M13                   # Move to grid square M13 (2 OC per square)
-LOCATIONSCAN               # Scan nearby area (20 OC)
-SYSTEMSCAN                 # Full system map (20 OC)
+SCANLOCATION               # Scan nearby area (20 OC)
+SCANSYSTEM                 # Full system map (20 OC)
 JUMP 102                   # Jump to linked star system by system_id (60 OC)
 ORBIT 247985               # Enter orbit of a planet/moon/gas giant by body_id (10 OC)
 DOCK 45687590              # Dock at a starbase by base_id (must be at same location, 30 OC)
@@ -23,7 +23,7 @@ UNDOCK                     # Leave docked starbase (10 OC)
 
 # --- PLANET SURFACE ---
 LAND 247985 15 15          # Land on a body at surface coordinates x y (20 OC)
-SURFACESCAN                # Scan surface terrain at landing site (20 OC)
+SCANSURFACE                # Scan surface terrain at landing site (20 OC)
 TAKEOFF                    # Take off from surface back to orbit (20 OC)
 
 # --- TRADING (must be docked, all 0 OC) ---

@@ -110,7 +110,7 @@ def _split_body_and_maps(text):
                 segments.append(("".join(map_block), "map"))
             continue
 
-        # System map detection (25x25 grid maps from SYSTEMSCAN)
+        # System map detection (25x25 grid maps from SCANSYSTEM)
         stripped = lines[i].strip()
         if stripped.startswith("A  B  C  D  E"):
             # Flush body up to but not including this line

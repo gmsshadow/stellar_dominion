@@ -123,7 +123,7 @@ python pbem.py run-turn --game OMICRON101
 python pbem.py review-orders --game OMICRON101
 python pbem.py edit-order --game OMICRON101 --order-id N --command "MOVE M13"
 python pbem.py delete-order --game OMICRON101 --order-id N
-python pbem.py inject-order --game OMICRON101 --ship S --command "SYSTEMSCAN"
+python pbem.py inject-order --game OMICRON101 --ship S --command "SCANSYSTEM"
 ```
 
 ## Player & Faction Management
@@ -175,7 +175,7 @@ Alice's orders include a MODERATOR request:
 ```yaml
 orders:
   - MODERATOR: Can I swap a Cargo Bay for a Deep Space Scanner?
-  - LOCATIONSCAN
+  - SCANLOCATION
   - MOVE: H15
 ```
 

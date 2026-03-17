@@ -12,14 +12,14 @@ from pathlib import Path
 VALID_COMMANDS = {
     'WAIT': {'params': 'integer', 'description': 'Wait for n Operational Cycles (OC)'},
     'MOVE': {'params': 'coordinate', 'description': 'Move to grid coordinate'},
-    'LOCATIONSCAN': {'params': 'none', 'description': 'Scan nearby cells'},
-    'SYSTEMSCAN': {'params': 'none', 'description': 'Produce system map'},
+    'SCANLOCATION': {'params': 'none', 'description': 'Scan nearby cells'},
+    'SCANSYSTEM': {'params': 'none', 'description': 'Produce system map'},
     'ORBIT': {'params': 'body_id', 'description': 'Orbit a celestial body'},
     'DOCK': {'params': 'base_id', 'description': 'Dock at a starbase'},
     'UNDOCK': {'params': 'none', 'description': 'Leave docked starbase'},
     'LAND': {'params': 'land_order', 'description': 'Land on a planet or moon at coordinates'},
     'TAKEOFF': {'params': 'none', 'description': 'Take off from planet surface to orbit'},
-    'SURFACESCAN': {'params': 'none', 'description': 'Scan the surface of the planet you are landed on'},
+    'SCANSURFACE': {'params': 'none', 'description': 'Scan the surface of the planet you are orbiting or landed on'},
     'BUY': {'params': 'trade_order', 'description': 'Buy items from base market'},
     'SELL': {'params': 'trade_order', 'description': 'Sell items to base market'},
     'GETMARKET': {'params': 'base_id', 'description': 'View base market prices'},
@@ -36,6 +36,14 @@ VALID_COMMANDS = {
     'CHANGEFACTION': {'params': 'changefaction_order', 'description': 'Request to change faction (GM-moderated)'},
     'MODERATOR': {'params': 'moderator_order', 'description': 'Submit a free-text request to the GM'},
     'CLEAR': {'params': 'none', 'description': 'Clear all pending overflow orders from previous turns'},
+}
+
+# Backwards-compatible command aliases (old -> new).
+# We normalize to the new "SCAN*" naming so reports/logs are consistent.
+COMMAND_ALIASES = {
+    'LOCATIONSCAN': 'SCANLOCATION',
+    'SYSTEMSCAN': 'SCANSYSTEM',
+    'SURFACESCAN': 'SCANSURFACE',
 }
 
 # Grid coordinate pattern: A-Y followed by 01-25
@@ -62,6 +70,7 @@ def parse_order(command_str, params):
     Returns (command, parsed_params, error) tuple.
     """
     command = command_str.upper().strip()
+    command = COMMAND_ALIASES.get(command, command)
 
     if command not in VALID_COMMANDS:
         return command, params, f"Unknown command: {command}"
@@ -390,7 +399,7 @@ def parse_yaml_orders(yaml_content):
     orders:
       - WAIT: 50
       - MOVE: M13
-      - LOCATIONSCAN: {}
+      - SCANLOCATION: {}
       - DOCK: 45687590
     
     Returns dict with game, account, ship, and parsed orders list.
@@ -459,7 +468,7 @@ def parse_text_orders(text_content):
     SHIP 2547876
     WAIT 50
     MOVE M13
-    LOCATIONSCAN
+    SCANLOCATION
     MOVE D08
     ORBIT 247985
     DOCK 45687590

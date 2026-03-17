@@ -18,14 +18,14 @@ from engine.maps.system_map import (
 TU_COSTS = {
     'WAIT': 0,         # cost is the parameter value itself
     'MOVE': 2,         # per square moved (incremental)
-    'LOCATIONSCAN': 20,
-    'SYSTEMSCAN': 20,
+    'SCANLOCATION': 20,
+    'SCANSYSTEM': 20,
     'ORBIT': 10,
     'DOCK': 30,
     'UNDOCK': 10,
     'LAND': 20,
     'TAKEOFF': 20,
-    'SURFACESCAN': 20,
+    'SCANSURFACE': 20,
     'BUY': 0,          # trading while docked is free
     'SELL': 0,
     'GETMARKET': 0,
@@ -41,6 +41,13 @@ TU_COSTS = {
     'RENAMEOFFICER': 0,
     'CHANGEFACTION': 0,
     'MODERATOR': 0,
+}
+
+# Backwards-compatible command aliases (old -> new)
+COMMAND_ALIASES = {
+    'LOCATIONSCAN': 'SCANLOCATION',
+    'SYSTEMSCAN': 'SCANSYSTEM',
+    'SURFACESCAN': 'SCANSURFACE',
 }
 
 # Special item IDs
@@ -91,7 +98,9 @@ class TurnResolver:
         Returns dict: moved (bool), finished (bool), step (col, row),
                       orbit_msg (str), error_msg (str or None).
         """
-        cost = self._effective_tu_cost(state['move_cost'], state.get('efficiency', 100.0))
+        cost = self._effective_move_step_cost(state)
+        if cost is None:
+            return {'moved': False, 'finished': True, 'blocked_no_engine': True}
 
         # Already there
         if state['col'] == target_col and state['row'] == target_row:
@@ -186,6 +195,7 @@ class TurnResolver:
                 'row': ship['grid_row'],
                 'tu': ship['tu_per_turn'],
                 'move_cost': TU_COSTS['MOVE'],  # per-ship; will vary by engines
+                'move_efficiency': 100.0,       # movement-only efficiency (engines)
                 'docked_at': ship['docked_at_base_id'],
                 'orbiting': ship['orbiting_body_id'],
                 'landed': ship['landed_body_id'] if 'landed_body_id' in ship.keys() else None,
@@ -196,6 +206,8 @@ class TurnResolver:
                 'start_tu': ship['tu_per_turn'],
                 'efficiency': self._calc_efficiency(ship),
             }
+            ship_size = ship['ship_size'] if 'ship_size' in ship.keys() else ship['hull_count']
+            states[ship_id]['move_efficiency'] = self._calc_move_efficiency(ship_id, ship_size)
             logs[ship_id] = []
             overflows[ship_id] = []
             contacts_map[ship_id] = []
@@ -416,7 +428,8 @@ class TurnResolver:
         eff = state.get('efficiency', 100.0)
 
         if cmd == 'MOVE':
-            return self._effective_tu_cost(state['move_cost'], eff)
+            cost = self._effective_move_step_cost(state)
+            return cost or 0
         elif cmd == 'WAIT':
             if isinstance(params, (int, float)):
                 return min(int(params), state['tu'])
@@ -434,7 +447,7 @@ class TurnResolver:
         tu_before = acc['tu_before']
         orbit_msg = acc['orbit_msg']
         steps_taken = len(waypoints) - 1  # first entry is start position
-        effective_move_cost = self._effective_tu_cost(state['move_cost'], state.get('efficiency', 100.0))
+        effective_move_cost = self._effective_move_step_cost(state) or 0
         total_cost = steps_taken * effective_move_cost
         tu_exhausted = False
 
@@ -447,8 +460,10 @@ class TurnResolver:
             msg = "Cannot move while docked. UNDOCK first. Order dropped."
         elif final_step.get('blocked_landed'):
             msg = "Cannot move while landed. TAKEOFF first. Order dropped."
+        elif final_step.get('blocked_no_engine'):
+            msg = "Cannot move: no functioning engines installed. Order dropped."
         elif steps_taken == 0 and final_step.get('out_of_tu'):
-            eff_mc = self._effective_tu_cost(state['move_cost'], state.get('efficiency', 100.0))
+            eff_mc = self._effective_move_step_cost(state) or 0
             msg = (f"Insufficient OC for move ({state['tu']} < "
                    f"{eff_mc}). Order carries forward.")
             tu_exhausted = True
@@ -492,6 +507,51 @@ class TurnResolver:
         return self.conn.execute(
             "SELECT * FROM games WHERE game_id = ?", (self.game_id,)
         ).fetchone()
+
+    def _effective_move_step_cost(self, state):
+        """
+        MOVE uses two factors:
+        - Engines: inverse scaling (fewer engines => higher cost), capped at optimal.
+        - Crew: standard linear OC penalty (shared with other actions).
+        """
+        base = state.get('move_cost', TU_COSTS['MOVE'])
+        eng_pct = float(state.get('move_efficiency', 100.0) or 0.0)
+        if eng_pct <= 0.0:
+            return None  # blocked (no engines)
+
+        engine_ratio = min(1.0, eng_pct / 100.0)
+        engine_scaled = math.ceil(base / engine_ratio) if engine_ratio > 0 else None
+        if engine_scaled is None:
+            return None
+
+        crew_eff = float(state.get('efficiency', 100.0) or 0.0)
+        return self._effective_tu_cost(engine_scaled, crew_eff)
+
+    def _calc_move_efficiency(self, ship_id, ship_size):
+        """
+        Movement efficiency from installed engines.
+        Rule: optimal engines = 1 per size-10 (ship_size//10), minimum 1.
+        Efficiency = min(engine_count / optimal, 1.0) * 100.
+        If engine_count == 0, efficiency is 0 (MOVE blocked).
+        """
+        try:
+            size = int(ship_size) if ship_size is not None else 50
+        except (ValueError, TypeError):
+            size = 50
+        optimal = max(1, size // 10)
+
+        row = self.conn.execute("""
+            SELECT COALESCE(SUM(ii.quantity), 0) AS engine_count
+            FROM installed_items ii
+            JOIN ship_components sc ON ii.component_id = sc.component_id
+            WHERE ii.ship_id = ? AND sc.category = 'engine'
+        """, (ship_id,)).fetchone()
+        engine_count = int(row['engine_count']) if row and row['engine_count'] is not None else 0
+
+        if engine_count <= 0:
+            return 0.0
+        ratio = min(1.0, engine_count / float(optimal))
+        return ratio * 100.0
 
     def _get_market_cycle_week(self, game=None):
         """Get the cycle start week for current market prices."""
@@ -650,6 +710,7 @@ class TurnResolver:
             'row': ship['grid_row'],
             'tu': ship['tu_per_turn'],  # Reset TU at start of turn
             'move_cost': TU_COSTS['MOVE'],  # per-ship; will vary by engines
+            'move_efficiency': 100.0,       # movement-only efficiency (engines)
             'docked_at': ship['docked_at_base_id'],
             'orbiting': ship['orbiting_body_id'],
             'landed': ship['landed_body_id'] if 'landed_body_id' in ship.keys() else None,
@@ -660,6 +721,8 @@ class TurnResolver:
             'start_tu': ship['tu_per_turn'],
             'efficiency': self._calc_efficiency(ship),
         }
+        ship_size = ship['ship_size'] if 'ship_size' in ship.keys() else ship['hull_count']
+        state['move_efficiency'] = self._calc_move_efficiency(ship_id, ship_size)
 
         self.log = []
         self.contacts = []
@@ -725,7 +788,7 @@ class TurnResolver:
 
     def _execute_order(self, state, order, rng):
         """Execute a single order, modifying state in place."""
-        cmd = order['command']
+        cmd = COMMAND_ALIASES.get(order['command'], order['command'])
         params = order['params']
         tu_before = state['tu']
 
@@ -733,9 +796,9 @@ class TurnResolver:
             return self._cmd_wait(state, params)
         elif cmd == 'MOVE':
             return self._cmd_move(state, params)
-        elif cmd == 'LOCATIONSCAN':
+        elif cmd == 'SCANLOCATION':
             return self._cmd_location_scan(state, rng)
-        elif cmd == 'SYSTEMSCAN':
+        elif cmd == 'SCANSYSTEM':
             return self._cmd_system_scan(state)
         elif cmd == 'ORBIT':
             return self._cmd_orbit(state, params)
@@ -747,7 +810,7 @@ class TurnResolver:
             return self._cmd_land(state, params)
         elif cmd == 'TAKEOFF':
             return self._cmd_takeoff(state)
-        elif cmd == 'SURFACESCAN':
+        elif cmd == 'SCANSURFACE':
             return self._cmd_surfacescan(state)
         elif cmd == 'BUY':
             return self._cmd_buy(state, params)
@@ -825,7 +888,24 @@ class TurnResolver:
         tu_before = state['tu']
         target_col = params['col']
         target_row = params['row']
-        cost_per_step = self._effective_tu_cost(state['move_cost'], state['efficiency'])
+        if float(state.get('move_efficiency', 100.0) or 0.0) <= 0.0:
+            return {
+                'command': 'MOVE', 'params': f"{target_col}{target_row:02d}",
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0,
+                'success': False,
+                'message': "Cannot move: no functioning engines installed. Order dropped."
+            }
+
+        cost_per_step = self._effective_move_step_cost(state)
+        if cost_per_step is None:
+            return {
+                'command': 'MOVE', 'params': f"{target_col}{target_row:02d}",
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0,
+                'success': False,
+                'message': "Cannot move: no functioning engines installed. Order dropped."
+            }
 
         # Already there?
         if state['col'] == target_col and state['row'] == target_row:
@@ -952,13 +1032,13 @@ class TurnResolver:
         return path
 
     def _cmd_location_scan(self, state, rng):
-        """LOCATIONSCAN - scan nearby cells for objects."""
+        """SCANLOCATION - scan nearby cells for objects."""
         tu_before = state['tu']
-        cost = self._effective_tu_cost(TU_COSTS['LOCATIONSCAN'], state['efficiency'])
+        cost = self._effective_tu_cost(TU_COSTS['SCANLOCATION'], state['efficiency'])
 
         if state['tu'] < cost:
             return {
-                'command': 'LOCATIONSCAN', 'params': None,
+                'command': 'SCANLOCATION', 'params': None,
                 'tu_before': tu_before, 'tu_after': state['tu'],
                 'tu_cost': 0,
                 'success': False, 'tu_exhausted': True,
@@ -1006,7 +1086,7 @@ class TurnResolver:
             scan_lines = ["Scan complete. No contacts detected."]
 
         return {
-            'command': 'LOCATIONSCAN', 'params': None,
+            'command': 'SCANLOCATION', 'params': None,
             'tu_before': tu_before, 'tu_after': state['tu'],
             'tu_cost': cost,
             'success': True,
@@ -1015,13 +1095,13 @@ class TurnResolver:
         }
 
     def _cmd_system_scan(self, state):
-        """SYSTEMSCAN - produce full system map."""
+        """SCANSYSTEM - produce full system map."""
         tu_before = state['tu']
-        cost = self._effective_tu_cost(TU_COSTS['SYSTEMSCAN'], state['efficiency'])
+        cost = self._effective_tu_cost(TU_COSTS['SCANSYSTEM'], state['efficiency'])
 
         if state['tu'] < cost:
             return {
-                'command': 'SYSTEMSCAN', 'params': None,
+                'command': 'SCANSYSTEM', 'params': None,
                 'tu_before': tu_before, 'tu_after': state['tu'],
                 'tu_cost': 0,
                 'success': False, 'tu_exhausted': True,
@@ -1052,7 +1132,7 @@ class TurnResolver:
         ascii_map = render_system_map(system_data, map_objects)
 
         return {
-            'command': 'SYSTEMSCAN', 'params': None,
+            'command': 'SCANSYSTEM', 'params': None,
             'tu_before': tu_before, 'tu_after': state['tu'],
             'tu_cost': cost,
             'success': True,
@@ -1365,16 +1445,16 @@ class TurnResolver:
         }
 
     def _cmd_surfacescan(self, state):
-        """SURFACESCAN - produce a terrain map of the planet the ship is orbiting or landed on."""
+        """SCANSURFACE - produce a terrain map of the planet the ship is orbiting or landed on."""
         from engine.maps.surface_gen import get_or_generate_surface, render_surface_map
         tu_before = state['tu']
-        cost = self._effective_tu_cost(TU_COSTS['SURFACESCAN'], state['efficiency'])
+        cost = self._effective_tu_cost(TU_COSTS['SCANSURFACE'], state['efficiency'])
 
         # Determine which body to scan - landed takes priority, then orbiting
         body_id = state['landed'] or state['orbiting']
         if not body_id:
             return {
-                'command': 'SURFACESCAN', 'params': None,
+                'command': 'SCANSURFACE', 'params': None,
                 'tu_before': tu_before, 'tu_after': state['tu'],
                 'tu_cost': 0, 'success': False,
                 'message': "Cannot scan surface: ship must be orbiting or landed on a planet or moon."
@@ -1382,7 +1462,7 @@ class TurnResolver:
 
         if state['tu'] < cost:
             return {
-                'command': 'SURFACESCAN', 'params': None,
+                'command': 'SCANSURFACE', 'params': None,
                 'tu_before': tu_before, 'tu_after': state['tu'],
                 'tu_cost': 0, 'success': False, 'tu_exhausted': True,
                 'message': f"Insufficient OC for surface scan ({state['tu']} < {cost}). Order carries forward."
@@ -1393,7 +1473,7 @@ class TurnResolver:
         ).fetchone()
         if not body:
             return {
-                'command': 'SURFACESCAN', 'params': None,
+                'command': 'SCANSURFACE', 'params': None,
                 'tu_before': tu_before, 'tu_after': state['tu'],
                 'tu_cost': 0, 'success': False,
                 'message': f"Cannot scan surface: body {body_id} not found."
@@ -1443,7 +1523,7 @@ class TurnResolver:
 
         scan_type = "landed on" if state['landed'] else "orbiting"
         return {
-            'command': 'SURFACESCAN', 'params': None,
+            'command': 'SCANSURFACE', 'params': None,
             'tu_before': tu_before, 'tu_after': state['tu'],
             'tu_cost': cost, 'success': True,
             'message': message,

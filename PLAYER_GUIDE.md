@@ -50,7 +50,7 @@ game: OMICRON101
 ship: 52589098
 account: 87654321
 orders:
-  - LOCATIONSCAN
+  - SCANLOCATION
   - MOVE: F10
   - DOCK: 45687590
   - BUY: {base: 45687590, item: 100101, qty: 50}
@@ -63,7 +63,7 @@ game: OMICRON101
 ship: 52589098
 account: 87654321
 
-LOCATIONSCAN
+SCANLOCATION
 MOVE F10
 DOCK 45687590
 BUY 45687590 100101 50
@@ -79,14 +79,14 @@ Every action costs OC. Your ship starts each turn with 300 OC.
 | Command | Base OC Cost | Description |
 |---------|-------------|-------------|
 | **MOVE** | 2 per step | Move one grid square toward a coordinate |
-| **LOCATIONSCAN** | 20 | Scan nearby area |
-| **SYSTEMSCAN** | 20 | Full system map |
+| **SCANLOCATION** | 20 | Scan nearby area |
+| **SCANSYSTEM** | 20 | Full system map |
 | **ORBIT** | 10 | Enter orbit around a body |
 | **DOCK** | 30 | Dock at a starbase |
 | **UNDOCK** | 10 | Leave a starbase |
 | **LAND** | 20 | Land on a planet surface |
 | **TAKEOFF** | 20 | Take off to orbit |
-| **SURFACESCAN** | 20 | Scan planet surface |
+| **SCANSURFACE** | 20 | Scan planet surface |
 | **JUMP** | 150 | Jump to a linked star system |
 | **MAKEOFFICER** | 10 | Promote a crew member |
 | **INSTALL** | 10 | Install a component from cargo |
@@ -105,13 +105,13 @@ Every action costs OC. Your ship starts each turn with 300 OC.
 
 ### Movement
 
-**MOVE** `<coordinate>` — Move toward a grid coordinate (e.g. `MOVE F10`). Costs 2 OC per square. Ships without a Sublight Engine cannot move.
+**MOVE** `<coordinate>` — Move toward a grid coordinate (e.g. `MOVE F10`). Costs 2 OC per square (engine/crew penalties may increase this). Ships without a Sublight Engine cannot move.
 
 **JUMP** `<system_id>` — Jump to another star system. Requires a Jump Drive. Cost depends on installed drive (Mk1: 150 OC). Must be at least 10 squares from the primary star.
 
 ### Scanning
 
-**LOCATIONSCAN** — Shows objects near your position. **SYSTEMSCAN** — Full 25×25 system map. **SURFACESCAN** — Planet terrain (must be landed).
+**SCANLOCATION** — Shows objects near your position. **SCANSYSTEM** — Full 25×25 system map. **SCANSURFACE** — Planet terrain (must be landed or orbiting).
 
 ### Orbital & Docking
 
@@ -208,7 +208,7 @@ Starbases have markets with rotating prices on a 4-week cycle. Each base special
 
 ## Tips
 
-1. Scan first — `LOCATIONSCAN` and `SYSTEMSCAN` reveal the map.
+1. Scan first — `SCANLOCATION` and `SCANSYSTEM` reveal the map.
 2. Trade between bases — buy where goods are produced, sell where they're demanded.
 3. Keep your ship crewed — undermanning increases all OC costs.
 4. Use `MODERATOR` for anything non-standard — the GM can modify your ship between orders.

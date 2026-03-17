@@ -410,7 +410,7 @@ def generate_welcome_reports(db_path, game_id, account_number, prefect_id, ship_
     """
     Generate welcome reports for a newly added player.
     
-    Runs a SYSTEMSCAN on their ship and produces both a ship report
+    Runs a SCANSYSTEM on their ship and produces both a ship report
     and a prefect report with an introductory welcome message.
     Reports are stored in the processed turn folder.
     """
@@ -421,10 +421,10 @@ def generate_welcome_reports(db_path, game_id, account_number, prefect_id, ship_
     turn_str = f"{game['current_year']}.{game['current_week']}"
     conn.close()
 
-    # Run SYSTEMSCAN as the welcome order
+    # Run SCANSYSTEM as the welcome order
     resolver = TurnResolver(db_path, game_id=game_id)
     welcome_orders = [
-        {'sequence': 1, 'command': 'SYSTEMSCAN', 'params': None},
+        {'sequence': 1, 'command': 'SCANSYSTEM', 'params': None},
     ]
     result = resolver.resolve_ship_turn(ship_id, welcome_orders)
     resolver.close()
@@ -463,21 +463,21 @@ def generate_welcome_reports(db_path, game_id, account_number, prefect_id, ship_
             ship: YOUR_SHIP_ID
             orders:
               - MOVE: M13          # Move to grid square M13
-              - LOCATIONSCAN: {{}}   # Scan nearby area on arrival
+              - SCANLOCATION: {{}}   # Scan nearby area on arrival
               - ORBIT: 247985      # Enter orbit of a planet (use body ID)
               - DOCK: 45687590     # Dock at a starbase (use base ID)
 
         AVAILABLE COMMANDS
         -------------------
         MOVE <coord>       Move to a grid square (e.g. M13, H04). Costs 2 OC/square.
-        LOCATIONSCAN       Scan nearby space. Costs 20 OC.
-        SYSTEMSCAN         Produce a full system map. Costs 20 OC.
+        SCANLOCATION       Scan nearby space. Costs 20 OC.
+        SCANSYSTEM         Produce a full system map. Costs 20 OC.
         ORBIT <body_id>    Enter orbit of a planet, moon, or gas giant. Costs 10 OC.
         DOCK <base_id>     Dock at a starbase (must be at same location). Costs 30 OC.
         UNDOCK             Leave a starbase. Costs 10 OC.
         LAND <body_id> <x> <y>  Land at surface coordinates (must be orbiting). Costs 20 OC.
         TAKEOFF            Take off from planet surface to orbit. Costs 20 OC.
-        SURFACESCAN        Produce a terrain map (must be orbiting or landed). Costs 20 OC.
+        SCANSURFACE        Produce a terrain map (must be orbiting or landed). Costs 20 OC.
         WAIT <oc>          Wait and do nothing for a number of Operational Cycles.
         JUMP <system_id>   Jump to a linked star system. Costs 60 OC. Must be 10+ squares from star.
 

@@ -16,7 +16,7 @@ orders:
   - MAKEOFFICER: "SHIP_ID 401 Helena Voss"       # 10 OC - promote crew to officer
   - RENAMESHIP: "SHIP_ID The Wanderer"            # 0 OC - rename ship
   - MODERATOR: Can I swap a Cargo Bay for a Deep Space Scanner?  # 0 OC - GM request
-  - SYSTEMSCAN                                    # 20 OC - full system map
+  - SCANSYSTEM                                    # 20 OC - full system map
   - MOVE: T20                                     # 2 OC/square - head to Meridian
   - ORBIT: 412003                                 # 10 OC - orbit Meridian
   - DOCK: 78901234                                # 30 OC - dock at Waystation

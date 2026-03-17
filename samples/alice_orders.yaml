@@ -13,7 +13,7 @@ game: OMICRON101
 account: ACCOUNT_NUMBER
 ship: SHIP_ID
 orders:
-  - LOCATIONSCAN                         # 20 OC - scan nearby area
+  - SCANLOCATION                         # 20 OC - scan nearby area
   - MOVE: H04                            # 2 OC/square - head to Orion (planet)
   - ORBIT: 247985                        # 10 OC - enter orbit
   - DOCK: 45687590                       # 30 OC - dock at Citadel Station

@@ -1,2 +1,9 @@
+*.pyc
+__pycache__/
+
+# Local game state / outputs (generated)
+game_data/turns/
+game_data/test_engine_rules/
+game_data/test_engine_rules.db
 credentials.json
 token.json

@@ -300,7 +300,7 @@ def generate_ship_report(turn_result, db_path=None, game_id="OMICRON101",
             lines.append(f">OC {tu_before}: {cmd}")
 
         # Indent and word-wrap the message (skip wrapping for map output - preserves grid alignment)
-        if entry['command'] in ('SURFACESCAN', 'SYSTEMSCAN'):
+        if entry['command'] in ('SCANSURFACE', 'SCANSYSTEM', 'SURFACESCAN', 'SYSTEMSCAN'):
             for msg_line in entry['message'].split('\n'):
                 lines.append(msg_line)
         else:
@@ -329,12 +329,26 @@ def generate_ship_report(turn_result, db_path=None, game_id="OMICRON101",
     ship_size = ship['ship_size'] if 'ship_size' in ship.keys() else ship['hull_count']
     st_capacity = ship_size * 50
     st_used = sum(c['st_cost'] * c['quantity'] for c in installed)
+    # Engines: 1 per 10 ship size (min 1). Extra engines above optimal don't help (spares).
+    engine_row = conn.execute("""
+        SELECT COALESCE(SUM(ii.quantity), 0) AS engine_count
+        FROM installed_items ii
+        JOIN ship_components sc ON ii.component_id = sc.component_id
+        WHERE ii.ship_id = ? AND sc.category = 'engine'
+    """, (ship_id,)).fetchone()
+    engine_count = int(engine_row['engine_count']) if engine_row else 0
+    optimal_engines = max(1, ship_size // 10)
+    engine_pct = 0
+    if optimal_engines > 0 and engine_count > 0:
+        engine_pct = int(min(100, round((engine_count / optimal_engines) * 100)))
     hull_info = f"Size: {ship_size} ({ship['hull_type']})"
     lines.append(section_line(f"Design: {ship['design']}"))
     lines.append(section_line(f"{hull_info}".ljust(COL_LEFT) +
                                f"Integrity: {ship['integrity']:.0f}%"))
     lines.append(section_line(f"Internal: {st_used}/{st_capacity} ST".ljust(COL_LEFT) +
                                f"Gravity Rating: {ship['gravity_rating']:.1f}"))
+    lines.append(section_line(f"Engines: {engine_count}/{optimal_engines} -> {engine_pct}%".ljust(COL_LEFT) +
+                               "MOVE cost scales with engines"))
     lines.append(section_line())
 
     # ==========================================
