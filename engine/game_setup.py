@@ -252,27 +252,27 @@ def create_game(db_path=None, game_id="OMICRON101", game_name="Stellar Dominion 
     c.execute("""
         INSERT INTO surface_ports
         (port_id, game_id, name, body_id, surface_x, surface_y,
-         complexes, workers, troops)
+         complexes, workers, troops, employees)
         VALUES (30100001, ?, 'Orion Landing', 247985, 16, 16,
-                10, 200, 50)
+                10, 200, 50, 40)
     """, (game_id,))
 
     # Tartarus Foundry (on Tartarus, 31x31 grid) - Tartarus Depot built above
     c.execute("""
         INSERT INTO surface_ports
         (port_id, game_id, name, body_id, surface_x, surface_y,
-         complexes, workers, troops)
+         complexes, workers, troops, employees)
         VALUES (30100002, ?, 'Tartarus Foundry', 301442, 13, 13,
-                5, 100, 25)
+                5, 100, 25, 50)
     """, (game_id,))
 
     # Meridian Harbour (on Meridian, 31x31 grid) - Meridian Waystation built above
     c.execute("""
         INSERT INTO surface_ports
         (port_id, game_id, name, body_id, surface_x, surface_y,
-         complexes, workers, troops)
+         complexes, workers, troops, employees)
         VALUES (30100003, ?, 'Meridian Harbour', 412003, 11, 11,
-                4, 80, 15)
+                4, 80, 15, 20)
     """, (game_id,))
 
     # =============================================
@@ -283,27 +283,27 @@ def create_game(db_path=None, game_id="OMICRON101", game_name="Stellar Dominion 
     c.execute("""
         INSERT INTO starbases 
         (base_id, game_id, name, base_type, system_id, grid_col, grid_row, orbiting_body_id,
-         surface_port_id, complexes, workers, troops, has_market, docking_capacity)
+         surface_port_id, complexes, workers, troops, has_market, docking_capacity, employees)
         VALUES (45687590, ?, 'Citadel Station', 'Starbase', 101, 'H', 4, 247985,
-                30100001, 25, 500, 100, 1, 5)
+                30100001, 25, 500, 100, 1, 5, 120)
     """, (game_id,))
 
     # Tartarus Depot - orbiting Tartarus at R08, above Tartarus Foundry
     c.execute("""
         INSERT INTO starbases 
         (base_id, game_id, name, base_type, system_id, grid_col, grid_row, orbiting_body_id,
-         surface_port_id, complexes, workers, troops, has_market, docking_capacity)
+         surface_port_id, complexes, workers, troops, has_market, docking_capacity, employees)
         VALUES (12340001, ?, 'Tartarus Depot', 'Starbase', 101, 'R', 8, 301442,
-                30100002, 10, 200, 50, 1, 3)
+                30100002, 10, 200, 50, 1, 3, 85)
     """, (game_id,))
 
     # Meridian Waystation - orbiting Meridian at T20, above Meridian Harbour
     c.execute("""
         INSERT INTO starbases 
         (base_id, game_id, name, base_type, system_id, grid_col, grid_row, orbiting_body_id,
-         surface_port_id, complexes, workers, troops, has_market, docking_capacity)
+         surface_port_id, complexes, workers, troops, has_market, docking_capacity, employees)
         VALUES (78901234, ?, 'Meridian Waystation', 'Starbase', 101, 'T', 20, 412003,
-                30100003, 8, 150, 30, 1, 3)
+                30100003, 8, 150, 30, 1, 3, 75)
     """, (game_id,))
 
     # =============================================
@@ -314,19 +314,73 @@ def create_game(db_path=None, game_id="OMICRON101", game_name="Stellar Dominion 
     c.execute("""
         INSERT INTO outposts
         (outpost_id, game_id, name, body_id, surface_x, surface_y,
-         outpost_type, workers)
+         outpost_type, workers, employees)
         VALUES (40100001, ?, 'Callyx Relay', 88341, 6, 6,
-                'Communications', 15)
+                'Communications', 15, 10)
     """, (game_id,))
 
     # Tartarus Mining Camp (on Tartarus, 25x25 grid)
     c.execute("""
         INSERT INTO outposts
         (outpost_id, game_id, name, body_id, surface_x, surface_y,
-         outpost_type, workers)
+         outpost_type, workers, employees)
         VALUES (40100002, ?, 'Tartarus Mining Camp', 301442, 8, 19,
-                'Mining', 30)
+                'Mining', 30, 25)
     """, (game_id,))
+
+    # =============================================
+    # BASE MODULES (installed on starbases/ports/outposts)
+    # =============================================
+
+    base_module_installs = [
+        # Citadel Station (45687590) - large trading hub
+        (45687590, None, None, 500, 1),   # Command Module
+        (45687590, None, None, 510, 5),   # 5× Docking Bay
+        (45687590, None, None, 570, 3),   # 3× Habitat Block (150 cap)
+        # Tartarus Depot (12340001) - industrial
+        (12340001, None, None, 500, 1),   # Command Module
+        (12340001, None, None, 510, 3),   # 3× Docking Bay
+        (12340001, None, None, 540, 1),   # Repair Bay
+        (12340001, None, None, 570, 2),   # 2× Habitat Block (100 cap)
+        # Meridian Waystation (78901234) - frontier
+        (78901234, None, None, 500, 1),   # Command Module
+        (78901234, None, None, 510, 3),   # 3× Docking Bay
+        (78901234, None, None, 560, 1),   # Storage Warehouse
+        (78901234, None, None, 570, 2),   # 2× Habitat Block (100 cap)
+        # Orion Landing (30100001) - surface port, trade focus
+        (None, 30100001, None, 500, 1),   # Command Module
+        (None, 30100001, None, 550, 2),   # 2× Trade Market
+        (None, 30100001, None, 571, 1),   # Life Dome (100 cap)
+        # Tartarus Foundry (30100002) - surface port, mining
+        (None, 30100002, None, 500, 1),   # Command Module
+        (None, 30100002, None, 520, 2),   # 2× Mining Rig
+        (None, 30100002, None, 550, 1),   # Trade Market
+        (None, 30100002, None, 571, 1),   # Life Dome (100 cap)
+        # Meridian Harbour (30100003) - surface port, small
+        (None, 30100003, None, 500, 1),   # Command Module
+        (None, 30100003, None, 550, 1),   # Trade Market
+        (None, 30100003, None, 571, 1),   # Life Dome (100 cap)
+        # Callyx Relay (40100001) - outpost
+        (None, None, 40100001, 500, 1),   # Command Module
+        # Tartarus Mining Camp (40100002) - outpost, mining
+        (None, None, 40100002, 500, 1),   # Command Module
+        (None, None, 40100002, 520, 1),   # Mining Rig
+    ]
+    for sb, sp, op, mod_id, qty in base_module_installs:
+        c.execute("""
+            INSERT INTO installed_modules (starbase_id, port_id, outpost_id, module_id, quantity)
+            VALUES (?, ?, ?, ?, ?)
+        """, (sb, sp, op, mod_id, qty))
+
+    # Recalculate all base stats from modules
+    conn.commit()
+    from db.database import recalculate_base_stats
+    for base_id in [45687590, 12340001, 78901234]:
+        recalculate_base_stats(conn, starbase_id=base_id)
+    for port_id in [30100001, 30100002, 30100003]:
+        recalculate_base_stats(conn, port_id=port_id)
+    for outpost_id in [40100001, 40100002]:
+        recalculate_base_stats(conn, outpost_id=outpost_id)
 
     # =============================================
     # TRADE GOODS & MARKET CONFIGURATION

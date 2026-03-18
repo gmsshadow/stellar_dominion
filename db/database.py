@@ -131,6 +131,44 @@ def get_connection(state_db_path=None, universe_db_path=None):
                     (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", c)
             conn.commit()
 
+        # Migrate universe.db: create base_modules table if missing
+        has_base_modules = conn.execute(
+            "SELECT name FROM universe.sqlite_master WHERE type='table' AND name='base_modules'"
+        ).fetchone()
+        if not has_base_modules:
+            conn.execute("""CREATE TABLE IF NOT EXISTS universe.base_modules (
+                module_id INTEGER PRIMARY KEY, name TEXT NOT NULL, category TEXT NOT NULL,
+                employees_required INTEGER DEFAULT 10, location_restriction TEXT DEFAULT NULL,
+                docking_slots INTEGER DEFAULT 0, mining_capacity INTEGER DEFAULT 0,
+                factory_capacity INTEGER DEFAULT 0, repair_capacity INTEGER DEFAULT 0,
+                market_income INTEGER DEFAULT 0, storage_capacity INTEGER DEFAULT 0,
+                habitat_capacity INTEGER DEFAULT 0, defence_rating INTEGER DEFAULT 0,
+                base_price INTEGER DEFAULT 0, description TEXT DEFAULT ''
+            )""")
+            seed_modules = [
+                (500, 'Command Module', 'command', 10, None, 0, 0, 0, 0, 0, 0, 0, 0, 2000, '1 per 100 modules for 100% command efficiency.'),
+                (510, 'Docking Bay', 'dock', 20, 'starbase', 1, 0, 0, 0, 0, 0, 0, 0, 5000, 'Allows one ship to dock. Starbase only.'),
+                (511, 'Heavy Docking Bay', 'dock', 30, 'starbase', 1, 0, 0, 0, 0, 0, 0, 0, 8000, 'Reinforced bay. Starbase only.'),
+                (520, 'Mining Rig', 'mining', 15, 'surface', 0, 10, 0, 0, 0, 0, 0, 0, 3000, 'Extracts resources. Surface only.'),
+                (521, 'Deep Core Drill', 'mining', 25, 'surface', 0, 25, 0, 0, 0, 0, 0, 0, 7000, 'Heavy mining. Surface only.'),
+                (530, 'Assembly Plant', 'factory', 25, None, 0, 0, 10, 0, 0, 0, 0, 0, 6000, 'Constructs items.'),
+                (531, 'Advanced Fabricator', 'factory', 40, None, 0, 0, 25, 0, 0, 0, 0, 0, 12000, 'High-tech manufacturing.'),
+                (540, 'Repair Bay', 'maintenance', 15, 'starbase', 0, 0, 0, 5, 0, 0, 0, 0, 4000, 'Repairs ships. Starbase only.'),
+                (541, 'Shipyard', 'maintenance', 30, 'starbase', 0, 0, 0, 15, 0, 0, 0, 0, 10000, 'Full shipyard. Starbase only.'),
+                (550, 'Trade Market', 'market', 10, 'surface', 0, 0, 0, 0, 100, 0, 0, 0, 3000, 'Trade with population. Surface only.'),
+                (551, 'Commerce Hub', 'market', 20, 'surface', 0, 0, 0, 0, 250, 0, 0, 0, 8000, 'Large trade hub. Surface only.'),
+                (560, 'Storage Warehouse', 'storage', 5, None, 0, 0, 0, 0, 0, 500, 0, 0, 1500, 'Bulk storage. 500 ST.'),
+                (561, 'Secure Vault', 'storage', 8, None, 0, 0, 0, 0, 0, 200, 0, 0, 3000, 'Armoured storage. 200 ST.'),
+                (570, 'Habitat Block', 'habitat', 2, None, 0, 0, 0, 0, 0, 0, 50, 0, 2000, 'Housing for 50.'),
+                (571, 'Life Dome', 'habitat', 3, 'surface', 0, 0, 0, 0, 0, 0, 100, 0, 4000, 'Dome for 100. Surface only.'),
+                (580, 'Defence Turret', 'defence', 10, None, 0, 0, 0, 0, 0, 0, 0, 5, 3500, 'Defensive weapon.'),
+                (581, 'Shield Generator', 'defence', 15, None, 0, 0, 0, 0, 0, 0, 0, 10, 6000, 'Energy shield.'),
+            ]
+            for m in seed_modules:
+                conn.execute("""INSERT OR IGNORE INTO universe.base_modules VALUES
+                    (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", m)
+            conn.commit()
+
         # Migrate planet_surface: create in universe.db if missing
         has_planet_surface = conn.execute(
             "SELECT name FROM universe.sqlite_master WHERE type='table' AND name='planet_surface'"
@@ -279,6 +317,28 @@ def get_connection(state_db_path=None, universe_db_path=None):
         # Recalculate stats for all ships
         for ship in conn.execute("SELECT ship_id FROM ships").fetchall():
             recalculate_ship_stats(conn, ship['ship_id'])
+
+    # Migrate: add employees and employee_capacity to base tables if missing
+    for table, id_col in [('starbases', 'base_id'), ('surface_ports', 'port_id'), ('outposts', 'outpost_id')]:
+        cols = [r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]
+        if 'employees' not in cols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN employees INTEGER DEFAULT 0")
+            conn.commit()
+        if 'employee_capacity' not in cols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN employee_capacity INTEGER DEFAULT 0")
+            conn.commit()
+
+    # Migrate: create installed_modules table if missing
+    has_im = conn.execute(
+        "SELECT name FROM main.sqlite_master WHERE type='table' AND name='installed_modules'"
+    ).fetchone()
+    if not has_im:
+        conn.execute("""CREATE TABLE IF NOT EXISTS installed_modules (
+            install_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            starbase_id INTEGER, port_id INTEGER, outpost_id INTEGER,
+            module_id INTEGER NOT NULL, quantity INTEGER NOT NULL DEFAULT 1
+        )""")
+        conn.commit()
 
     return conn
 
@@ -447,6 +507,82 @@ INSERT OR IGNORE INTO ship_components VALUES
 INSERT OR IGNORE INTO ship_components VALUES
     (161, 'Jump Drive Mk2', 'jump_drive', 150, 0, 0, 0, 0, 0, 0, 10, 100, NULL, 12000, 'Advanced jump drive. Range 10, costs 100 OC.');
 
+-- Base module catalogue (what modules can be installed on starbases/ports/outposts)
+-- 3-digit IDs in 500-599 range. Category groups:
+--   500-509: Command       510-519: Docking      520-529: Mining
+--   530-539: Factory       540-549: Maintenance   550-559: Market
+--   560-569: Storage       570-579: Habitat       580-589: Defence
+CREATE TABLE IF NOT EXISTS base_modules (
+    module_id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    category TEXT NOT NULL,
+    employees_required INTEGER DEFAULT 10,
+    location_restriction TEXT DEFAULT NULL,
+    docking_slots INTEGER DEFAULT 0,
+    mining_capacity INTEGER DEFAULT 0,
+    factory_capacity INTEGER DEFAULT 0,
+    repair_capacity INTEGER DEFAULT 0,
+    market_income INTEGER DEFAULT 0,
+    storage_capacity INTEGER DEFAULT 0,
+    habitat_capacity INTEGER DEFAULT 0,
+    defence_rating INTEGER DEFAULT 0,
+    base_price INTEGER DEFAULT 0,
+    description TEXT DEFAULT ''
+);
+
+-- Seed base modules
+INSERT OR IGNORE INTO base_modules VALUES
+    (500, 'Command Module', 'command', 10, NULL, 0, 0, 0, 0, 0, 0, 0, 0, 2000,
+     '1 required per 100 modules for 100% command efficiency.');
+INSERT OR IGNORE INTO base_modules VALUES
+    (510, 'Docking Bay', 'dock', 20, 'starbase', 1, 0, 0, 0, 0, 0, 0, 0, 5000,
+     'Allows one ship to dock. Starbase only.');
+INSERT OR IGNORE INTO base_modules VALUES
+    (511, 'Heavy Docking Bay', 'dock', 30, 'starbase', 1, 0, 0, 0, 0, 0, 0, 0, 8000,
+     'Reinforced bay for larger vessels. Starbase only.');
+INSERT OR IGNORE INTO base_modules VALUES
+    (520, 'Mining Rig', 'mining', 15, 'surface', 0, 10, 0, 0, 0, 0, 0, 0, 3000,
+     'Extracts planetary resources. Surface port or outpost only.');
+INSERT OR IGNORE INTO base_modules VALUES
+    (521, 'Deep Core Drill', 'mining', 25, 'surface', 0, 25, 0, 0, 0, 0, 0, 0, 7000,
+     'Heavy mining for deep deposits. Surface port or outpost only.');
+INSERT OR IGNORE INTO base_modules VALUES
+    (530, 'Assembly Plant', 'factory', 25, NULL, 0, 0, 10, 0, 0, 0, 0, 0, 6000,
+     'Constructs items from raw materials.');
+INSERT OR IGNORE INTO base_modules VALUES
+    (531, 'Advanced Fabricator', 'factory', 40, NULL, 0, 0, 25, 0, 0, 0, 0, 0, 12000,
+     'High-tech manufacturing facility.');
+INSERT OR IGNORE INTO base_modules VALUES
+    (540, 'Repair Bay', 'maintenance', 15, 'starbase', 0, 0, 0, 5, 0, 0, 0, 0, 4000,
+     'Repairs ship integrity. Starbase only.');
+INSERT OR IGNORE INTO base_modules VALUES
+    (541, 'Shipyard', 'maintenance', 30, 'starbase', 0, 0, 0, 15, 0, 0, 0, 0, 10000,
+     'Full shipyard for major repairs and refits. Starbase only.');
+INSERT OR IGNORE INTO base_modules VALUES
+    (550, 'Trade Market', 'market', 10, 'surface', 0, 0, 0, 0, 100, 0, 0, 0, 3000,
+     'Enables trade with planetary population. Surface port only. Generates background income.');
+INSERT OR IGNORE INTO base_modules VALUES
+    (551, 'Commerce Hub', 'market', 20, 'surface', 0, 0, 0, 0, 250, 0, 0, 0, 8000,
+     'Large-scale trading hub. Surface port only. Higher income.');
+INSERT OR IGNORE INTO base_modules VALUES
+    (560, 'Storage Warehouse', 'storage', 5, NULL, 0, 0, 0, 0, 0, 500, 0, 0, 1500,
+     'Bulk storage for goods and materials. 500 ST capacity.');
+INSERT OR IGNORE INTO base_modules VALUES
+    (561, 'Secure Vault', 'storage', 8, NULL, 0, 0, 0, 0, 0, 200, 0, 0, 3000,
+     'Armoured storage for valuables. 200 ST capacity.');
+INSERT OR IGNORE INTO base_modules VALUES
+    (570, 'Habitat Block', 'habitat', 2, NULL, 0, 0, 0, 0, 0, 0, 50, 0, 2000,
+     'Housing for 50 employees.');
+INSERT OR IGNORE INTO base_modules VALUES
+    (571, 'Life Dome', 'habitat', 3, 'surface', 0, 0, 0, 0, 0, 0, 100, 0, 4000,
+     'Pressurised dome housing 100 employees. Surface only.');
+INSERT OR IGNORE INTO base_modules VALUES
+    (580, 'Defence Turret', 'defence', 10, NULL, 0, 0, 0, 0, 0, 0, 0, 5, 3500,
+     'Automated defensive weapon emplacement.');
+INSERT OR IGNORE INTO base_modules VALUES
+    (581, 'Shield Generator', 'defence', 15, NULL, 0, 0, 0, 0, 0, 0, 0, 10, 6000,
+     'Energy shield protecting the installation.');
+
 -- Planet surface grid (31x31 terrain tiles per body, generated lazily)
 -- Intrinsic to the universe: terrain is world definition, not game state.
 CREATE TABLE IF NOT EXISTS planet_surface (
@@ -574,6 +710,8 @@ CREATE TABLE IF NOT EXISTS surface_ports (
     complexes INTEGER DEFAULT 0,
     workers INTEGER DEFAULT 0,
     troops INTEGER DEFAULT 0,
+    employees INTEGER DEFAULT 0,
+    employee_capacity INTEGER DEFAULT 0,
     FOREIGN KEY (game_id) REFERENCES games(game_id)
 );
 
@@ -593,7 +731,9 @@ CREATE TABLE IF NOT EXISTS starbases (
     workers INTEGER DEFAULT 0,
     troops INTEGER DEFAULT 0,
     has_market INTEGER DEFAULT 0,
-    docking_capacity INTEGER DEFAULT 10,
+    docking_capacity INTEGER DEFAULT 0,
+    employees INTEGER DEFAULT 0,
+    employee_capacity INTEGER DEFAULT 0,
     FOREIGN KEY (game_id) REFERENCES games(game_id),
     FOREIGN KEY (surface_port_id) REFERENCES surface_ports(port_id)
 );
@@ -609,7 +749,19 @@ CREATE TABLE IF NOT EXISTS outposts (
     owner_prefect_id INTEGER,
     outpost_type TEXT DEFAULT 'General',
     workers INTEGER DEFAULT 0,
+    employees INTEGER DEFAULT 0,
+    employee_capacity INTEGER DEFAULT 0,
     FOREIGN KEY (game_id) REFERENCES games(game_id)
+);
+
+-- Installed modules on bases/ports/outposts
+CREATE TABLE IF NOT EXISTS installed_modules (
+    install_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    starbase_id INTEGER,
+    port_id INTEGER,
+    outpost_id INTEGER,
+    module_id INTEGER NOT NULL,
+    quantity INTEGER NOT NULL DEFAULT 1
 );
 
 -- Ship officers / crew
@@ -989,6 +1141,138 @@ def recalculate_ship_stats(conn, ship_id):
 
 
 # ======================================================================
+# BASE MODULE HELPERS
+# ======================================================================
+
+def get_base_module(conn, module_id):
+    """Get module details from the catalogue."""
+    result = conn.execute(
+        "SELECT * FROM base_modules WHERE module_id = ?", (module_id,)
+    ).fetchone()
+    return dict(result) if result else None
+
+
+def get_installed_modules(conn, starbase_id=None, port_id=None, outpost_id=None):
+    """Get all installed modules for a base/port/outpost, joined with catalogue."""
+    if starbase_id:
+        where = "im.starbase_id = ?"
+        param = starbase_id
+    elif port_id:
+        where = "im.port_id = ?"
+        param = port_id
+    elif outpost_id:
+        where = "im.outpost_id = ?"
+        param = outpost_id
+    else:
+        return []
+    return conn.execute(f"""
+        SELECT im.install_id, im.module_id, im.quantity,
+               bm.name, bm.category, bm.employees_required,
+               bm.location_restriction, bm.docking_slots, bm.mining_capacity,
+               bm.factory_capacity, bm.repair_capacity, bm.market_income,
+               bm.storage_capacity, bm.habitat_capacity, bm.defence_rating
+        FROM installed_modules im
+        JOIN base_modules bm ON im.module_id = bm.module_id
+        WHERE {where}
+        ORDER BY bm.category, bm.module_id
+    """, (param,)).fetchall()
+
+
+def check_module_location(module, location_type):
+    """Check if a module can be installed at a given location type.
+    location_type: 'starbase', 'surface_port', 'outpost'
+    Returns (ok, error_msg)."""
+    restriction = module['location_restriction']
+    if restriction is None:
+        return True, None
+    if restriction == 'starbase' and location_type == 'starbase':
+        return True, None
+    if restriction == 'surface' and location_type in ('surface_port', 'outpost'):
+        return True, None
+    return False, f"{module['name']} requires {restriction} (this is a {location_type})."
+
+
+def recalculate_base_stats(conn, starbase_id=None, port_id=None, outpost_id=None):
+    """
+    Recalculate base stats from installed modules.
+    Updates: docking_capacity, employee_capacity, employees_required (computed).
+    Returns a stats dict.
+    """
+    modules = get_installed_modules(conn, starbase_id=starbase_id,
+                                     port_id=port_id, outpost_id=outpost_id)
+
+    total_modules = sum(m['quantity'] for m in modules)
+    total_employees_required = sum(m['employees_required'] * m['quantity'] for m in modules)
+    total_docking = sum(m['docking_slots'] * m['quantity'] for m in modules)
+    total_mining = sum(m['mining_capacity'] * m['quantity'] for m in modules)
+    total_factory = sum(m['factory_capacity'] * m['quantity'] for m in modules)
+    total_repair = sum(m['repair_capacity'] * m['quantity'] for m in modules)
+    total_market_income = sum(m['market_income'] * m['quantity'] for m in modules)
+    total_storage = sum(m['storage_capacity'] * m['quantity'] for m in modules)
+    total_habitat = sum(m['habitat_capacity'] * m['quantity'] for m in modules)
+    total_defence = sum(m['defence_rating'] * m['quantity'] for m in modules)
+
+    # Command efficiency: 1 command module per 100 total modules
+    import math
+    command_count = sum(m['quantity'] for m in modules if m['category'] == 'command')
+    command_required = math.ceil(total_modules / 100) if total_modules > 0 else 0
+    command_pct = min(100, (command_count / command_required * 100)) if command_required > 0 else 100
+
+    # Employee efficiency
+    if starbase_id:
+        base = conn.execute("SELECT employees FROM starbases WHERE base_id = ?", (starbase_id,)).fetchone()
+        employees = base['employees'] if base else 0
+    elif port_id:
+        base = conn.execute("SELECT employees FROM surface_ports WHERE port_id = ?", (port_id,)).fetchone()
+        employees = base['employees'] if base else 0
+    elif outpost_id:
+        base = conn.execute("SELECT employees FROM outposts WHERE outpost_id = ?", (outpost_id,)).fetchone()
+        employees = base['employees'] if base else 0
+    else:
+        employees = 0
+
+    employee_pct = min(100, (employees / total_employees_required * 100)) if total_employees_required > 0 else 100
+    overall_efficiency = min(command_pct, employee_pct)
+
+    # Update the base record
+    if starbase_id:
+        conn.execute("""
+            UPDATE starbases SET docking_capacity = ?, employee_capacity = ?
+            WHERE base_id = ?
+        """, (total_docking, total_habitat, starbase_id))
+    elif port_id:
+        conn.execute("""
+            UPDATE surface_ports SET employee_capacity = ?
+            WHERE port_id = ?
+        """, (total_habitat, port_id))
+    elif outpost_id:
+        conn.execute("""
+            UPDATE outposts SET employee_capacity = ?
+            WHERE outpost_id = ?
+        """, (total_habitat, outpost_id))
+    conn.commit()
+
+    return {
+        'total_modules': total_modules,
+        'employees': employees,
+        'employees_required': total_employees_required,
+        'employee_capacity': total_habitat,
+        'employee_pct': round(employee_pct, 1),
+        'command_count': command_count,
+        'command_required': command_required,
+        'command_pct': round(command_pct, 1),
+        'overall_efficiency': round(overall_efficiency, 1),
+        'docking_capacity': total_docking,
+        'mining_capacity': total_mining,
+        'factory_capacity': total_factory,
+        'repair_capacity': total_repair,
+        'market_income': total_market_income,
+        'storage_capacity': total_storage,
+        'defence_rating': total_defence,
+    }
+
+
+# ======================================================================
 # FACTION HELPERS
 # ======================================================================
 
@@ -1150,7 +1434,7 @@ def split_legacy_db(legacy_path):
 
     state_tables = [
         'games', 'players', 'prefects', 'ships', 'surface_ports', 'starbases', 'outposts',
-        'officers', 'installed_items', 'cargo_items',
+        'officers', 'installed_items', 'installed_modules', 'cargo_items',
         'base_trade_config', 'market_prices',
         'known_contacts', 'turn_orders', 'pending_orders', 'messages', 'faction_requests', 'moderator_actions', 'turn_log',
     ]

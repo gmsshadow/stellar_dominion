@@ -1982,6 +1982,127 @@ def cmd_list_components(args):
     conn.close()
 
 
+def cmd_list_modules(args):
+    """List all base modules in the catalogue."""
+    from db.database import get_universe_connection
+    conn = get_universe_connection()
+    modules = conn.execute("SELECT * FROM base_modules ORDER BY module_id").fetchall()
+
+    cat_labels = {
+        'command': 'COMMAND', 'dock': 'DOCKING', 'mining': 'MINING',
+        'factory': 'FACTORY', 'maintenance': 'MAINTENANCE', 'market': 'MARKET',
+        'storage': 'STORAGE', 'habitat': 'HABITAT', 'defence': 'DEFENCE',
+    }
+    print(f"\nBase Module Catalogue:")
+    print(f"{'ID':<6} {'Name':<25} {'Category':<12} {'Emp':<5} {'Price':<8} {'Restrict':<10} Stats")
+    print("-" * 105)
+
+    current_cat = None
+    for m in modules:
+        cat = m['category']
+        if cat != current_cat:
+            current_cat = cat
+            print(f"\n  --- {cat_labels.get(cat, cat.upper())} ---")
+
+        stats = []
+        if m['docking_slots']:
+            stats.append(f"docks={m['docking_slots']}")
+        if m['mining_capacity']:
+            stats.append(f"mining={m['mining_capacity']}")
+        if m['factory_capacity']:
+            stats.append(f"factory={m['factory_capacity']}")
+        if m['repair_capacity']:
+            stats.append(f"repair={m['repair_capacity']}")
+        if m['market_income']:
+            stats.append(f"income={m['market_income']}")
+        if m['storage_capacity']:
+            stats.append(f"storage={m['storage_capacity']}")
+        if m['habitat_capacity']:
+            stats.append(f"habitat={m['habitat_capacity']}")
+        if m['defence_rating']:
+            stats.append(f"defence={m['defence_rating']}")
+        stats_str = ', '.join(stats)
+        restrict = m['location_restriction'] or 'any'
+
+        print(f"{m['module_id']:<6} {m['name']:<25} {cat:<12} {m['employees_required']:<5} "
+              f"{m['base_price']:<8} {restrict:<10} {stats_str}")
+    conn.close()
+
+
+def cmd_base_status(args):
+    """Show detailed status for a starbase, surface port, or outpost."""
+    from db.database import get_connection, get_installed_modules, recalculate_base_stats
+
+    db_path = Path(args.db) if args.db else None
+    conn = get_connection(db_path)
+
+    target_id = args.id
+    # Try to find it as starbase, port, or outpost
+    base = conn.execute("SELECT * FROM starbases WHERE base_id = ?", (target_id,)).fetchone()
+    port = conn.execute("SELECT * FROM surface_ports WHERE port_id = ?", (target_id,)).fetchone() if not base else None
+    outpost = conn.execute("SELECT * FROM outposts WHERE outpost_id = ?", (target_id,)).fetchone() if not base and not port else None
+
+    if not base and not port and not outpost:
+        print(f"Error: no base/port/outpost found with ID {target_id}")
+        conn.close()
+        return
+
+    if base:
+        print(f"\n=== Starbase: {base['name']} ({base['base_id']}) ===")
+        print(f"  System: {base['system_id']}  Location: {base['grid_col']}{base['grid_row']:02d}")
+        if base['surface_port_id']:
+            print(f"  Surface Port: {base['surface_port_id']}")
+        stats = recalculate_base_stats(conn, starbase_id=base['base_id'])
+        modules = get_installed_modules(conn, starbase_id=base['base_id'])
+        employees = base['employees']
+        loc_type = 'starbase'
+    elif port:
+        print(f"\n=== Surface Port: {port['name']} ({port['port_id']}) ===")
+        print(f"  Body: {port['body_id']}  Surface: ({port['surface_x']},{port['surface_y']})")
+        stats = recalculate_base_stats(conn, port_id=port['port_id'])
+        modules = get_installed_modules(conn, port_id=port['port_id'])
+        employees = port['employees']
+        loc_type = 'surface_port'
+    else:
+        print(f"\n=== Outpost: {outpost['name']} ({outpost['outpost_id']}) ===")
+        print(f"  Body: {outpost['body_id']}  Surface: ({outpost['surface_x']},{outpost['surface_y']})")
+        stats = recalculate_base_stats(conn, outpost_id=outpost['outpost_id'])
+        modules = get_installed_modules(conn, outpost_id=outpost['outpost_id'])
+        employees = outpost['employees']
+        loc_type = 'outpost'
+
+    print(f"\n  Modules: {stats['total_modules']}")
+    print(f"  Employees: {employees}/{stats['employees_required']} required -> {stats['employee_pct']}%")
+    print(f"  Employee Capacity: {stats['employee_capacity']} (from habitat modules)")
+    print(f"  Command: {stats['command_count']}/{stats['command_required']} required -> {stats['command_pct']}%")
+    print(f"  Overall Efficiency: {stats['overall_efficiency']}%")
+    if stats['docking_capacity']:
+        print(f"  Docking: {stats['docking_capacity']} slots")
+    if stats['mining_capacity']:
+        print(f"  Mining: {stats['mining_capacity']}")
+    if stats['factory_capacity']:
+        print(f"  Factory: {stats['factory_capacity']}")
+    if stats['repair_capacity']:
+        print(f"  Repair: {stats['repair_capacity']}")
+    if stats['market_income']:
+        print(f"  Market Income: {stats['market_income']} cr/cycle")
+    if stats['storage_capacity']:
+        print(f"  Storage: {stats['storage_capacity']} ST")
+    if stats['defence_rating']:
+        print(f"  Defence: {stats['defence_rating']}")
+
+    if modules:
+        print(f"\n  Installed Modules:")
+        fmt = "    {:<25s} {:>5s} {:>3s} {:>5s}"
+        print(fmt.format('Module', 'ID', 'Qty', 'Emp'))
+        print(fmt.format('-'*25, '-'*5, '-'*3, '-'*5))
+        for m in modules:
+            print(fmt.format(m['name'][:25], str(m['module_id']), str(m['quantity']),
+                             str(m['employees_required'] * m['quantity'])))
+
+    conn.close()
+
+
 def cmd_faction_requests(args):
     """List faction change requests."""
     from db.database import get_connection
@@ -2768,6 +2889,14 @@ Gmail integration (two-stage workflow):
     # --- list-components ---
     sp = subparsers.add_parser('list-components', help='List all ship components in the catalogue')
 
+    # --- list-modules ---
+    sp = subparsers.add_parser('list-modules', help='List all base modules in the catalogue')
+
+    # --- base-status ---
+    sp = subparsers.add_parser('base-status', help='Show detailed status for a base/port/outpost')
+    sp.add_argument('--id', type=int, required=True, help='Base, port, or outpost ID')
+    sp.add_argument('--db', help='Path to game_state.db')
+
     # --- faction-requests ---
     sp = subparsers.add_parser('faction-requests', help='List faction change requests')
     sp.add_argument('--game', required=True, help='Game ID')
@@ -2869,6 +2998,8 @@ Gmail integration (two-stage workflow):
         'list-universe': cmd_list_universe,
         'list-factions': cmd_list_factions,
         'list-components': cmd_list_components,
+        'list-modules': cmd_list_modules,
+        'base-status': cmd_base_status,
         'faction-requests': cmd_faction_requests,
         'approve-faction': cmd_approve_faction,
         'deny-faction': cmd_deny_faction,
