@@ -1599,13 +1599,14 @@ class TurnResolver:
         # Cap quantity to available stock
         actual_qty = min(quantity, available_stock)
 
-        # Cap to available credits
+        # Cap to available credits (skip for unlimited_credits prefects)
         ship = self.get_ship(state['ship_id'])
         prefect = self.conn.execute(
             "SELECT * FROM prefects WHERE prefect_id = ?",
             (ship['owner_prefect_id'],)
         ).fetchone()
-        if buy_price > 0:
+        has_unlimited = prefect['unlimited_credits'] if 'unlimited_credits' in prefect.keys() else 0
+        if buy_price > 0 and not has_unlimited:
             max_by_credits = int(prefect['credits'] // buy_price)
             actual_qty = min(actual_qty, max_by_credits)
 
@@ -1642,7 +1643,7 @@ class TurnResolver:
         if actual_qty < quantity:
             if available_stock < quantity:
                 cap_reasons.append(f"stock={available_stock}")
-            if buy_price > 0 and int(prefect['credits'] // buy_price) < quantity:
+            if buy_price > 0 and not has_unlimited and int(prefect['credits'] // buy_price) < quantity:
                 cap_reasons.append(f"credits={prefect['credits']:,.0f} cr")
             if item['mass_per_unit'] > 0 and item_id != CREW_ITEM_ID and int(available_mu // item['mass_per_unit']) < quantity:
                 cap_reasons.append(f"cargo={available_mu} ST free")
@@ -1660,10 +1661,11 @@ class TurnResolver:
         total_mass = 0 if item_id == CREW_ITEM_ID else item['mass_per_unit'] * actual_qty
 
         # Execute purchase
-        self.conn.execute(
-            "UPDATE prefects SET credits = credits - ? WHERE prefect_id = ?",
-            (total_cost_cr, prefect['prefect_id'])
-        )
+        if not has_unlimited:
+            self.conn.execute(
+                "UPDATE prefects SET credits = credits - ? WHERE prefect_id = ?",
+                (total_cost_cr, prefect['prefect_id'])
+            )
         if total_mass > 0:
             self.conn.execute(
                 "UPDATE ships SET cargo_used = cargo_used + ? WHERE ship_id = ?",
@@ -2305,8 +2307,9 @@ class TurnResolver:
                 'message': f"Cannot buy {comp_name}: requires {component['hull_restriction']} hull (ship is {ship['hull_type']})."
             }
 
-        # Check credits
-        if prefect['credits'] < total_cost:
+        # Check credits (skip for unlimited_credits prefects)
+        has_unlimited = prefect['unlimited_credits'] if 'unlimited_credits' in prefect.keys() else 0
+        if not has_unlimited and prefect['credits'] < total_cost:
             max_afford = int(prefect['credits'] // price_each) if price_each > 0 else 0
             if max_afford <= 0:
                 return {
@@ -2338,11 +2341,12 @@ class TurnResolver:
                 quantity = max_fit
                 total_cost = price_each * quantity
 
-            # Deduct credits
-            self.conn.execute(
-                "UPDATE prefects SET credits = credits - ? WHERE prefect_id = ?",
-                (total_cost, prefect['prefect_id'])
-            )
+            # Deduct credits (skip for unlimited)
+            if not has_unlimited:
+                self.conn.execute(
+                    "UPDATE prefects SET credits = credits - ? WHERE prefect_id = ?",
+                    (total_cost, prefect['prefect_id'])
+                )
 
             # Install component
             existing = self.conn.execute(
@@ -2391,11 +2395,12 @@ class TurnResolver:
                 total_cost = price_each * quantity
                 total_mass = cargo_mass * quantity
 
-            # Deduct credits
-            self.conn.execute(
-                "UPDATE prefects SET credits = credits - ? WHERE prefect_id = ?",
-                (total_cost, prefect['prefect_id'])
-            )
+            # Deduct credits (skip for unlimited)
+            if not has_unlimited:
+                self.conn.execute(
+                    "UPDATE prefects SET credits = credits - ? WHERE prefect_id = ?",
+                    (total_cost, prefect['prefect_id'])
+                )
 
             # Add to cargo
             self.conn.execute(

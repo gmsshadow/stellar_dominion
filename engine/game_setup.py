@@ -1074,6 +1074,7 @@ def list_players(db_path=None, game_id="OMICRON101", include_suspended=False):
 
     query = """
         SELECT p.*, pp.prefect_id, pp.name as prefect_name, pp.credits, pp.faction_id,
+               pp.unlimited_credits,
                f.abbreviation as faction_abbr
         FROM players p
         LEFT JOIN prefects pp ON p.player_id = pp.player_id AND pp.game_id = p.game_id
@@ -1095,9 +1096,10 @@ def list_players(db_path=None, game_id="OMICRON101", include_suspended=False):
     print(f"{'Name':<16} {'Email':<28} {'Account':<12} {'Faction':<8} {'Prefect':<20} {'Status':<10}")
     print("-" * 94)
     for p in players:
+        gm_tag = " [GM]" if p['is_gm'] else ""
         status = p['status'] if p['status'] != 'active' else ''
         pol_name = p['prefect_name'] or '--'
         faction = p['faction_abbr'] or '--'
-        print(f"{p['player_name']:<16} {p['email']:<28} {p['account_number']:<12} {faction:<8} {pol_name:<20} {status:<10}")
+        print(f"{p['player_name']}{gm_tag:<16} {p['email']:<28} {p['account_number']:<12} {faction:<8} {pol_name:<20} {status:<10}")
 
     conn.close()

@@ -7,7 +7,7 @@ Welcome to Stellar Dominion, a play-by-email (PBEM) space strategy game. You com
 When you join a game you receive:
 
 - A **Prefect** — your in-game persona, with a name and starting credits (10,000 cr)
-- A **Ship** — a Light Trader MK I (size 10, 500 ST internal capacity, 300 OC per turn)
+- A **Ship** — a Light Trader MK I (size 50, 2500 ST internal capacity, 300 OC per turn)
 - A **Starting crew** — 15 Human Crew in cargo plus a Captain officer
 - A **Secret account number** — used to validate your orders. Keep this private.
 
@@ -15,22 +15,28 @@ Your ship starts in orbit around a planet in one of the game's star systems.
 
 ## Your Ship
 
-Ships are built from modular internal components. Your starting Light Trader MK I (size 10) has 500 ST of internal capacity, fully loaded with:
+Ships are built from modular internal components. Your starting Light Trader MK I (size 50) has 2500 ST of internal capacity, with 500 ST used and 2000 ST free for upgrades:
 
 | Component | Qty | ST Used | Effect |
 |-----------|:---:|--------:|--------|
 | Standard Bridge | 1 | 20 | Required for ship operation |
-| Thruster Array | 1 | 50 | 20 thrust → gravity rating 2.0 |
-| Commercial Sublight Engine | 1 | 60 | 1.0 efficiency (enables movement) |
+| Thruster Array | 1 | 50 | 20 thrust → gravity rating 0.4 |
+| Commercial Sublight Engine | 1 | 60 | Enables movement (1 of 5 optimal) |
 | Cargo Bay | 5 | 200 | 500 ST cargo capacity |
 | Crew Quarters | 1 | 30 | 20 crew capacity, 20 life support |
 | Basic Sensor Array | 1 | 20 | Sensor rating 5 |
 | Jump Drive Mk1 | 1 | 120 | Jump range 5, costs 150 OC |
-| **Total** | | **500/500** | |
+| **Total** | | **500/2500** | **2000 ST free** |
 
-Ship stats like cargo capacity, sensor rating, life support, and gravity rating are all derived from your installed components. To upgrade one stat, you may need to remove a component to free ST space — for example, removing a Cargo Bay (freeing 40 ST) to install a Deep Space Scanner.
+Ship stats like cargo capacity, sensor rating, life support, and gravity rating are all derived from your installed components. To upgrade, install new components into your free ST space — or remove existing ones to make room.
 
-Your ship report shows a full breakdown of all installed components with their stats.
+### Engine Efficiency
+
+Movement requires engines. The optimal number is 1 engine per 10 ship size (size 50 = 5 engines optimal). With fewer engines, MOVE costs increase. With zero engines, your ship cannot move at all. Your ship report shows your engine status (e.g. `Engines: 1/5 -> 20%`).
+
+### Crew Efficiency
+
+Your ship needs crew based on its size (1 crew per size point). If undermanned, OC costs for all actions increase proportionally. Officers count as crew but cost 5 cr/week vs 1 cr/week for regular crew. Life support capacity (from Crew Quarters) caps total crew + officers aboard.
 
 ## Your Identifiers
 
@@ -78,7 +84,7 @@ Every action costs OC. Your ship starts each turn with 300 OC.
 
 | Command | Base OC Cost | Description |
 |---------|-------------|-------------|
-| **MOVE** | 2 per step | Move one grid square toward a coordinate |
+| **MOVE** | 2 per step | Move one grid square (engine/crew penalties may increase) |
 | **SCANLOCATION** | 20 | Scan nearby area |
 | **SCANSYSTEM** | 20 | Full system map |
 | **ORBIT** | 10 | Enter orbit around a body |
@@ -101,11 +107,13 @@ Every action costs OC. Your ship starts each turn with 300 OC.
 | **CHANGEFACTION** | 0 | Request faction change |
 | **CLEAR** | 0 | Cancel overflow orders |
 
+Note: old command names LOCATIONSCAN, SYSTEMSCAN, and SURFACESCAN still work as aliases.
+
 ## Command Reference
 
 ### Movement
 
-**MOVE** `<coordinate>` — Move toward a grid coordinate (e.g. `MOVE F10`). Costs 2 OC per square (engine/crew penalties may increase this). Ships without a Sublight Engine cannot move.
+**MOVE** `<coordinate>` — Move toward a grid coordinate (e.g. `MOVE F10`). Base cost is 2 OC per square, but engine efficiency and crew undermanning may increase this. Ships without a Sublight Engine cannot move.
 
 **JUMP** `<system_id>` — Jump to another star system. Requires a Jump Drive. Cost depends on installed drive (Mk1: 150 OC). Must be at least 10 squares from the primary star.
 
@@ -160,30 +168,19 @@ SCRAP 130 1            # Destroy 1× Cargo Bay from cargo
 
 **Typical refit sequence** (while docked at a starbase):
 ```
-UNINSTALL 130 1              # Free 40 ST internal by removing a Cargo Bay
 BUY 45687590 152 1 INSTALL   # Buy + install Deep Space Scanner (40 ST, 1800 cr)
-SCRAP 130 1                  # Destroy the uninstalled Cargo Bay from cargo
+BUY 45687590 120 4 INSTALL   # Buy + install 4 more engines (240 ST, 4800 cr)
 ```
 
 ### Messaging & Moderator
 
 **MESSAGE** `<target_id> <text>` — Send a message to any ship, base, or prefect.
 
-**MODERATOR** `<text>` — Submit a free-text request to the GM. The turn auto-pauses for GM review. The response appears in your ship report. Use for anything non-standard: ship upgrades, special actions, negotiations, rule questions.
-
-```
-MODERATOR Can I refit my ship with a Deep Space Scanner? Willing to pay 1800 cr.
-```
+**MODERATOR** `<text>` — Submit a free-text request to the GM. The turn auto-pauses for GM review. The response appears in your ship report. Use for anything non-standard: special actions, negotiations, rule questions.
 
 ### Faction Changes
 
 **CHANGEFACTION** `<faction_id> [reason]` — Request to join a different faction (GM-moderated).
-
-## Crew & Efficiency
-
-Your ship needs crew based on its size (1 crew per size point). If undermanned, OC costs increase proportionally. Officers count as crew but cost 5 cr/week vs 1 cr/week for regular crew.
-
-Life support capacity (from Crew Quarters) caps total crew + officers aboard.
 
 ## Trading Economy
 
@@ -202,7 +199,7 @@ Starbases have markets with rotating prices on a 4-week cycle. Each base special
 
 ## Reading Your Reports
 
-**Ship Report** — Order results, status block (size, ST capacity, components breakdown), navigation, crew, cargo, and contacts.
+**Ship Report** — Order results, status block (size, ST capacity, engine/crew efficiency, components table), navigation, crew, cargo, and contacts.
 
 **Prefect Report** — Finances, all ships, between-turn messages, wage deductions, faction notifications.
 
@@ -211,5 +208,6 @@ Starbases have markets with rotating prices on a 4-week cycle. Each base special
 1. Scan first — `SCANLOCATION` and `SCANSYSTEM` reveal the map.
 2. Trade between bases — buy where goods are produced, sell where they're demanded.
 3. Keep your ship crewed — undermanning increases all OC costs.
-4. Use `MODERATOR` for anything non-standard — the GM can modify your ship between orders.
-5. Your ship is fully loaded at 500/500 ST — to add components, you'll need to remove something first.
+4. Buy more engines early — your starting ship has 1 of 5 optimal engines, making movement very expensive.
+5. You have 2000 ST free — plenty of room for new components without removing anything.
+6. Use `MODERATOR` for anything non-standard — the GM can modify your ship between orders.

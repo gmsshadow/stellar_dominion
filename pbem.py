@@ -499,8 +499,13 @@ def cmd_run_turn(args):
         msgs.append(f"  Life support: {crew_count}/{life_support} capacity.")
         wage_messages[ship['ship_id']] = msgs
 
-    # Deduct wages per prefect (aggregate)
+    # Deduct wages per prefect (aggregate) — skip if prefect has unlimited credits
     for prefect_id, total_wages in wage_by_prefect.items():
+        prefect_check = conn.execute(
+            "SELECT unlimited_credits FROM prefects WHERE prefect_id = ?", (prefect_id,)
+        ).fetchone()
+        if prefect_check and prefect_check['unlimited_credits']:
+            continue  # GM prefect — no wage deduction
         conn.execute(
             "UPDATE prefects SET credits = credits - ? WHERE prefect_id = ?",
             (total_wages, prefect_id)
@@ -708,7 +713,7 @@ def cmd_run_turn(args):
     # Generate one prefect report per active prefect
     conn = get_connection(db_path)
     all_prefects = conn.execute("""
-        SELECT DISTINCT pp.prefect_id, p.email, p.account_number
+        SELECT DISTINCT pp.prefect_id, p.email, p.account_number, p.is_gm
         FROM prefects pp
         JOIN players p ON pp.player_id = p.player_id
         WHERE pp.game_id = ? AND p.status = 'active'
@@ -810,8 +815,22 @@ def cmd_run_turn(args):
         )
         pol_file = folders.store_prefect_report(turn_str, account_number, prefect_id, prefect_report)
         email = pol['email']
-        print(f"  Account {account_number} -> {email}")
-        print(f"    Prefect report: {pol_file}")
+        is_gm = pol['is_gm'] if 'is_gm' in pol.keys() else 0
+        if is_gm:
+            # Copy GM reports to gm_reports/ folder
+            gm_reports_dir = Path(db_path).parent / "gm_reports" / turn_str if db_path else Path("game_data") / "gm_reports" / turn_str
+            gm_reports_dir.mkdir(parents=True, exist_ok=True)
+            import shutil
+            player_reports = folders.get_player_reports(turn_str, account_number)
+            print(f"  Account {account_number} -> GM (local)")
+            print(f"    Prefect report: {pol_file}")
+            for rpt in player_reports:
+                dest = gm_reports_dir / rpt.name
+                shutil.copy2(str(rpt), str(dest))
+            print(f"    GM reports copied to: {gm_reports_dir}/")
+        else:
+            print(f"  Account {account_number} -> {email}")
+            print(f"    Prefect report: {pol_file}")
 
         # Generate PDF version
         if pdf_available():
@@ -819,10 +838,11 @@ def cmd_run_turn(args):
             if pdf_path:
                 print(f"    Prefect PDF:    {pdf_path}")
 
-        # Show total files to send
-        player_reports = folders.get_player_reports(turn_str, account_number)
-        if len(player_reports) > 1:
-            print(f"    Total files to email: {len(player_reports)}")
+        # Show total files to send (skip for GM)
+        if not is_gm:
+            player_reports = folders.get_player_reports(turn_str, account_number)
+            if len(player_reports) > 1:
+                print(f"    Total files to email: {len(player_reports)}")
 
     resolver.close()
 
@@ -887,14 +907,23 @@ def cmd_send_turns(args):
 
     print(f"=== Send Turn Reports - Game {args.game}, Turn {turn_str} ===\n")
 
-    # Build the send list
+    # Build the send list (skip GM accounts)
     send_list = []
+    conn_check = get_connection(db_path)
     for account_number, report_files in processed.items():
         email = folders.get_email_for_account(account_number)
         if not email:
             print(f"  [{account_number}] WARNING: no email found, skipping")
             continue
+        # Check if this is a GM account
+        player = conn_check.execute(
+            "SELECT is_gm FROM players WHERE account_number = ?", (account_number,)
+        ).fetchone()
+        if player and player['is_gm']:
+            print(f"  [{account_number}] GM account — reports in gm_reports/, skipping email")
+            continue
         send_list.append((account_number, email, report_files))
+    conn_check.close()
 
     if not send_list:
         print("No players to send to.")
@@ -1300,6 +1329,199 @@ def cmd_list_players(args):
 
 
 # ======================================================================
+# GM ACCOUNT COMMANDS
+# ======================================================================
+
+def cmd_add_gm(args):
+    """Create the GM player account for a game."""
+    db_path = Path(args.db) if args.db else None
+    conn = get_connection(db_path)
+
+    game = conn.execute("SELECT * FROM games WHERE game_id = ?", (args.game,)).fetchone()
+    if not game:
+        print(f"Error: Game {args.game} not found.")
+        conn.close()
+        return
+
+    # Check if GM already exists
+    existing = conn.execute(
+        "SELECT * FROM players WHERE game_id = ? AND is_gm = 1", (args.game,)
+    ).fetchone()
+    if existing:
+        print(f"GM account already exists: {existing['player_name']} ({existing['account_number']})")
+        conn.close()
+        return
+
+    from engine.game_setup import _generate_unique_id as generate_unique_id
+    account_number = generate_unique_id(conn, 'players', 'account_number')
+    email = args.email if args.email else 'gm@local'
+    name = args.name if args.name else 'Game Master'
+
+    conn.execute("""
+        INSERT INTO players (game_id, player_name, email, account_number, is_gm, status)
+        VALUES (?, ?, ?, ?, 1, 'active')
+    """, (args.game, name, email, account_number))
+    conn.commit()
+
+    # Create gm_orders and gm_reports directories
+    base_dir = Path(db_path).parent if db_path else Path("game_data")
+    (base_dir / "gm_orders").mkdir(parents=True, exist_ok=True)
+    (base_dir / "gm_reports").mkdir(parents=True, exist_ok=True)
+
+    print(f"GM account created for game {args.game}:")
+    print(f"  Name:    {name}")
+    print(f"  Email:   {email}")
+    print(f"  Account: {account_number}")
+    print(f"  Orders:  {base_dir / 'gm_orders'}/")
+    print(f"  Reports: {base_dir / 'gm_reports'}/")
+    print(f"\nUse 'add-gm-prefect' to create NPC prefects under this account.")
+    conn.close()
+
+
+def cmd_add_gm_prefect(args):
+    """Create an NPC prefect under the GM account."""
+    db_path = Path(args.db) if args.db else None
+    conn = get_connection(db_path)
+
+    # Find GM player
+    gm = conn.execute(
+        "SELECT * FROM players WHERE game_id = ? AND is_gm = 1", (args.game,)
+    ).fetchone()
+    if not gm:
+        print(f"Error: No GM account found. Use 'add-gm' first.")
+        conn.close()
+        return
+
+    game = conn.execute("SELECT * FROM games WHERE game_id = ?", (args.game,)).fetchone()
+
+    from engine.game_setup import _generate_unique_id as generate_unique_id
+    prefect_id = generate_unique_id(conn, 'prefects', 'prefect_id')
+    credits = args.credits if hasattr(args, 'credits') and args.credits is not None else 0
+
+    conn.execute("""
+        INSERT INTO prefects
+        (prefect_id, player_id, game_id, name, faction_id, credits, unlimited_credits,
+         location_type, created_turn_year, created_turn_week)
+        VALUES (?, ?, ?, ?, ?, ?, 1, 'none', ?, ?)
+    """, (prefect_id, gm['player_id'], args.game, args.name, args.faction,
+          credits, game['current_year'], game['current_week']))
+    conn.commit()
+
+    faction = conn.execute("SELECT abbreviation, name FROM factions WHERE faction_id = ?",
+                            (args.faction,)).fetchone()
+    faction_str = f"{faction['abbreviation']} - {faction['name']}" if faction else str(args.faction)
+
+    # List how many GM prefects exist now
+    gm_prefects = conn.execute(
+        "SELECT COUNT(*) as cnt FROM prefects WHERE player_id = ?", (gm['player_id'],)
+    ).fetchone()
+
+    print(f"GM prefect created:")
+    print(f"  Prefect: {args.name} ({prefect_id})")
+    print(f"  Faction: {faction_str}")
+    print(f"  Credits: {'unlimited' if True else credits}")
+    print(f"  GM now controls {gm_prefects['cnt']} prefect(s)")
+    print(f"\nUse 'add-gm-ship' to give this prefect a ship.")
+    conn.close()
+
+
+def cmd_add_gm_ship(args):
+    """Create an NPC ship under a GM prefect."""
+    db_path = Path(args.db) if args.db else None
+    conn = get_connection(db_path)
+
+    # Verify prefect exists and belongs to GM
+    prefect = conn.execute("SELECT * FROM prefects WHERE prefect_id = ?", (args.prefect,)).fetchone()
+    if not prefect:
+        print(f"Error: Prefect {args.prefect} not found.")
+        conn.close()
+        return
+
+    gm = conn.execute(
+        "SELECT * FROM players WHERE player_id = ? AND is_gm = 1", (prefect['player_id'],)
+    ).fetchone()
+    if not gm:
+        print(f"Error: Prefect {args.prefect} does not belong to a GM account.")
+        conn.close()
+        return
+
+    game = conn.execute("SELECT * FROM games WHERE game_id = ?", (args.game,)).fetchone()
+    if not game:
+        print(f"Error: Game {args.game} not found.")
+        conn.close()
+        return
+
+    from engine.game_setup import _generate_unique_id as generate_unique_id, generate_random_name
+    ship_id = generate_unique_id(conn, 'ships', 'ship_id')
+
+    ship_name = args.ship_name if args.ship_name else f"NPC-{ship_id}"
+    hull_type = args.hull_type if args.hull_type else 'Commercial'
+    ship_size = args.size if args.size else 50
+
+    conn.execute("""
+        INSERT INTO ships
+        (ship_id, game_id, owner_prefect_id, name, ship_class, design, hull_type,
+         ship_size, hull_count, grid_col, grid_row, system_id,
+         tu_per_turn, tu_remaining, cargo_used, crew_count)
+        VALUES (?, ?, ?, ?, 'NPC', ?, ?, ?, ?, ?, ?, ?, 300, 300, 0, 0)
+    """, (ship_id, args.game, args.prefect, ship_name, f"NPC {hull_type} S{ship_size}",
+          hull_type, ship_size, ship_size, args.col, args.row, args.system))
+
+    # Add a captain
+    captain_name = generate_random_name()
+    conn.execute("""
+        INSERT INTO officers (ship_id, crew_number, name, rank, specialty, experience, crew_factors, crew_type_id, wages)
+        VALUES (?, 1, ?, 'Captain', 'Navigation', 0, 8, 401, 5)
+    """, (ship_id, captain_name))
+
+    # Install default components (same as player starting ship)
+    starting_components = [
+        (ship_id, 100, 1), (ship_id, 110, 1), (ship_id, 120, 1),
+        (ship_id, 130, 5), (ship_id, 140, 1), (ship_id, 150, 1), (ship_id, 160, 1),
+    ]
+    for sid, comp_id, qty in starting_components:
+        conn.execute(
+            "INSERT INTO installed_items (ship_id, component_id, quantity) VALUES (?, ?, ?)",
+            (sid, comp_id, qty)
+        )
+
+    # Add starting crew
+    conn.execute("""
+        INSERT INTO cargo_items (ship_id, item_type_id, item_name, quantity, mass_per_unit)
+        VALUES (?, 401, 'Human Crew', 15, 0)
+    """, (ship_id,))
+
+    conn.commit()
+
+    # Recalculate stats
+    from db.database import recalculate_ship_stats
+    stats = recalculate_ship_stats(conn, ship_id)
+
+    # Update prefect location
+    conn.execute(
+        "UPDATE prefects SET location_type = 'ship', location_id = ? WHERE prefect_id = ? AND location_type = 'none'",
+        (ship_id, args.prefect)
+    )
+    conn.execute(
+        "UPDATE ships SET crew_count = 16 WHERE ship_id = ?", (ship_id,)
+    )
+    conn.commit()
+
+    faction = conn.execute(
+        "SELECT abbreviation FROM factions WHERE faction_id = ?", (prefect['faction_id'],)
+    ).fetchone()
+    fac = faction['abbreviation'] if faction else 'IND'
+
+    print(f"GM ship created:")
+    print(f"  Ship: {fac} {ship_name} ({ship_id})")
+    print(f"  Prefect: {prefect['name']} ({args.prefect})")
+    print(f"  Location: {args.col}{args.row:02d} in system {args.system}")
+    print(f"  Size: {ship_size}, Hull: {hull_type}")
+    print(f"  Captain: {captain_name}")
+    conn.close()
+
+
+# ======================================================================
 # REGISTRATION FORM COMMANDS
 # ======================================================================
 
@@ -1540,8 +1762,6 @@ def cmd_process_inbox(args):
 
     if not submission_files:
         print("No submission files found in inbox.")
-        conn.close()
-        return
 
     orders_accepted = 0
     orders_rejected = 0
@@ -1601,8 +1821,52 @@ def cmd_process_inbox(args):
 
     conn.close()
 
+    # Also process GM orders from gm_orders/ folder
+    gm_dir = Path(db_path).parent / "gm_orders" if db_path else Path("game_data") / "gm_orders"
+    gm_accepted = 0
+    if gm_dir.exists():
+        gm_files = [f for f in sorted(gm_dir.iterdir())
+                     if f.suffix in ('.yaml', '.yml', '.txt') and not f.name.startswith(('.', '_'))]
+        if gm_files:
+            conn = get_connection(db_path)
+            # Get GM email
+            gm_player = conn.execute(
+                "SELECT email FROM players WHERE game_id = ? AND is_gm = 1", (args.game,)
+            ).fetchone()
+            if gm_player:
+                gm_email = gm_player['email']
+                print(f"\n  --- GM Orders ({gm_dir}/) ---")
+                for filepath in gm_files:
+                    print(f"  Processing: GM / {filepath.name}")
+                    try:
+                        content = filepath.read_text(encoding='utf-8')
+                    except Exception as e:
+                        print(f"    ERROR: could not read file: {e}")
+                        continue
+
+                    result = process_single_order(conn, folders, turn_str, args.game, gm_email, content)
+                    if result['status'] == 'accepted':
+                        name_str = f" ({result['ship_name']})" if result['ship_name'] else ""
+                        print(f"    GM ORDERS ACCEPTED: {result['order_count']} orders for ship {result['ship_id']}{name_str}")
+                        gm_accepted += 1
+                        orders_accepted += 1
+                    else:
+                        print(f"    GM ORDERS REJECTED: {result.get('error', 'unknown')}")
+                        orders_rejected += 1
+
+                    # Move processed
+                    if not args.keep:
+                        processed_dir = gm_dir / "_processed"
+                        processed_dir.mkdir(exist_ok=True)
+                        filepath.rename(processed_dir / filepath.name)
+            else:
+                print(f"\n  GM orders found but no GM account exists. Use 'add-gm' first.")
+            conn.close()
+
     print(f"\n  Summary:")
     print(f"    Orders:        {orders_accepted} accepted, {orders_rejected} rejected")
+    if gm_accepted:
+        print(f"      (of which {gm_accepted} GM orders)")
     print(f"    Registrations: {registrations} created, {reg_rejected} rejected")
     print(f"    Skipped:       {skipped}")
     if orders_accepted > 0:
@@ -2761,6 +3025,33 @@ Gmail integration (two-stage workflow):
     sp.add_argument('--game', default='OMICRON101', help='Game ID')
     sp.add_argument('--all', action='store_true', help='Include suspended players')
 
+    # --- add-gm ---
+    sp = subparsers.add_parser('add-gm', help='Create the GM player account')
+    sp.add_argument('--game', default='OMICRON101', help='Game ID')
+    sp.add_argument('--db', help='Path to game_state.db')
+    sp.add_argument('--name', default='Game Master', help='GM display name')
+    sp.add_argument('--email', default='gm@local', help='GM email (for validation)')
+
+    # --- add-gm-prefect ---
+    sp = subparsers.add_parser('add-gm-prefect', help='Create an NPC prefect under the GM account')
+    sp.add_argument('--game', default='OMICRON101', help='Game ID')
+    sp.add_argument('--db', help='Path to game_state.db')
+    sp.add_argument('--name', required=True, help='Prefect name (e.g. "Admiral Voss")')
+    sp.add_argument('--faction', type=int, required=True, help='Faction ID')
+    sp.add_argument('--credits', type=float, default=0, help='Starting credits (default 0, unlimited anyway)')
+
+    # --- add-gm-ship ---
+    sp = subparsers.add_parser('add-gm-ship', help='Create an NPC ship under a GM prefect')
+    sp.add_argument('--game', default='OMICRON101', help='Game ID')
+    sp.add_argument('--db', help='Path to game_state.db')
+    sp.add_argument('--prefect', type=int, required=True, help='GM prefect ID')
+    sp.add_argument('--ship-name', help='Ship name (default: auto-generated)')
+    sp.add_argument('--hull-type', default='Commercial', help='Hull type')
+    sp.add_argument('--size', type=int, default=50, help='Ship size (default 50)')
+    sp.add_argument('--system', type=int, required=True, help='Starting system ID')
+    sp.add_argument('--col', required=True, help='Starting grid column (e.g. H)')
+    sp.add_argument('--row', type=int, required=True, help='Starting grid row (e.g. 4)')
+
     # --- generate-form ---
     sp = subparsers.add_parser('generate-form', help='Generate blank registration form for new players')
     sp.add_argument('--game', default='OMICRON101', help='Game ID')
@@ -2984,6 +3275,9 @@ Gmail integration (two-stage workflow):
         'suspend-player': cmd_suspend_player,
         'reinstate-player': cmd_reinstate_player,
         'list-players': cmd_list_players,
+        'add-gm': cmd_add_gm,
+        'add-gm-prefect': cmd_add_gm_prefect,
+        'add-gm-ship': cmd_add_gm_ship,
         'generate-form': cmd_generate_form,
         'register-player': cmd_register_player,
         'process-inbox': cmd_process_inbox,

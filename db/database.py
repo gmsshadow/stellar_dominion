@@ -340,6 +340,18 @@ def get_connection(state_db_path=None, universe_db_path=None):
         )""")
         conn.commit()
 
+    # Migrate: add is_gm to players if missing
+    player_cols = [r[1] for r in conn.execute("PRAGMA table_info(players)").fetchall()]
+    if 'is_gm' not in player_cols:
+        conn.execute("ALTER TABLE players ADD COLUMN is_gm INTEGER NOT NULL DEFAULT 0")
+        conn.commit()
+
+    # Migrate: add unlimited_credits to prefects if missing
+    prefect_cols = [r[1] for r in conn.execute("PRAGMA table_info(prefects)").fetchall()]
+    if 'unlimited_credits' not in prefect_cols:
+        conn.execute("ALTER TABLE prefects ADD COLUMN unlimited_credits INTEGER NOT NULL DEFAULT 0")
+        conn.commit()
+
     return conn
 
 
@@ -640,20 +652,22 @@ CREATE TABLE IF NOT EXISTS players (
     player_name TEXT NOT NULL,
     email TEXT NOT NULL,
     account_number TEXT NOT NULL UNIQUE,
+    is_gm INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL DEFAULT 'active',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (game_id) REFERENCES games(game_id)
 );
 
--- Prefect positions (one per player)
+-- Prefect positions (one per regular player; GM can have many)
 CREATE TABLE IF NOT EXISTS prefects (
     prefect_id INTEGER PRIMARY KEY,
-    player_id INTEGER NOT NULL UNIQUE,
+    player_id INTEGER NOT NULL,
     game_id TEXT NOT NULL,
     name TEXT NOT NULL,
     faction_id INTEGER DEFAULT 11,
     rank TEXT DEFAULT 'Citizen',
     credits REAL NOT NULL DEFAULT 10000,
+    unlimited_credits INTEGER NOT NULL DEFAULT 0,
     influence INTEGER DEFAULT 0,
     location_type TEXT DEFAULT 'ship',
     location_id INTEGER,
