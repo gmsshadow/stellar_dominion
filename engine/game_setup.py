@@ -192,8 +192,8 @@ def create_game(db_path=None, game_id="OMICRON101", game_name="Stellar Dominion 
     # STAR SYSTEM: Omicron (101)
     # =============================================
     c.execute("""
-        INSERT INTO star_systems (system_id, name, star_name, star_spectral_type, created_turn)
-        VALUES (101, 'Omicron', 'Omicron Prime', 'G2V', '500.1')
+        INSERT INTO star_systems (system_id, name, star_name, star_spectral_type, star_grid_col, star_grid_row, created_turn)
+        VALUES (101, 'Omicron', 'Omicron Prime', 'G2V', 'M', 13, '500.1')
     """)
 
     # =============================================

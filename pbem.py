@@ -1121,10 +1121,13 @@ def cmd_show_map(args):
     print("=" * len(title))
     print(render_system_map(system_data, objects))
 
-    # Structured legend: star, then celestial bodies with nested bases
+    # Structured legend: star (if present), then celestial bodies with nested bases
     print(f"\nCelestial Bodies:")
-    print(f"  *  {system['star_name']} ({system['star_spectral_type']}) at "
-          f"{system['star_grid_col']}{system['star_grid_row']:02d}")
+    if system['star_name'] and system['star_grid_col']:
+        print(f"  *  {system['star_name']} ({system['star_spectral_type']}) at "
+              f"{system['star_grid_col']}{system['star_grid_row']:02d}")
+    elif not system['star_name']:
+        print(f"  (Starless nexus — no jump distance restriction)")
 
     # Get all bases indexed by orbiting_body_id
     bases = conn.execute(
@@ -1204,11 +1207,17 @@ def cmd_list_ships(args):
 
     query = """
         SELECT s.*, ss.name as system_name, pp.name as owner_name, pp.faction_id,
-               p.email, p.account_number, p.status as player_status
+               p.email, p.account_number, p.status as player_status, p.is_gm,
+               db.name as docked_base_name,
+               ob.name as orbiting_body_name,
+               lb.name as landed_body_name
         FROM ships s 
         JOIN star_systems ss ON s.system_id = ss.system_id
         JOIN prefects pp ON s.owner_prefect_id = pp.prefect_id
         JOIN players p ON pp.player_id = p.player_id
+        LEFT JOIN starbases db ON s.docked_at_base_id = db.base_id
+        LEFT JOIN celestial_bodies ob ON s.orbiting_body_id = ob.body_id
+        LEFT JOIN celestial_bodies lb ON s.landed_body_id = lb.body_id
         WHERE s.game_id = ?
     """
     params = [args.game]
@@ -1222,16 +1231,43 @@ def cmd_list_ships(args):
         print(f"No ships in game {args.game}.")
     else:
         print(f"\nShips in game {args.game}:")
-        print(f"{'ID':<12} {'Name':<24} {'Owner':<18} {'Account':<12} {'Location':<10} {'OC':<10} {'Status':<10}")
-        print("-" * 96)
+        print(f"{'ID':<12} {'Name':<24} {'Owner':<16} {'System':<14} {'Position':<10} {'State':<28} {'OC'}")
+        print("-" * 120)
         for s in ships:
             faction = get_faction(conn, s['faction_id'])
-            display_name = f"{faction['abbreviation']} {s['name']}"
+            fac = faction['abbreviation'] if faction else '?'
+            display_name = f"{fac} {s['name']}"
+            if len(display_name) > 23:
+                display_name = display_name[:21] + ".."
             loc = f"{s['grid_col']}{s['grid_row']:02d}"
-            dock = f" [D]" if s['docked_at_base_id'] else ""
-            status = "SUSPENDED" if s['player_status'] == 'suspended' else ""
-            print(f"{s['ship_id']:<12} {display_name:<24} {s['owner_name']:<18} "
-                  f"{s['account_number']:<12} {loc}{dock:<10} {s['tu_remaining']}/{s['tu_per_turn']:<4} {status}")
+            sys_name = s['system_name']
+            if len(sys_name) > 13:
+                sys_name = sys_name[:11] + ".."
+
+            # Determine state
+            if s['docked_at_base_id']:
+                base_name = s['docked_base_name'] or str(s['docked_at_base_id'])
+                state = f"Docked: {base_name}"
+            elif s['landed_body_id']:
+                body_name = s['landed_body_name'] or str(s['landed_body_id'])
+                lx = s['landed_x'] if 'landed_x' in s.keys() else '?'
+                ly = s['landed_y'] if 'landed_y' in s.keys() else '?'
+                state = f"Landed: {body_name} ({lx},{ly})"
+            elif s['orbiting_body_id']:
+                body_name = s['orbiting_body_name'] or str(s['orbiting_body_id'])
+                state = f"Orbit: {body_name}"
+            else:
+                state = "In space"
+
+            if len(state) > 27:
+                state = state[:25] + ".."
+
+            gm_tag = " [GM]" if s['is_gm'] else ""
+            suspended = " SUSPENDED" if s['player_status'] == 'suspended' else ""
+            flags = f"{gm_tag}{suspended}"
+
+            print(f"{s['ship_id']:<12} {display_name:<24} {s['owner_name']:<16} "
+                  f"{sys_name:<14} {loc:<10} {state:<28} {s['tu_remaining']}/{s['tu_per_turn']}{flags}")
 
     conn.close()
 
@@ -2047,14 +2083,16 @@ def cmd_add_system(args):
         except Exception:
             pass
 
+    no_star = getattr(args, 'no_star', False)
     add_system(
         system_id=args.system_id,
         name=args.name,
-        star_name=args.star_name,
-        spectral_type=args.spectral_type or 'G2V',
-        star_col=args.star_col or 'M',
-        star_row=args.star_row or 13,
+        star_name=None if no_star else args.star_name,
+        spectral_type=None if no_star else (args.spectral_type or 'G2V'),
+        star_col=None if no_star else (args.star_col or 'M'),
+        star_row=None if no_star else (args.star_row or 13),
         created_turn=created_turn,
+        no_star=no_star,
     )
 
 
@@ -3120,6 +3158,7 @@ Gmail integration (two-stage workflow):
     sp.add_argument('--spectral-type', default='G2V', help='Spectral type (default: G2V)')
     sp.add_argument('--star-col', default='M', help='Star grid column (default: M)')
     sp.add_argument('--star-row', type=int, default=13, help='Star grid row (default: 13)')
+    sp.add_argument('--no-star', action='store_true', help='Create a starless nexus (no star, no jump distance restriction)')
     sp.add_argument('--no-turn-stamp', action='store_true', help='Skip created_turn provenance')
 
     # --- add-body ---

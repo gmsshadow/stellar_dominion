@@ -10,11 +10,13 @@ from pathlib import Path
 
 def add_system(universe_db_path=None, system_id=None, name=None,
                star_name=None, spectral_type='G2V',
-               star_col='M', star_row=13, created_turn=None):
+               star_col='M', star_row=13, created_turn=None,
+               no_star=False):
     """
     Add a new star system to the universe.
     
     If system_id is None, auto-assigns the next available ID.
+    If no_star is True, creates a starless nexus (all star fields NULL).
     Returns the system_id.
     """
     conn = get_universe_connection(universe_db_path)
@@ -23,7 +25,12 @@ def add_system(universe_db_path=None, system_id=None, name=None,
         max_id = conn.execute("SELECT MAX(system_id) FROM star_systems").fetchone()[0]
         system_id = (max_id or 100) + 1
 
-    if star_name is None:
+    if no_star:
+        star_name = None
+        spectral_type = None
+        star_col = None
+        star_row = None
+    elif star_name is None:
         star_name = f"{name} Prime"
 
     conn.execute("""
@@ -35,8 +42,12 @@ def add_system(universe_db_path=None, system_id=None, name=None,
     conn.commit()
     conn.close()
 
-    print(f"  Added system: {name} ({system_id})")
-    print(f"    Star: {star_name} [{spectral_type}] at {star_col}{star_row:02d}")
+    if no_star:
+        print(f"  Added nexus: {name} ({system_id})")
+        print(f"    No star — ships can jump freely within this system")
+    else:
+        print(f"  Added system: {name} ({system_id})")
+        print(f"    Star: {star_name} [{spectral_type}] at {star_col}{star_row:02d}")
     return system_id
 
 
@@ -172,9 +183,14 @@ def list_universe(universe_db_path=None):
     systems = conn.execute("SELECT * FROM star_systems ORDER BY system_id").fetchall()
     print(f"Star Systems ({len(systems)}):")
     for s in systems:
-        loc = f"{s['star_grid_col']}{s['star_grid_row']:02d}"
         ct = f"  [added {s['created_turn']}]" if s['created_turn'] else ""
-        print(f"  {s['system_id']:>4d}  {s['name']:<20s}  Star: {s['star_name']} [{s['star_spectral_type']}] at {loc}{ct}")
+        if s['star_name'] and s['star_grid_col'] and s['star_grid_row'] is not None:
+            loc = f"{s['star_grid_col']}{s['star_grid_row']:02d}"
+            print(f"  {s['system_id']:>4d}  {s['name']:<20s}  Star: {s['star_name']} [{s['star_spectral_type']}] at {loc}{ct}")
+        elif s['star_name']:
+            print(f"  {s['system_id']:>4d}  {s['name']:<20s}  Star: {s['star_name']} [{s['star_spectral_type'] or '?'}]{ct}")
+        else:
+            print(f"  {s['system_id']:>4d}  {s['name']:<20s}  Nexus (no star){ct}")
 
         # Bodies in this system
         bodies = conn.execute(

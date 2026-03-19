@@ -86,6 +86,14 @@ def get_connection(state_db_path=None, universe_db_path=None):
             conn.execute("DROP TABLE IF EXISTS main.resources")
             conn.commit()
 
+        # Migrate: fix star_systems with star_name but NULL grid positions (default to M13)
+        conn.execute("""
+            UPDATE universe.star_systems
+            SET star_grid_col = 'M', star_grid_row = 13
+            WHERE star_name IS NOT NULL AND (star_grid_col IS NULL OR star_grid_row IS NULL)
+        """)
+        conn.commit()
+
         # Migrate universe.db: create ship_components table if missing
         has_components = conn.execute(
             "SELECT name FROM universe.sqlite_master WHERE type='table' AND name='ship_components'"
@@ -380,10 +388,10 @@ CREATE TABLE IF NOT EXISTS universe_meta (
 CREATE TABLE IF NOT EXISTS star_systems (
     system_id INTEGER PRIMARY KEY,
     name TEXT NOT NULL UNIQUE,
-    star_name TEXT NOT NULL DEFAULT 'Central Star',
-    star_spectral_type TEXT DEFAULT 'G2V',
-    star_grid_col TEXT NOT NULL DEFAULT 'M',
-    star_grid_row INTEGER NOT NULL DEFAULT 13,
+    star_name TEXT DEFAULT NULL,
+    star_spectral_type TEXT DEFAULT NULL,
+    star_grid_col TEXT DEFAULT NULL,
+    star_grid_row INTEGER DEFAULT NULL,
     created_turn TEXT
 );
 

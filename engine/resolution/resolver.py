@@ -624,7 +624,7 @@ class TurnResolver:
         system = self.conn.execute(
             "SELECT * FROM star_systems WHERE system_id = ?", (system_id,)
         ).fetchone()
-        if system:
+        if system and system['star_name']:
             objects.append({
                 'type': 'star', 'id': system_id,
                 'name': system['star_name'],
@@ -2041,19 +2041,24 @@ class TurnResolver:
                 'message': "Cannot jump: you are already in that system."
             }
 
-        # Check distance from primary star (M13)
-        star_col, star_row = 'M', 13
-        dist_from_star = grid_distance(state['col'], state['row'], star_col, star_row)
-        if dist_from_star < min_star_dist:
-            current_loc = f"{state['col']}{state['row']:02d}"
-            return {
-                'command': 'JUMP', 'params': params_str,
-                'tu_before': tu_before, 'tu_after': state['tu'],
-                'tu_cost': 0, 'success': False,
-                'message': (f"Cannot jump: too close to the star. "
-                            f"Ship at {current_loc} is {dist_from_star} squares from the star "
-                            f"(minimum {min_star_dist} required).")
-            }
+        # Check distance from primary star (skip for starless nexus systems)
+        current_system = self.conn.execute(
+            "SELECT * FROM star_systems WHERE system_id = ?", (state['system_id'],)
+        ).fetchone()
+        if current_system and current_system['star_name']:
+            star_col = current_system['star_grid_col']
+            star_row = current_system['star_grid_row']
+            dist_from_star = grid_distance(state['col'], state['row'], star_col, star_row)
+            if dist_from_star < min_star_dist:
+                current_loc = f"{state['col']}{state['row']:02d}"
+                return {
+                    'command': 'JUMP', 'params': params_str,
+                    'tu_before': tu_before, 'tu_after': state['tu'],
+                    'tu_cost': 0, 'success': False,
+                    'message': (f"Cannot jump: too close to the star. "
+                                f"Ship at {current_loc} is {dist_from_star} squares from the star "
+                                f"(minimum {min_star_dist} required).")
+                }
 
         # Check target system exists
         target = self.conn.execute(

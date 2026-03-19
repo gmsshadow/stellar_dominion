@@ -50,10 +50,13 @@ def render_system_map(system_data, objects, ship_position=None, title=None):
     # Initialize empty grid
     grid = [['.' for _ in range(25)] for _ in range(25)]
 
-    # Place star at center (M13 = index 12, row 13 -> index 12)
-    star_col = col_to_index(system_data.get('star_col', 'M'))
-    star_row = system_data.get('star_row', 13) - 1
-    grid[star_row][star_col] = SYMBOLS['star']
+    # Place star (if system has one)
+    star_col_letter = system_data.get('star_col')
+    star_row_num = system_data.get('star_row')
+    if star_col_letter and star_row_num:
+        star_col = col_to_index(star_col_letter)
+        star_row = star_row_num - 1
+        grid[star_row][star_col] = SYMBOLS['star']
 
     # Place objects
     for obj in objects:
