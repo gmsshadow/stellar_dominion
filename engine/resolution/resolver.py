@@ -29,7 +29,7 @@ TU_COSTS = {
     'BUY': 0,          # trading while docked is free
     'SELL': 0,
     'GETMARKET': 0,
-    'JUMP': 60,        # hyperspace jump between systems
+    'JUMP': 60,        # priority estimate only — actual cost from installed drive
     'MESSAGE': 0,      # sending messages is free
     'MAKEOFFICER': 10, # promoting crew takes some time
     'INSTALL': 10,     # installing a component
@@ -2000,10 +2000,32 @@ class TurnResolver:
     def _cmd_jump(self, state, target_system_id):
         """JUMP <system_id> - hyperspace jump to a linked star system."""
         tu_before = state['tu']
-        cost = self._effective_tu_cost(JUMP_CONFIG['tu_per_hop'], state['efficiency'])
         min_star_dist = JUMP_CONFIG['min_star_distance']
-        max_range = JUMP_CONFIG['max_jump_range']
         params_str = str(target_system_id)
+
+        # Check for installed jump drive
+        drive = self.conn.execute("""
+            SELECT sc.jump_range, sc.jump_oc_cost, sc.name, ii.quantity
+            FROM installed_items ii
+            JOIN ship_components sc ON ii.component_id = sc.component_id
+            WHERE ii.ship_id = ? AND sc.category = 'jump_drive'
+            ORDER BY sc.jump_range DESC
+            LIMIT 1
+        """, (state['ship_id'],)).fetchone()
+
+        if not drive:
+            return {
+                'command': 'JUMP', 'params': params_str,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': False,
+                'message': "Cannot jump: no jump drive installed."
+            }
+
+        max_range = drive['jump_range']
+        base_oc_cost = drive['jump_oc_cost']
+
+        # Find shortest route (BFS unlimited — cost check handles affordability)
+        jump_hops = self._find_jump_route(state['system_id'], target_system_id, max_hops=100)
 
         # Must not be docked
         if state['docked_at']:
@@ -2076,20 +2098,19 @@ class TurnResolver:
         # Find route: BFS across system_links up to max_jump_range hops
         jump_hops = self._find_jump_route(state['system_id'], target_system_id, max_range)
         if jump_hops is None:
-            if max_range == 1:
-                msg = f"Cannot jump: no known hyperspace link to {target['name']} ({target_system_id})."
-            else:
-                msg = (f"Cannot jump: {target['name']} ({target_system_id}) is beyond "
-                       f"jump range ({max_range} system{'s' if max_range > 1 else ''} max).")
             return {
                 'command': 'JUMP', 'params': params_str,
                 'tu_before': tu_before, 'tu_after': state['tu'],
                 'tu_cost': 0, 'success': False,
-                'message': msg
+                'message': f"Cannot jump: no known hyperspace route to {target['name']} ({target_system_id})."
             }
 
-        # Total cost scales with hops
-        total_cost = cost * jump_hops
+        # Cost = number of drive activations × drive OC cost
+        # Each activation covers up to jump_range hops
+        import math
+        activations = math.ceil(jump_hops / max_range)
+        base_total = base_oc_cost * activations
+        total_cost = self._effective_tu_cost(base_total, state['efficiency'])
 
         # Check TU
         if state['tu'] < total_cost:
@@ -2116,7 +2137,7 @@ class TurnResolver:
         self._commit_ship_position(state)
 
         arrival_loc = f"{state['col']}{state['row']:02d}"
-        hop_str = f" ({jump_hops} hops)" if jump_hops > 1 else ""
+        hop_str = f" ({jump_hops} hops, {activations}x drive)" if jump_hops > 1 else ""
         return {
             'command': 'JUMP', 'params': params_str,
             'tu_before': tu_before, 'tu_after': state['tu'],

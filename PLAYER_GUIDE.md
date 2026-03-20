@@ -25,7 +25,7 @@ Ships are built from modular internal components. Your starting Light Trader MK 
 | Cargo Bay | 5 | 200 | 500 ST cargo capacity |
 | Crew Quarters | 1 | 30 | 20 crew capacity, 20 life support |
 | Basic Sensor Array | 1 | 20 | Sensor rating 5 |
-| Jump Drive Mk1 | 1 | 120 | Jump range 5, costs 150 OC |
+| Jump Drive Mk1 | 1 | 120 | Range 5 systems, 50 OC per activation |
 | **Total** | | **500/2500** | **2000 ST free** |
 
 Ship stats like cargo capacity, sensor rating, life support, and gravity rating are all derived from your installed components. To upgrade, install new components into your free ST space — or remove existing ones to make room.
@@ -93,7 +93,7 @@ Every action costs OC. Your ship starts each turn with 300 OC.
 | **LAND** | 20 | Land on a planet surface |
 | **TAKEOFF** | 20 | Take off to orbit |
 | **SCANSURFACE** | 20 | Scan planet surface |
-| **JUMP** | 150 | Jump to a linked star system |
+| **JUMP** | per drive | Jump to a star system (Mk1: 50 OC per activation, range 5 hops) |
 | **MAKEOFFICER** | 10 | Promote a crew member |
 | **INSTALL** | 10 | Install a component from cargo |
 | **UNINSTALL** | 10 | Uninstall a component to cargo |
@@ -115,7 +115,7 @@ Note: old command names LOCATIONSCAN, SYSTEMSCAN, and SURFACESCAN still work as 
 
 **MOVE** `<coordinate>` — Move toward a grid coordinate (e.g. `MOVE F10`). Base cost is 2 OC per square, but engine efficiency and crew undermanning may increase this. Ships without a Sublight Engine cannot move.
 
-**JUMP** `<system_id>` — Jump to another star system. Requires a Jump Drive. Cost depends on installed drive (Mk1: 150 OC). Must be at least 10 squares from the primary star.
+**JUMP** `<system_id>` — Jump to another star system. Requires a Jump Drive. The drive determines the maximum range per activation and the OC cost per activation. Jump Drive Mk1 covers up to 5 system hops per activation at 50 OC; Mk2 covers up to 10 hops at 40 OC. Destinations beyond the drive's range require multiple activations (e.g. a system 8 hops away with Mk1 = 2 activations = 100 OC). Must be at least 10 squares from the primary star (waived in starless nexus systems).
 
 ### Scanning
 

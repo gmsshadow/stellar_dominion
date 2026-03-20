@@ -533,7 +533,7 @@ def generate_welcome_reports(db_path, game_id, account_number, prefect_id, ship_
         TAKEOFF            Take off from planet surface to orbit. Costs 20 OC.
         SCANSURFACE        Produce a terrain map (must be orbiting or landed). Costs 20 OC.
         WAIT <oc>          Wait and do nothing for a number of Operational Cycles.
-        JUMP <system_id>   Jump to a linked star system. Costs 60 OC. Must be 10+ squares from star.
+        JUMP <system_id>   Jump to a star system. Cost depends on drive (Mk1: 50 OC, range 5).
 
         TRADING (must be docked)
         -------------------------

@@ -131,13 +131,18 @@ def get_connection(state_db_path=None, universe_db_path=None):
                 (150, 'Basic Sensor Array', 'sensor', 20, 0, 0, 0, 0, 0, 5, 0, 0, None, 300, 'Standard detection suite.'),
                 (151, 'Military Sensor Suite', 'sensor', 30, 0, 0, 0, 0, 0, 10, 0, 0, 'military', 1000, 'Advanced military sensors.'),
                 (152, 'Deep Space Scanner', 'sensor', 40, 0, 0, 0, 0, 0, 15, 0, 0, None, 1800, 'Long-range detection.'),
-                (160, 'Jump Drive Mk1', 'jump_drive', 120, 0, 0, 0, 0, 0, 0, 5, 150, None, 5000, 'Basic hyperspace drive.'),
-                (161, 'Jump Drive Mk2', 'jump_drive', 150, 0, 0, 0, 0, 0, 0, 10, 100, None, 12000, 'Advanced jump drive.'),
+                (160, 'Jump Drive Mk1', 'jump_drive', 120, 0, 0, 0, 0, 0, 0, 5, 50, None, 5000, 'Basic hyperspace drive.'),
+                (161, 'Jump Drive Mk2', 'jump_drive', 150, 0, 0, 0, 0, 0, 0, 10, 40, None, 12000, 'Advanced jump drive.'),
             ]
             for c in seed_components:
                 conn.execute("""INSERT OR IGNORE INTO universe.ship_components VALUES
                     (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", c)
             conn.commit()
+
+        # Migrate: update jump drive OC costs (was 150/100, now 50/40)
+        conn.execute("UPDATE universe.ship_components SET jump_oc_cost = 50 WHERE component_id = 160 AND jump_oc_cost > 50")
+        conn.execute("UPDATE universe.ship_components SET jump_oc_cost = 40 WHERE component_id = 161 AND jump_oc_cost > 40")
+        conn.commit()
 
         # Migrate universe.db: create base_modules table if missing
         has_base_modules = conn.execute(
@@ -523,9 +528,9 @@ INSERT OR IGNORE INTO ship_components VALUES
 INSERT OR IGNORE INTO ship_components VALUES
     (152, 'Deep Space Scanner', 'sensor', 40, 0, 0, 0, 0, 0, 15, 0, 0, NULL, 1800, 'Long-range deep space detection system.');
 INSERT OR IGNORE INTO ship_components VALUES
-    (160, 'Jump Drive Mk1', 'jump_drive', 120, 0, 0, 0, 0, 0, 0, 5, 150, NULL, 5000, 'Basic hyperspace jump drive. Range 5, costs 150 OC.');
+    (160, 'Jump Drive Mk1', 'jump_drive', 120, 0, 0, 0, 0, 0, 0, 5, 50, NULL, 5000, 'Basic hyperspace jump drive. Range 5 systems, 50 OC per activation.');
 INSERT OR IGNORE INTO ship_components VALUES
-    (161, 'Jump Drive Mk2', 'jump_drive', 150, 0, 0, 0, 0, 0, 0, 10, 100, NULL, 12000, 'Advanced jump drive. Range 10, costs 100 OC.');
+    (161, 'Jump Drive Mk2', 'jump_drive', 150, 0, 0, 0, 0, 0, 0, 10, 40, NULL, 12000, 'Advanced jump drive. Range 10 systems, 40 OC per activation.');
 
 -- Base module catalogue (what modules can be installed on starbases/ports/outposts)
 -- 3-digit IDs in 500-599 range. Category groups:

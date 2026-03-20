@@ -108,7 +108,7 @@ All ship stats are calculated from installed components:
 - **gravity_rating** = total_thrust / ship_size
 - **crew_required** = ship_size (1 per size point)
 - **engine_efficiency** = engines / optimal × 100%
-- **jump_range** = best installed jump drive range
+- **jump_range** = best installed jump drive range (systems per activation)
 
 When components change, `recalculate_ship_stats()` is called automatically.
 
@@ -121,7 +121,7 @@ Commercial Engine ×1    60 ST  (1/5 optimal → 20% engine eff)
 Cargo Bay ×5           200 ST  (500 cargo)
 Crew Quarters ×1        30 ST  (20 crew, 20 life)
 Basic Sensor Array ×1   20 ST  (sensor 5)
-Jump Drive Mk1 ×1     120 ST  (range 5, 150 OC)
+Jump Drive Mk1 ×1     120 ST  (range 5 systems, 50 OC/activation)
                        -------
 Total:                 500/2500 ST (2000 ST free)
 ```
