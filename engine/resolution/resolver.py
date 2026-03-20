@@ -1131,12 +1131,76 @@ class TurnResolver:
 
         ascii_map = render_system_map(system_data, map_objects)
 
+        # Build legend of detected objects below the map
+        legend_lines = []
+
+        # Star
+        if system['star_name'] and system['star_grid_col']:
+            legend_lines.append(f"  *  {system['star_name']} ({system['star_spectral_type']}) at "
+                                f"{system['star_grid_col']}{system['star_grid_row']:02d}")
+        elif not system['star_name']:
+            legend_lines.append(f"  (Starless nexus)")
+
+        # Build parent/child relationships and base lookup
+        bodies_by_id = {}
+        children_by_parent = {}
+        top_level = []
+        bases_by_body = {}
+
+        for obj in objects:
+            if obj['type'] in ('planet', 'moon', 'gas_giant', 'asteroid'):
+                bodies_by_id[obj['id']] = obj
+                # Look up parent
+                body_row = self.conn.execute(
+                    "SELECT parent_body_id FROM celestial_bodies WHERE body_id = ?",
+                    (obj['id'],)
+                ).fetchone()
+                parent = body_row['parent_body_id'] if body_row else None
+                if parent:
+                    children_by_parent.setdefault(parent, []).append(obj)
+                else:
+                    top_level.append(obj)
+            elif obj['type'] == 'base':
+                # Look up orbiting body
+                base_row = self.conn.execute(
+                    "SELECT orbiting_body_id, base_type, docking_capacity FROM starbases WHERE base_id = ?",
+                    (obj['id'],)
+                ).fetchone()
+                if base_row and base_row['orbiting_body_id']:
+                    bases_by_body.setdefault(base_row['orbiting_body_id'], []).append({
+                        'name': obj['name'], 'id': obj['id'],
+                        'col': obj['col'], 'row': obj['row'],
+                        'base_type': base_row['base_type'],
+                        'docking': base_row['docking_capacity'],
+                    })
+
+        def format_body(obj, indent="  "):
+            loc = f"{obj['col']}{obj['row']:02d}"
+            type_label = obj['type'].replace('_', ' ').title()
+            symbol = obj.get('symbol', '?')
+            lines = [f"{indent}{symbol}  {obj['name']} ({obj['id']}) at {loc} - {type_label}"]
+            # Starbases orbiting this body
+            for base in bases_by_body.get(obj['id'], []):
+                base_loc = f"{base['col']}{base['row']:02d}"
+                lines.append(f"{indent}     [{base['base_type']}] {base['name']} ({base['id']}) at {base_loc}"
+                             f" - Docking: {base['docking']}")
+            # Moons
+            for child in children_by_parent.get(obj['id'], []):
+                lines.extend(format_body(child, "      "))
+            return lines
+
+        for obj in top_level:
+            legend_lines.extend(format_body(obj))
+
+        legend = "\n".join(legend_lines)
+        full_output = f"System scan complete.\n{ascii_map}\n\n{legend}"
+
         return {
             'command': 'SCANSYSTEM', 'params': None,
             'tu_before': tu_before, 'tu_after': state['tu'],
             'tu_cost': cost,
             'success': True,
-            'message': f"System scan complete.\n{ascii_map}",
+            'message': full_output,
             'map': ascii_map
         }
 

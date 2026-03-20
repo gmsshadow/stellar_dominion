@@ -365,6 +365,39 @@ def get_connection(state_db_path=None, universe_db_path=None):
         conn.execute("ALTER TABLE prefects ADD COLUMN unlimited_credits INTEGER NOT NULL DEFAULT 0")
         conn.commit()
 
+    # Migrate: remove UNIQUE constraint on prefects.player_id (allows GM multiple prefects)
+    create_sql = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='prefects'"
+    ).fetchone()
+    if create_sql and 'UNIQUE' in create_sql['sql'] and 'player_id' in create_sql['sql']:
+        # Rebuild prefects table without the UNIQUE constraint
+        conn.execute("ALTER TABLE prefects RENAME TO prefects_old")
+        conn.execute("""CREATE TABLE prefects (
+            prefect_id INTEGER PRIMARY KEY,
+            player_id INTEGER NOT NULL,
+            game_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            faction_id INTEGER DEFAULT 11,
+            rank TEXT DEFAULT 'Citizen',
+            credits REAL NOT NULL DEFAULT 10000,
+            unlimited_credits INTEGER NOT NULL DEFAULT 0,
+            influence INTEGER DEFAULT 0,
+            location_type TEXT DEFAULT 'ship',
+            location_id INTEGER,
+            created_turn_year INTEGER,
+            created_turn_week INTEGER,
+            FOREIGN KEY (player_id) REFERENCES players(player_id),
+            FOREIGN KEY (game_id) REFERENCES games(game_id)
+        )""")
+        # Copy all data — use column intersection in case old table has fewer columns
+        old_cols = [r[1] for r in conn.execute("PRAGMA table_info(prefects_old)").fetchall()]
+        new_cols = [r[1] for r in conn.execute("PRAGMA table_info(prefects)").fetchall()]
+        shared = [c for c in new_cols if c in old_cols]
+        cols_str = ', '.join(shared)
+        conn.execute(f"INSERT INTO prefects ({cols_str}) SELECT {cols_str} FROM prefects_old")
+        conn.execute("DROP TABLE prefects_old")
+        conn.commit()
+
     return conn
 
 
