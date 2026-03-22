@@ -511,6 +511,265 @@ def generate_ship_report(turn_result, db_path=None, game_id="OMICRON101",
     return "\n".join(lines)
 
 
+def generate_base_report(base_type, base_id, db_path=None, game_id="OMICRON101",
+                         order_results=None):
+    """
+    Generate a turn report for a starbase, surface port, or outpost.
+    base_type: 'starbase', 'port', or 'outpost'
+    order_results: list of (command, params, result_message) tuples or None
+    """
+    from db.database import (get_installed_modules, recalculate_base_stats)
+
+    conn = get_connection(db_path)
+    game = conn.execute("SELECT * FROM games WHERE game_id = ?", (game_id,)).fetchone()
+    turn_year = game['current_year']
+    turn_week = game['current_week']
+    now_str = datetime.now().strftime("%d %B %Y")
+
+    # Load base data
+    if base_type == 'starbase':
+        base = conn.execute("SELECT * FROM starbases WHERE base_id = ?", (base_id,)).fetchone()
+        base_name = base['name']
+        id_field = base['base_id']
+        system = conn.execute("SELECT name FROM star_systems WHERE system_id = ?",
+                               (base['system_id'],)).fetchone()
+        location_str = f"{base['grid_col']}{base['grid_row']:02d} - {system['name']} System ({base['system_id']})"
+        if base['orbiting_body_id']:
+            body = conn.execute("SELECT name FROM celestial_bodies WHERE body_id = ?",
+                                 (base['orbiting_body_id'],)).fetchone()
+            location_str += f"\nOrbiting {body['name']} ({base['orbiting_body_id']})" if body else ""
+    elif base_type == 'port':
+        base = conn.execute("SELECT * FROM surface_ports WHERE port_id = ?", (base_id,)).fetchone()
+        base_name = base['name']
+        id_field = base['port_id']
+        body = conn.execute("SELECT cb.*, ss.name as system_name, ss.system_id FROM celestial_bodies cb JOIN star_systems ss ON cb.system_id = ss.system_id WHERE body_id = ?",
+                             (base['body_id'],)).fetchone()
+        location_str = f"{body['name']} ({base['body_id']}) at ({base['surface_x']},{base['surface_y']})"
+        location_str += f" - {body['system_name']} System ({body['system_id']})"
+    else:  # outpost
+        base = conn.execute("SELECT * FROM outposts WHERE outpost_id = ?", (base_id,)).fetchone()
+        base_name = base['name']
+        id_field = base['outpost_id']
+        body = conn.execute("SELECT cb.*, ss.name as system_name, ss.system_id FROM celestial_bodies cb JOIN star_systems ss ON cb.system_id = ss.system_id WHERE body_id = ?",
+                             (base['body_id'],)).fetchone()
+        location_str = f"{body['name']} ({base['body_id']}) at ({base['surface_x']},{base['surface_y']})"
+        location_str += f" - {body['system_name']} System ({body['system_id']})"
+
+    # Faction from owner
+    faction_str = "Unaffiliated"
+    faction_abbr = ""
+    if base['owner_prefect_id']:
+        prefect = conn.execute("SELECT * FROM prefects WHERE prefect_id = ?",
+                                (base['owner_prefect_id'],)).fetchone()
+        if prefect:
+            faction = get_faction(conn, prefect['faction_id'])
+            if faction:
+                faction_str = faction['name']
+                faction_abbr = faction['abbreviation']
+
+    # Get stats from modules
+    kwargs = {'starbase_id': base_id} if base_type == 'starbase' else \
+             {'port_id': base_id} if base_type == 'port' else \
+             {'outpost_id': base_id}
+    stats = recalculate_base_stats(conn, **kwargs)
+    modules = get_installed_modules(conn, **kwargs)
+
+    # Type label for display
+    type_labels = {'starbase': 'STARBASE', 'port': 'SURFACE PORT', 'outpost': 'OUTPOST'}
+    type_label = type_labels.get(base_type, base_type.upper())
+    display_name = f"{faction_abbr} {type_label}: {base_name}" if faction_abbr else f"{type_label}: {base_name}"
+
+    lines = []
+    lines.append(center_text("=== BEGIN REPORT ==="))
+    lines.append("")
+    lines.append(center_text("Stellar Dominion"))
+    lines.append(center_text("PBEM Strategy Game"))
+    lines.append("")
+    lines.append(center_text(f"{display_name} ({id_field})"))
+    lines.append("")
+    lines.append(f"Printed on {now_str}, Star Date {turn_year}.{turn_week}")
+    lines.append("")
+
+    # ==========================================
+    # TURN ORDERS (if any)
+    # ==========================================
+    if order_results:
+        lines.append(section_header("Turn Orders"))
+        lines.append(section_line())
+        for cmd, params, result_msg in order_results:
+            params_str = ""
+            if isinstance(params, dict):
+                parts = [f"{k}={v}" for k, v in params.items()]
+                params_str = " {" + ", ".join(parts) + "}"
+            lines.append(section_line(f"> {cmd}{params_str}"))
+            for rline in result_msg.split('\n'):
+                lines.append(section_line(f"    {rline}"))
+            lines.append(section_line())
+
+    # ==========================================
+    # STATUS BLOCK
+    # ==========================================
+    lines.append(section_header("Status Report"))
+    lines.append(section_line())
+
+    lines.append(section_line(f"Name: {base_name} ({id_field})"))
+    lines.append(section_line(f"Faction: {faction_str}".ljust(COL_LEFT) +
+                               f"Efficiency: {stats['overall_efficiency']}%"))
+    lines.append(section_line(f"Type: {type_label}"))
+    lines.append(section_line())
+
+    # Location
+    for loc_line in location_str.split('\n'):
+        lines.append(section_line(loc_line))
+    lines.append(section_line())
+
+    # Employees
+    lines.append(section_line(f"Employees: {stats['employees']}/{stats['employees_required']} required -> {stats['employee_pct']}%"))
+    lines.append(section_line(f"Employee Capacity: {stats['employee_capacity']}".ljust(COL_LEFT) +
+                               f"Command: {stats['command_count']}/{stats['command_required']} -> {stats['command_pct']}%"))
+    if stats['docking_capacity']:
+        lines.append(section_line(f"Docking Slots: {stats['docking_capacity']}"))
+    if stats['storage_capacity']:
+        # Calculate used storage
+        inv_col = 'starbase_id' if base_type == 'starbase' else 'port_id' if base_type == 'port' else 'outpost_id'
+        storage_used = conn.execute(
+            f"SELECT COALESCE(SUM(quantity * mass_per_unit), 0) FROM base_inventory WHERE {inv_col} = ?",
+            (base_id,)
+        ).fetchone()[0]
+        lines.append(section_line(f"Storage: {storage_used}/{stats['storage_capacity']} ST"))
+    if stats['mining_capacity']:
+        lines.append(section_line(f"Mining Capacity: {stats['mining_capacity']}"))
+    if stats['factory_capacity']:
+        lines.append(section_line(f"Factory Capacity: {stats['factory_capacity']}"))
+    if stats['repair_capacity']:
+        lines.append(section_line(f"Repair Capacity: {stats['repair_capacity']}"))
+    if stats['defence_rating']:
+        lines.append(section_line(f"Defence Rating: {stats['defence_rating']}"))
+    lines.append(section_line())
+
+    # ==========================================
+    # MODULES
+    # ==========================================
+    lines.append(section_header("Installed Modules"))
+    lines.append(section_line())
+    if modules:
+        mod_fmt = "{:<28s} {:>5s} {:>3s} {:>5s}"
+        lines.append(section_line(mod_fmt.format("Module", "ID", "Qty", "Emp")))
+        lines.append(section_line(mod_fmt.format("-"*28, "-"*5, "-"*3, "-"*5)))
+        for m in modules:
+            lines.append(section_line(mod_fmt.format(
+                m['name'][:28], str(m['module_id']), str(m['quantity']),
+                str(m['employees_required'] * m['quantity']))))
+        lines.append(section_line())
+        lines.append(section_line(f"Total Modules: {stats['total_modules']}"))
+    else:
+        lines.append(section_line("No modules installed."))
+    lines.append(section_line())
+
+    # ==========================================
+    # MARKET REPORT (starbases and ports only)
+    # ==========================================
+    if base_type in ('starbase', 'port'):
+        lines.append(section_header("Market Report"))
+        lines.append(section_line())
+
+        # Get market data - for starbases use base_id, for ports look up linked starbase
+        market_base_id = None
+        if base_type == 'starbase':
+            market_base_id = base_id
+        elif base_type == 'port':
+            # Check if a starbase is linked to this port
+            linked_base = conn.execute(
+                "SELECT base_id FROM starbases WHERE surface_port_id = ?", (base_id,)
+            ).fetchone()
+            if linked_base:
+                market_base_id = linked_base['base_id']
+
+        if market_base_id:
+            from engine.game_setup import get_market_weeks_remaining
+            # Determine market cycle
+            cycle_length = 4
+            cycle_week = ((game['current_week'] - 1) // cycle_length) * cycle_length + 1
+            cycle_year = game['current_year']
+
+            prices = conn.execute("""
+                SELECT mp.*, tg.name as item_name, tg.mass_per_unit,
+                       btc.trade_role
+                FROM market_prices mp
+                JOIN trade_goods tg ON mp.item_id = tg.item_id
+                JOIN base_trade_config btc ON mp.base_id = btc.base_id
+                    AND mp.item_id = btc.item_id AND btc.game_id = mp.game_id
+                WHERE mp.game_id = ? AND mp.base_id = ?
+                AND mp.turn_year = ? AND mp.turn_week = ?
+                ORDER BY mp.item_id
+            """, (game_id, market_base_id, cycle_year, cycle_week)).fetchall()
+
+            if prices:
+                role_labels = {'produces': 'Supply', 'average': 'Std', 'demands': 'Demand'}
+                weeks_left = get_market_weeks_remaining(game['current_week'])
+                mkt_fmt = "{:<26s} {:>6s} {:>5s} {:>5s} {:>5s} {:>5s} {}"
+                lines.append(section_line(mkt_fmt.format('Item', 'ID', 'Buy', 'Sell', 'Stk', 'Dmd', 'Role')))
+                lines.append(section_line(mkt_fmt.format('-'*26, '-'*6, '-'*5, '-'*5, '-'*5, '-'*5, '------')))
+                for p in prices:
+                    lines.append(section_line(mkt_fmt.format(
+                        p['item_name'][:26], str(p['item_id']),
+                        f"{p['buy_price']:.0f}", f"{p['sell_price']:.0f}",
+                        str(p['stock']), str(p['demand']),
+                        role_labels.get(p['trade_role'], '')
+                    )))
+                lines.append(section_line())
+                if weeks_left <= 1:
+                    lines.append(section_line("Market refreshes next week."))
+                else:
+                    lines.append(section_line(f"{weeks_left} weeks to market refresh."))
+            else:
+                lines.append(section_line("No market data available."))
+        else:
+            lines.append(section_line("No market configured."))
+        lines.append(section_line())
+
+    # ==========================================
+    # INVENTORY
+    # ==========================================
+    lines.append(section_header("Inventory"))
+    lines.append(section_line())
+
+    inv_col = 'starbase_id' if base_type == 'starbase' else 'port_id' if base_type == 'port' else 'outpost_id'
+    inventory = conn.execute(
+        f"SELECT * FROM base_inventory WHERE {inv_col} = ? AND quantity > 0 ORDER BY item_name",
+        (base_id,)
+    ).fetchall()
+
+    if inventory:
+        inv_fmt = "{:<30s} {:>6s} {:>5s} {:>8s}"
+        lines.append(section_line(inv_fmt.format("Item", "ID", "Qty", "Mass")))
+        lines.append(section_line(inv_fmt.format("-"*30, "-"*6, "-"*5, "-"*8)))
+        total_mass = 0
+        for item in inventory:
+            mass = item['quantity'] * item['mass_per_unit']
+            total_mass += mass
+            lines.append(section_line(inv_fmt.format(
+                item['item_name'][:30], str(item['item_type_id']),
+                str(item['quantity']), f"{mass} ST"
+            )))
+        lines.append(section_line())
+        if stats['storage_capacity']:
+            lines.append(section_line(f"Storage Used: {total_mass}/{stats['storage_capacity']} ST"))
+        else:
+            lines.append(section_line(f"Total Mass: {total_mass} ST"))
+    else:
+        lines.append(section_line("Inventory empty."))
+    lines.append(section_line())
+
+    # ==========================================
+    lines.append(section_close())
+    lines.append("")
+    lines.append(center_text("=== END REPORT ==="))
+
+    conn.close()
+    return "\n".join(lines)
+
+
 def generate_prefect_report(prefect_id, db_path=None, game_id="OMICRON101",
                             between_turn_messages=None, trade_summary=None):
     """

@@ -36,6 +36,10 @@ VALID_COMMANDS = {
     'CHANGEFACTION': {'params': 'changefaction_order', 'description': 'Request to change faction (GM-moderated)'},
     'MODERATOR': {'params': 'moderator_order', 'description': 'Submit a free-text request to the GM'},
     'CLEAR': {'params': 'none', 'description': 'Clear all pending overflow orders from previous turns'},
+    # Base/port/outpost commands
+    'BUILD': {'params': 'build_order', 'description': 'Build/install a module on a base'},
+    'SETBUY': {'params': 'setprice_order', 'description': 'Set market buy price for an item'},
+    'SETSELL': {'params': 'setprice_order', 'description': 'Set market sell price for an item'},
 }
 
 # Backwards-compatible command aliases (old -> new).
@@ -278,6 +282,70 @@ def parse_order(command_str, params):
                 return command, params, f"{command}: expected numeric component_id"
         return command, params, f"{command}: expected parameters (component_id [quantity])"
 
+    elif spec['params'] == 'build_order':
+        # BUILD: module_id [quantity]
+        # Text: BUILD 510 2  or  BUILD 510
+        # YAML: {module: 510, qty: 2} or "510 2" or 510
+        if isinstance(params, dict):
+            try:
+                mod_id = int(params.get('module', params.get('module_id', 0)))
+                qty = int(params.get('qty', params.get('quantity', 1)))
+                if mod_id <= 0:
+                    return command, params, f"{command}: module_id must be a positive integer"
+                if qty <= 0:
+                    return command, params, f"{command}: quantity must be positive"
+                return command, {'module_id': mod_id, 'quantity': qty}, None
+            except (ValueError, TypeError):
+                return command, params, f"{command}: invalid parameters"
+        elif isinstance(params, (int, float)):
+            return command, {'module_id': int(params), 'quantity': 1}, None
+        elif isinstance(params, str):
+            parts = params.strip().split()
+            if len(parts) < 1:
+                return command, params, f"{command}: expected 'module_id [quantity]'"
+            try:
+                mod_id = int(parts[0])
+                qty = int(parts[1]) if len(parts) > 1 else 1
+                if mod_id <= 0:
+                    return command, params, f"{command}: module_id must be a positive integer"
+                if qty <= 0:
+                    return command, params, f"{command}: quantity must be positive"
+                return command, {'module_id': mod_id, 'quantity': qty}, None
+            except ValueError:
+                return command, params, f"{command}: expected numeric module_id"
+        return command, params, f"{command}: expected parameters (module_id [quantity])"
+
+    elif spec['params'] == 'setprice_order':
+        # SETBUY/SETSELL: item_id price
+        # Text: SETBUY 100101 25
+        # YAML: {item: 100101, price: 25} or "100101 25"
+        if isinstance(params, dict):
+            try:
+                item_id = int(params.get('item', params.get('item_id', 0)))
+                price = int(params.get('price', 0))
+                if item_id <= 0:
+                    return command, params, f"{command}: item_id must be a positive integer"
+                if price < 0:
+                    return command, params, f"{command}: price must be non-negative"
+                return command, {'item_id': item_id, 'price': price}, None
+            except (ValueError, TypeError):
+                return command, params, f"{command}: invalid parameters"
+        elif isinstance(params, str):
+            parts = params.strip().split()
+            if len(parts) != 2:
+                return command, params, f"{command}: expected 'item_id price'"
+            try:
+                item_id = int(parts[0])
+                price = int(parts[1])
+                if item_id <= 0:
+                    return command, params, f"{command}: item_id must be a positive integer"
+                if price < 0:
+                    return command, params, f"{command}: price must be non-negative"
+                return command, {'item_id': item_id, 'price': price}, None
+            except ValueError:
+                return command, params, f"{command}: expected numeric item_id and price"
+        return command, params, f"{command}: expected parameters (item_id price)"
+
     elif spec['params'] == 'rename_id_name':
         # RENAMESHIP/RENAMEBASE/RENAMEPREFECT: id new_name
         # Text: RENAMESHIP 52589098 The Indomitable
@@ -416,6 +484,9 @@ def parse_yaml_orders(yaml_content):
         'game': data.get('game', ''),
         'account': str(data.get('account', '')),
         'ship': data.get('ship', ''),
+        'starbase': data.get('starbase', ''),
+        'port': data.get('port', ''),
+        'outpost': data.get('outpost', ''),
         'orders': [],
         'errors': [],
     }
@@ -479,6 +550,9 @@ def parse_text_orders(text_content):
         'game': '',
         'account': '',
         'ship': '',
+        'starbase': '',
+        'port': '',
+        'outpost': '',
         'orders': [],
         'errors': [],
     }
@@ -499,6 +573,15 @@ def parse_text_orders(text_content):
             continue
         elif cmd == 'SHIP':
             result['ship'] = params or ''
+            continue
+        elif cmd == 'STARBASE':
+            result['starbase'] = params or ''
+            continue
+        elif cmd == 'PORT':
+            result['port'] = params or ''
+            continue
+        elif cmd == 'OUTPOST':
+            result['outpost'] = params or ''
             continue
 
         sequence += 1

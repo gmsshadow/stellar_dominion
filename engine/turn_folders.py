@@ -197,6 +197,13 @@ class TurnFolders:
         report_file.write_text(report_text, encoding='utf-8')
         return report_file
 
+    def store_base_report(self, turn_str, account_number, base_type, base_id, report_text):
+        """Store a base/port/outpost report in the correct processed folder."""
+        folder = self.get_processed_dir(turn_str, account_number)
+        report_file = folder / f"{base_type}_{base_id}.txt"
+        report_file.write_text(report_text, encoding='utf-8')
+        return report_file
+
     def list_processed(self, turn_str=None):
         """
         List all processed reports for a turn, grouped by account number.
@@ -321,6 +328,79 @@ class TurnFolders:
             return False, account_number, (
                 f"Ship {ship['name']} ({ship_id}) is not owned by your prefect. "
                 f"It belongs to prefect {ship['owner_prefect_id']}"
+            )
+
+        conn.close()
+        return True, account_number, None
+
+    def validate_base_ownership(self, email, subject_type, subject_id, account_number=None):
+        """
+        Validate that the given email owns the given base/port/outpost.
+        subject_type: 'starbase', 'port', or 'outpost'
+        Returns (valid, account_number, error_message).
+        """
+        conn = get_connection(self.db_path)
+
+        player = conn.execute(
+            "SELECT player_id, account_number, status, is_gm FROM players WHERE email = ? AND game_id = ?",
+            (email, self.game_id)
+        ).fetchone()
+        if not player:
+            conn.close()
+            return False, None, f"No player registered with email '{email}' in game {self.game_id}"
+
+        if account_number and str(account_number) != str(player['account_number']):
+            conn.close()
+            return False, None, "Account number does not match."
+
+        if player['status'] == 'suspended':
+            conn.close()
+            return False, player['account_number'], "Account is suspended."
+
+        account_number = player['account_number']
+
+        # Find all prefects for this player (GM can have many)
+        prefects = conn.execute(
+            "SELECT prefect_id FROM prefects WHERE player_id = ? AND game_id = ?",
+            (player['player_id'], self.game_id)
+        ).fetchall()
+        if not prefects:
+            conn.close()
+            return False, account_number, "No prefect found for player"
+
+        prefect_ids = [p['prefect_id'] for p in prefects]
+
+        # Check base ownership against any of the player's prefects
+        if subject_type == 'starbase':
+            base = conn.execute(
+                "SELECT base_id, name, owner_prefect_id FROM starbases WHERE base_id = ? AND game_id = ?",
+                (int(subject_id), self.game_id)
+            ).fetchone()
+            label = "Starbase"
+        elif subject_type == 'port':
+            base = conn.execute(
+                "SELECT port_id as base_id, name, owner_prefect_id FROM surface_ports WHERE port_id = ? AND game_id = ?",
+                (int(subject_id), self.game_id)
+            ).fetchone()
+            label = "Surface port"
+        elif subject_type == 'outpost':
+            base = conn.execute(
+                "SELECT outpost_id as base_id, name, owner_prefect_id FROM outposts WHERE outpost_id = ? AND game_id = ?",
+                (int(subject_id), self.game_id)
+            ).fetchone()
+            label = "Outpost"
+        else:
+            conn.close()
+            return False, account_number, f"Unknown subject type '{subject_type}'"
+
+        if not base:
+            conn.close()
+            return False, account_number, f"{label} {subject_id} not found in game {self.game_id}"
+
+        if base['owner_prefect_id'] not in prefect_ids:
+            conn.close()
+            return False, account_number, (
+                f"{label} {base['name']} ({subject_id}) is not owned by your prefect."
             )
 
         conn.close()

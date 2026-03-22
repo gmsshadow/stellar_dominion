@@ -353,6 +353,19 @@ def get_connection(state_db_path=None, universe_db_path=None):
         )""")
         conn.commit()
 
+    # Migrate: create base_inventory table if missing
+    has_bi = conn.execute(
+        "SELECT name FROM main.sqlite_master WHERE type='table' AND name='base_inventory'"
+    ).fetchone()
+    if not has_bi:
+        conn.execute("""CREATE TABLE IF NOT EXISTS base_inventory (
+            inventory_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            starbase_id INTEGER, port_id INTEGER, outpost_id INTEGER,
+            item_type_id INTEGER NOT NULL, item_name TEXT NOT NULL,
+            quantity INTEGER NOT NULL DEFAULT 0, mass_per_unit INTEGER DEFAULT 1
+        )""")
+        conn.commit()
+
     # Migrate: add is_gm to players if missing
     player_cols = [r[1] for r in conn.execute("PRAGMA table_info(players)").fetchall()]
     if 'is_gm' not in player_cols:
@@ -370,7 +383,8 @@ def get_connection(state_db_path=None, universe_db_path=None):
         "SELECT sql FROM sqlite_master WHERE type='table' AND name='prefects'"
     ).fetchone()
     if create_sql and 'UNIQUE' in create_sql['sql'] and 'player_id' in create_sql['sql']:
-        # Rebuild prefects table without the UNIQUE constraint
+        # Temporarily disable foreign keys for table rebuild
+        conn.execute("PRAGMA foreign_keys = OFF")
         conn.execute("ALTER TABLE prefects RENAME TO prefects_old")
         conn.execute("""CREATE TABLE prefects (
             prefect_id INTEGER PRIMARY KEY,
@@ -389,7 +403,6 @@ def get_connection(state_db_path=None, universe_db_path=None):
             FOREIGN KEY (player_id) REFERENCES players(player_id),
             FOREIGN KEY (game_id) REFERENCES games(game_id)
         )""")
-        # Copy all data — use column intersection in case old table has fewer columns
         old_cols = [r[1] for r in conn.execute("PRAGMA table_info(prefects_old)").fetchall()]
         new_cols = [r[1] for r in conn.execute("PRAGMA table_info(prefects)").fetchall()]
         shared = [c for c in new_cols if c in old_cols]
@@ -397,6 +410,7 @@ def get_connection(state_db_path=None, universe_db_path=None):
         conn.execute(f"INSERT INTO prefects ({cols_str}) SELECT {cols_str} FROM prefects_old")
         conn.execute("DROP TABLE prefects_old")
         conn.commit()
+        conn.execute("PRAGMA foreign_keys = ON")
 
     return conn
 
@@ -822,6 +836,18 @@ CREATE TABLE IF NOT EXISTS installed_modules (
     outpost_id INTEGER,
     module_id INTEGER NOT NULL,
     quantity INTEGER NOT NULL DEFAULT 1
+);
+
+-- Base/port/outpost inventory (stored goods and materials)
+CREATE TABLE IF NOT EXISTS base_inventory (
+    inventory_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    starbase_id INTEGER,
+    port_id INTEGER,
+    outpost_id INTEGER,
+    item_type_id INTEGER NOT NULL,
+    item_name TEXT NOT NULL,
+    quantity INTEGER NOT NULL DEFAULT 0,
+    mass_per_unit INTEGER DEFAULT 1
 );
 
 -- Ship officers / crew
@@ -1494,7 +1520,7 @@ def split_legacy_db(legacy_path):
 
     state_tables = [
         'games', 'players', 'prefects', 'ships', 'surface_ports', 'starbases', 'outposts',
-        'officers', 'installed_items', 'installed_modules', 'cargo_items',
+        'officers', 'installed_items', 'installed_modules', 'base_inventory', 'cargo_items',
         'base_trade_config', 'market_prices',
         'known_contacts', 'turn_orders', 'pending_orders', 'messages', 'faction_requests', 'moderator_actions', 'turn_log',
     ]

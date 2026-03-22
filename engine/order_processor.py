@@ -115,40 +115,53 @@ def process_single_order(conn, folders, turn_str, game_id, email, content):
                 'order_count': 0, 'orders_summary': [],
                 'error': 'No valid orders found'}
 
-    # Extract ship ID
+    # Determine subject type: ship, starbase, port, or outpost
     ship_id = parsed.get('ship')
-    if not ship_id:
+    starbase_id = parsed.get('starbase')
+    port_id = parsed.get('port')
+    outpost_id = parsed.get('outpost')
+
+    if starbase_id:
+        subject_type, subject_id_raw, label = 'starbase', starbase_id, 'Starbase'
+    elif port_id:
+        subject_type, subject_id_raw, label = 'port', port_id, 'Port'
+    elif outpost_id:
+        subject_type, subject_id_raw, label = 'outpost', outpost_id, 'Outpost'
+    elif ship_id:
+        subject_type, subject_id_raw, label = 'ship', ship_id, 'Ship'
+    else:
         return {**base, 'status': 'skipped', 'ship_id': None, 'ship_name': None,
                 'order_count': 0, 'orders_summary': [],
-                'error': 'No ship ID in orders'}
+                'error': 'No ship/starbase/port/outpost ID in orders'}
 
     try:
-        ship_id = int(ship_id)
+        subject_id = int(subject_id_raw)
     except (ValueError, TypeError):
         return {**base, 'status': 'rejected', 'ship_id': None, 'ship_name': None,
                 'order_count': 0, 'orders_summary': [],
-                'error': f"Invalid ship ID '{ship_id}'"}
+                'error': f"Invalid {label} ID '{subject_id_raw}'"}
 
     # Check account number
     account = parsed.get('account', '')
     if not account:
-        folders.store_rejected(turn_str, email, ship_id, content,
-                               ["No account number specified in orders file"])
-        return {**base, 'status': 'rejected', 'ship_id': ship_id, 'ship_name': None,
-                'order_count': 0, 'orders_summary': [],
+        return {**base, 'status': 'rejected', 'ship_id': subject_id if subject_type == 'ship' else None,
+                'ship_name': None, 'order_count': 0, 'orders_summary': [],
                 'error': 'No account number in orders'}
 
-    # Validate ownership (also checks suspension and account match)
-    valid, account_number, error = folders.validate_ship_ownership(email, ship_id, account)
+    # Validate ownership
+    if subject_type == 'ship':
+        valid, account_number, error = folders.validate_ship_ownership(email, subject_id, account)
+    else:
+        valid, account_number, error = folders.validate_base_ownership(email, subject_type, subject_id, account)
 
     if not valid:
-        folders.store_rejected(turn_str, email, ship_id, content, [error])
-        return {**base, 'status': 'rejected', 'ship_id': ship_id, 'ship_name': None,
-                'order_count': 0, 'orders_summary': [],
+        folders.store_rejected(turn_str, email, subject_id, content, [error])
+        return {**base, 'status': 'rejected', 'ship_id': subject_id if subject_type == 'ship' else None,
+                'ship_name': None, 'order_count': 0, 'orders_summary': [],
                 'error': error}
 
     # Store the incoming orders file
-    folders.store_incoming_orders(turn_str, email, ship_id, content)
+    folders.store_incoming_orders(turn_str, email, subject_id, content)
 
     # Write to database
     game = conn.execute(
@@ -160,12 +173,12 @@ def process_single_order(conn, folders, turn_str, game_id, email, content):
         (email, game_id)
     ).fetchone()
 
-    # Clear previous orders for this ship/turn (resubmission replaces)
+    # Clear previous orders for this subject/turn (resubmission replaces)
     conn.execute("""
         DELETE FROM turn_orders
         WHERE game_id = ? AND turn_year = ? AND turn_week = ?
-          AND subject_type = 'ship' AND subject_id = ?
-    """, (game_id, game['current_year'], game['current_week'], ship_id))
+          AND subject_type = ? AND subject_id = ?
+    """, (game_id, game['current_year'], game['current_week'], subject_type, subject_id))
 
     # Insert new orders
     for seq, order in enumerate(orders, 1):
@@ -174,24 +187,29 @@ def process_single_order(conn, folders, turn_str, game_id, email, content):
             INSERT INTO turn_orders
                 (game_id, turn_year, turn_week, player_id,
                  subject_type, subject_id, order_sequence, command, parameters)
-            VALUES (?, ?, ?, ?, 'ship', ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (game_id, game['current_year'], game['current_week'],
-              player['player_id'], ship_id, seq,
+              player['player_id'], subject_type, subject_id, seq,
               order['command'], params))
 
     conn.commit()
 
     # Store receipt
-    folders.store_receipt(turn_str, email, ship_id, {
+    folders.store_receipt(turn_str, email, subject_id, {
         'status': 'accepted',
         'order_count': len(orders),
     })
 
-    # Get ship name for display
-    ship_row = conn.execute(
-        "SELECT name FROM ships WHERE ship_id = ?", (ship_id,)
-    ).fetchone()
-    ship_name = ship_row['name'] if ship_row else None
+    # Get name for display
+    if subject_type == 'ship':
+        row = conn.execute("SELECT name FROM ships WHERE ship_id = ?", (subject_id,)).fetchone()
+    elif subject_type == 'starbase':
+        row = conn.execute("SELECT name FROM starbases WHERE base_id = ?", (subject_id,)).fetchone()
+    elif subject_type == 'port':
+        row = conn.execute("SELECT name FROM surface_ports WHERE port_id = ?", (subject_id,)).fetchone()
+    else:
+        row = conn.execute("SELECT name FROM outposts WHERE outpost_id = ?", (subject_id,)).fetchone()
+    subject_name = row['name'] if row else None
 
     # Build order summary for display
     orders_summary = []
@@ -199,7 +217,10 @@ def process_single_order(conn, folders, turn_str, game_id, email, content):
         params_str = f" {o['params']}" if o.get('params') else ""
         orders_summary.append(f"{o['command']}{params_str}")
 
-    return {**base, 'status': 'accepted', 'ship_id': ship_id, 'ship_name': ship_name,
+    return {**base, 'status': 'accepted',
+            'ship_id': subject_id if subject_type == 'ship' else None,
+            'ship_name': subject_name if subject_type == 'ship' else None,
+            'subject_type': subject_type, 'subject_id': subject_id, 'subject_name': subject_name,
             'order_count': len(orders), 'error': None,
             'orders_summary': orders_summary}
 

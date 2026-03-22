@@ -35,7 +35,7 @@ from engine.order_processor import (
     format_received_ack, format_reply_text,
 )
 from engine.resolution.resolver import TurnResolver
-from engine.reports.report_gen import generate_ship_report, generate_prefect_report
+from engine.reports.report_gen import generate_ship_report, generate_prefect_report, generate_base_report
 from engine.reports.pdf_export import report_file_to_pdf, is_available as pdf_available
 from engine.maps.system_map import render_system_map
 from engine.turn_folders import TurnFolders
@@ -231,6 +231,154 @@ def cmd_submit_orders(args):
 # ======================================================================
 # TURN RESOLUTION
 # ======================================================================
+
+def _resolve_build(conn, subject_type, subject_id, params, game_id):
+    """Resolve a BUILD order for a base/port/outpost. Returns result message."""
+    from db.database import check_module_location, get_installed_modules, recalculate_base_stats
+
+    module_id = params.get('module_id')
+    quantity = params.get('quantity', 1)
+
+    # Look up module
+    module = conn.execute(
+        "SELECT * FROM base_modules WHERE module_id = ?", (module_id,)
+    ).fetchone()
+    if not module:
+        return f"BUILD {module_id}: Module not found in catalogue. Order dropped."
+
+    # Check location restriction (map subject_type to location_type)
+    location_type = 'surface_port' if subject_type == 'port' else subject_type
+    ok, err = check_module_location(dict(module), location_type)
+    if not ok:
+        return f"BUILD {module_id}: {err} Order dropped."
+
+    # Check credits (skip for unlimited)
+    total_cost = module['base_price'] * quantity
+    if subject_type == 'starbase':
+        base = conn.execute("SELECT owner_prefect_id FROM starbases WHERE base_id = ?", (subject_id,)).fetchone()
+    elif subject_type == 'port':
+        base = conn.execute("SELECT owner_prefect_id FROM surface_ports WHERE port_id = ?", (subject_id,)).fetchone()
+    else:
+        base = conn.execute("SELECT owner_prefect_id FROM outposts WHERE outpost_id = ?", (subject_id,)).fetchone()
+
+    if base and base['owner_prefect_id']:
+        prefect = conn.execute(
+            "SELECT credits, unlimited_credits FROM prefects WHERE prefect_id = ?",
+            (base['owner_prefect_id'],)
+        ).fetchone()
+        if prefect and not prefect['unlimited_credits']:
+            if prefect['credits'] < total_cost:
+                return (f"BUILD {module_id}: Cannot afford {quantity}x {module['name']} "
+                        f"({total_cost} cr, have {prefect['credits']:.0f} cr). Order dropped.")
+            conn.execute(
+                "UPDATE prefects SET credits = credits - ? WHERE prefect_id = ?",
+                (total_cost, base['owner_prefect_id'])
+            )
+
+    # Install the module
+    id_col = 'starbase_id' if subject_type == 'starbase' else 'port_id' if subject_type == 'port' else 'outpost_id'
+    existing = conn.execute(
+        f"SELECT * FROM installed_modules WHERE {id_col} = ? AND module_id = ?",
+        (subject_id, module_id)
+    ).fetchone()
+    if existing:
+        conn.execute(
+            "UPDATE installed_modules SET quantity = quantity + ? WHERE install_id = ?",
+            (quantity, existing['install_id'])
+        )
+    else:
+        conn.execute(
+            f"INSERT INTO installed_modules ({id_col}, module_id, quantity) VALUES (?, ?, ?)",
+            (subject_id, module_id, quantity)
+        )
+
+    # Recalculate base stats
+    kwargs = {id_col: subject_id}
+    recalculate_base_stats(conn, **kwargs)
+    conn.commit()
+
+    cost_str = f" [{total_cost} cr]" if total_cost > 0 else ""
+    return f"Built {quantity}x {module['name']} [{module_id}].{cost_str}"
+
+
+def _resolve_setprice(conn, subject_type, subject_id, params, game_id, price_type):
+    """Resolve a SETBUY or SETSELL order. Returns result message."""
+    item_id = params.get('item_id')
+    price = params.get('price')
+    cmd = 'SETBUY' if price_type == 'buy' else 'SETSELL'
+
+    # Only starbases and ports can have markets
+    if subject_type == 'outpost':
+        return f"{cmd}: Outposts cannot have markets. Order dropped."
+
+    # Find the market base_id (for ports, use linked starbase)
+    if subject_type == 'starbase':
+        market_base_id = subject_id
+    elif subject_type == 'port':
+        linked = conn.execute(
+            "SELECT base_id FROM starbases WHERE surface_port_id = ?", (subject_id,)
+        ).fetchone()
+        if linked:
+            market_base_id = linked['base_id']
+        else:
+            return f"{cmd}: No starbase linked to this port. Order dropped."
+    else:
+        return f"{cmd}: Invalid subject for market orders."
+
+    # Check item exists
+    item = conn.execute("SELECT name FROM trade_goods WHERE item_id = ?", (item_id,)).fetchone()
+    if not item:
+        return f"{cmd} {item_id}: Item not found. Order dropped."
+
+    # Get current game state for cycle
+    game = conn.execute("SELECT * FROM games WHERE game_id = ?", (game_id,)).fetchone()
+    cycle_length = 4
+    cycle_week = ((game['current_week'] - 1) // cycle_length) * cycle_length + 1
+    cycle_year = game['current_year']
+
+    # Find or create market_prices row
+    mp = conn.execute("""
+        SELECT price_id FROM market_prices
+        WHERE game_id = ? AND base_id = ? AND item_id = ?
+          AND turn_year = ? AND turn_week = ?
+    """, (game_id, market_base_id, item_id, cycle_year, cycle_week)).fetchone()
+
+    if mp:
+        if price_type == 'buy':
+            conn.execute("UPDATE market_prices SET buy_price = ? WHERE price_id = ?",
+                         (price, mp['price_id']))
+        else:
+            conn.execute("UPDATE market_prices SET sell_price = ? WHERE price_id = ?",
+                         (price, mp['price_id']))
+    else:
+        # Create new price entry
+        if price_type == 'buy':
+            conn.execute("""
+                INSERT INTO market_prices (game_id, base_id, item_id, turn_year, turn_week,
+                    buy_price, sell_price, stock, demand)
+                VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0)
+            """, (game_id, market_base_id, item_id, cycle_year, cycle_week, price))
+        else:
+            conn.execute("""
+                INSERT INTO market_prices (game_id, base_id, item_id, turn_year, turn_week,
+                    buy_price, sell_price, stock, demand)
+                VALUES (?, ?, ?, ?, ?, 0, ?, 0, 0)
+            """, (game_id, market_base_id, item_id, cycle_year, cycle_week, price))
+
+    # Ensure base_trade_config exists
+    btc = conn.execute(
+        "SELECT config_id FROM base_trade_config WHERE base_id = ? AND game_id = ? AND item_id = ?",
+        (market_base_id, game_id, item_id)
+    ).fetchone()
+    if not btc:
+        conn.execute(
+            "INSERT INTO base_trade_config (base_id, game_id, item_id, trade_role) VALUES (?, ?, ?, 'average')",
+            (market_base_id, game_id, item_id)
+        )
+
+    conn.commit()
+    return f"Set {price_type} price for {item['name']} ({item_id}) to {price} cr."
+
 
 def cmd_run_turn(args):
     """
@@ -710,6 +858,75 @@ def cmd_run_turn(args):
     # (ensures fresh reads see all committed trade/movement changes)
     conn.close()
 
+    # ======================================================================
+    # PHASE 2b: Resolve base/port/outpost orders
+    # ======================================================================
+    conn = get_connection(db_path)
+    game = conn.execute("SELECT * FROM games WHERE game_id = ?", (args.game,)).fetchone()
+
+    base_orders = conn.execute("""
+        SELECT * FROM turn_orders
+        WHERE game_id = ? AND turn_year = ? AND turn_week = ?
+          AND subject_type IN ('starbase', 'port', 'outpost')
+          AND status = 'pending'
+        ORDER BY subject_type, subject_id, order_sequence
+    """, (args.game, game['current_year'], game['current_week'])).fetchall()
+
+    # Group by (subject_type, subject_id)
+    base_order_groups = {}
+    for bo in base_orders:
+        key = (bo['subject_type'], bo['subject_id'])
+        base_order_groups.setdefault(key, []).append(bo)
+
+    # {(subject_type, subject_id): [result_messages]}
+    base_results = {}
+
+    if base_order_groups:
+        print(f"\n  Resolving {len(base_order_groups)} base(s) with orders...")
+
+    for (stype, sid), orders in base_order_groups.items():
+        # Look up base name
+        if stype == 'starbase':
+            brow = conn.execute("SELECT name FROM starbases WHERE base_id = ?", (sid,)).fetchone()
+        elif stype == 'port':
+            brow = conn.execute("SELECT name FROM surface_ports WHERE port_id = ?", (sid,)).fetchone()
+        else:
+            brow = conn.execute("SELECT name FROM outposts WHERE outpost_id = ?", (sid,)).fetchone()
+        bname = brow['name'] if brow else str(sid)
+        print(f"    {stype.title()} {bname} ({sid}): {len(orders)} orders")
+
+        results = []
+        for order in orders:
+            cmd = order['command']
+            params_raw = order['parameters']
+            import json as _json
+            try:
+                params = _json.loads(params_raw) if params_raw else {}
+            except (ValueError, TypeError):
+                params = {}
+
+            if cmd == 'BUILD':
+                result = _resolve_build(conn, stype, sid, params, args.game)
+            elif cmd == 'SETBUY':
+                result = _resolve_setprice(conn, stype, sid, params, args.game, 'buy')
+            elif cmd == 'SETSELL':
+                result = _resolve_setprice(conn, stype, sid, params, args.game, 'sell')
+            else:
+                result = f"{cmd}: Unknown base command. Order dropped."
+
+            results.append((cmd, params, result))
+
+            # Mark order as resolved
+            conn.execute(
+                "UPDATE turn_orders SET status = 'resolved', result_message = ? WHERE order_id = ?",
+                (result, order['order_id'])
+            )
+
+        conn.commit()
+        base_results[(stype, sid)] = results
+
+    conn.close()
+
     # Generate one prefect report per active prefect
     conn = get_connection(db_path)
     all_prefects = conn.execute("""
@@ -816,27 +1033,75 @@ def cmd_run_turn(args):
         pol_file = folders.store_prefect_report(turn_str, account_number, prefect_id, prefect_report)
         email = pol['email']
         is_gm = pol['is_gm'] if 'is_gm' in pol.keys() else 0
+
         if is_gm:
-            # Copy GM reports to gm_reports/ folder
-            gm_reports_dir = Path(db_path).parent / "gm_reports" / turn_str if db_path else Path("game_data") / "gm_reports" / turn_str
-            gm_reports_dir.mkdir(parents=True, exist_ok=True)
-            import shutil
-            player_reports = folders.get_player_reports(turn_str, account_number)
             print(f"  Account {account_number} -> GM (local)")
-            print(f"    Prefect report: {pol_file}")
-            for rpt in player_reports:
-                dest = gm_reports_dir / rpt.name
-                shutil.copy2(str(rpt), str(dest))
-            print(f"    GM reports copied to: {gm_reports_dir}/")
         else:
             print(f"  Account {account_number} -> {email}")
-            print(f"    Prefect report: {pol_file}")
+        print(f"    Prefect report: {pol_file}")
 
-        # Generate PDF version
+        # Generate PDF for prefect report
         if pdf_available():
             pdf_path = report_file_to_pdf(pol_file)
             if pdf_path:
                 print(f"    Prefect PDF:    {pdf_path}")
+
+        # Generate base reports for all starbases/ports/outposts owned by this prefect
+        owned_bases = conn.execute(
+            "SELECT base_id, name FROM starbases WHERE owner_prefect_id = ? AND game_id = ?",
+            (prefect_id, args.game)
+        ).fetchall()
+        for ob in owned_bases:
+            results = base_results.get(('starbase', ob['base_id']))
+            base_report = generate_base_report('starbase', ob['base_id'], db_path, args.game,
+                                                order_results=results)
+            bf = folders.store_base_report(turn_str, account_number, 'starbase', ob['base_id'], base_report)
+            print(f"    Base report:    {bf}")
+            if pdf_available():
+                pdf_path = report_file_to_pdf(bf)
+                if pdf_path:
+                    print(f"    Base PDF:       {pdf_path}")
+
+        owned_ports = conn.execute(
+            "SELECT port_id, name FROM surface_ports WHERE owner_prefect_id = ? AND game_id = ?",
+            (prefect_id, args.game)
+        ).fetchall()
+        for op in owned_ports:
+            results = base_results.get(('port', op['port_id']))
+            port_report = generate_base_report('port', op['port_id'], db_path, args.game,
+                                                order_results=results)
+            pf = folders.store_base_report(turn_str, account_number, 'port', op['port_id'], port_report)
+            print(f"    Port report:    {pf}")
+            if pdf_available():
+                pdf_path = report_file_to_pdf(pf)
+                if pdf_path:
+                    print(f"    Port PDF:       {pdf_path}")
+
+        owned_outposts = conn.execute(
+            "SELECT outpost_id, name FROM outposts WHERE owner_prefect_id = ? AND game_id = ?",
+            (prefect_id, args.game)
+        ).fetchall()
+        for oo in owned_outposts:
+            results = base_results.get(('outpost', oo['outpost_id']))
+            out_report = generate_base_report('outpost', oo['outpost_id'], db_path, args.game,
+                                               order_results=results)
+            of = folders.store_base_report(turn_str, account_number, 'outpost', oo['outpost_id'], out_report)
+            print(f"    Outpost report: {of}")
+            if pdf_available():
+                pdf_path = report_file_to_pdf(of)
+                if pdf_path:
+                    print(f"    Outpost PDF:    {pdf_path}")
+
+        # Copy GM reports to gm_reports/ folder (after all reports generated)
+        if is_gm:
+            import shutil
+            gm_reports_dir = Path(db_path).parent / "gm_reports" / turn_str if db_path else Path("game_data") / "gm_reports" / turn_str
+            gm_reports_dir.mkdir(parents=True, exist_ok=True)
+            player_reports = folders.get_player_reports(turn_str, account_number)
+            for rpt in player_reports:
+                dest = gm_reports_dir / rpt.name
+                shutil.copy2(str(rpt), str(dest))
+            print(f"    GM reports copied to: {gm_reports_dir}/")
 
         # Show total files to send (skip for GM)
         if not is_gm:
@@ -1821,8 +2086,11 @@ def cmd_process_inbox(args):
             result = process_single_order(conn, folders, turn_str, args.game, email, content)
 
             if result['status'] == 'accepted':
-                name_str = f" ({result['ship_name']})" if result['ship_name'] else ""
-                print(f"    ORDERS ACCEPTED: {result['order_count']} orders for ship {result['ship_id']}{name_str}")
+                stype = result.get('subject_type', 'ship')
+                sname = result.get('subject_name') or result.get('ship_name') or ''
+                sid = result.get('subject_id') or result.get('ship_id') or ''
+                name_str = f" ({sname})" if sname else ""
+                print(f"    ORDERS ACCEPTED: {result['order_count']} orders for {stype} {sid}{name_str}")
                 orders_accepted += 1
             elif result['status'] == 'rejected':
                 print(f"    ORDERS REJECTED: {result['error']}")
@@ -1882,8 +2150,11 @@ def cmd_process_inbox(args):
 
                     result = process_single_order(conn, folders, turn_str, args.game, gm_email, content)
                     if result['status'] == 'accepted':
-                        name_str = f" ({result['ship_name']})" if result['ship_name'] else ""
-                        print(f"    GM ORDERS ACCEPTED: {result['order_count']} orders for ship {result['ship_id']}{name_str}")
+                        stype = result.get('subject_type', 'ship')
+                        sname = result.get('subject_name') or result.get('ship_name') or ''
+                        sid = result.get('subject_id') or result.get('ship_id') or ''
+                        name_str = f" ({sname})" if sname else ""
+                        print(f"    GM ORDERS ACCEPTED: {result['order_count']} orders for {stype} {sid}{name_str}")
                         gm_accepted += 1
                         orders_accepted += 1
                     else:
