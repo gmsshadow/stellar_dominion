@@ -275,7 +275,36 @@ def list_universe(universe_db_path=None):
                 base_cols = [c[1] for c in sc.execute("PRAGMA table_info(starbases)").fetchall()]
                 sp_cols = [c[1] for c in sc.execute("PRAGMA table_info(surface_ports)").fetchall()]
                 for p in ports:
-                    # Starbase built above this port (new: starbase.surface_port_id; legacy: port.parent_base_id)
+                    # Look up body -> system
+                    body = conn.execute(
+                        "SELECT name, system_id FROM celestial_bodies WHERE body_id = ?",
+                        (p['body_id'],)
+                    ).fetchone()
+                    body_name = body['name'] if body else f"#{p['body_id']}"
+                    system_name = ""
+                    if body:
+                        sys_row = conn.execute(
+                            "SELECT name FROM star_systems WHERE system_id = ?",
+                            (body['system_id'],)
+                        ).fetchone()
+                        system_name = f" - {sys_row['name']} ({body['system_id']})" if sys_row else ""
+
+                    # Look up faction from owner
+                    faction_tag = ""
+                    if p['owner_prefect_id']:
+                        pref = sc.execute(
+                            "SELECT faction_id FROM prefects WHERE prefect_id = ?",
+                            (p['owner_prefect_id'],)
+                        ).fetchone()
+                        if pref:
+                            fac = conn.execute(
+                                "SELECT abbreviation FROM factions WHERE faction_id = ?",
+                                (pref['faction_id'],)
+                            ).fetchone()
+                            if fac:
+                                faction_tag = f"[{fac['abbreviation']}] "
+
+                    # Starbase built above this port
                     base = None
                     if 'surface_port_id' in base_cols:
                         base = sc.execute(
@@ -288,9 +317,8 @@ def list_universe(universe_db_path=None):
                             (p['parent_base_id'],)
                         ).fetchone()
                     above = f"  <- {base['name']} ({base['base_id']})" if base else ""
-                    print(f"  {p['port_id']:>8d}  {p['name']:<20s}  on body {p['body_id']}  "
-                          f"at ({p['surface_x']},{p['surface_y']})  "
-                          f"cx={p['complexes']} wk={p['workers']} tp={p['troops']}{above}")
+                    print(f"  {p['port_id']:>8d}  {faction_tag}{p['name']:<20s}  on {body_name} ({p['body_id']})  "
+                          f"at ({p['surface_x']},{p['surface_y']}){system_name}{above}")
         # Outposts
         has_op = sc.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='outposts'"
@@ -301,12 +329,34 @@ def list_universe(universe_db_path=None):
                 print(f"\nOutposts ({len(ops)}):")
                 for o in ops:
                     body = conn.execute(
-                        "SELECT name FROM celestial_bodies WHERE body_id = ?",
+                        "SELECT name, system_id FROM celestial_bodies WHERE body_id = ?",
                         (o['body_id'],)
                     ).fetchone()
                     body_name = body['name'] if body else f"#{o['body_id']}"
-                    print(f"  {o['outpost_id']:>8d}  {o['name']:<24s}  on {body_name} ({o['body_id']})  "
-                          f"at ({o['surface_x']},{o['surface_y']})  "
+                    system_name = ""
+                    if body:
+                        sys_row = conn.execute(
+                            "SELECT name FROM star_systems WHERE system_id = ?",
+                            (body['system_id'],)
+                        ).fetchone()
+                        system_name = f" - {sys_row['name']} ({body['system_id']})" if sys_row else ""
+
+                    faction_tag = ""
+                    if o['owner_prefect_id']:
+                        pref = sc.execute(
+                            "SELECT faction_id FROM prefects WHERE prefect_id = ?",
+                            (o['owner_prefect_id'],)
+                        ).fetchone()
+                        if pref:
+                            fac = conn.execute(
+                                "SELECT abbreviation FROM factions WHERE faction_id = ?",
+                                (pref['faction_id'],)
+                            ).fetchone()
+                            if fac:
+                                faction_tag = f"[{fac['abbreviation']}] "
+
+                    print(f"  {o['outpost_id']:>8d}  {faction_tag}{o['name']:<24s}  on {body_name} ({o['body_id']})  "
+                          f"at ({o['surface_x']},{o['surface_y']}){system_name}  "
                           f"type={o['outpost_type']}  wk={o['workers']}")
         sc.close()
 

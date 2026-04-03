@@ -378,6 +378,16 @@ def get_connection(state_db_path=None, universe_db_path=None):
         conn.execute("ALTER TABLE prefects ADD COLUMN unlimited_credits INTEGER NOT NULL DEFAULT 0")
         conn.commit()
 
+    # Cleanup: if prefects_old exists from a previous failed migration, drop it
+    stale_old = conn.execute(
+        "SELECT name FROM main.sqlite_master WHERE type='table' AND name='prefects_old'"
+    ).fetchone()
+    if stale_old:
+        conn.execute("PRAGMA foreign_keys = OFF")
+        conn.execute("DROP TABLE IF EXISTS prefects_old")
+        conn.commit()
+        conn.execute("PRAGMA foreign_keys = ON")
+
     # Migrate: remove UNIQUE constraint on prefects.player_id (allows GM multiple prefects)
     create_sql = conn.execute(
         "SELECT sql FROM sqlite_master WHERE type='table' AND name='prefects'"
