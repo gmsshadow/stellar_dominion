@@ -36,7 +36,7 @@ Movement requires engines. The optimal number is 1 engine per 10 ship size (size
 
 ### Crew Efficiency
 
-Your ship needs crew based on its size (1 crew per size point). If undermanned, OC costs for all actions increase proportionally. Officers count as crew but cost 5 cr/week vs 1 cr/week for regular crew. Life support capacity (from Crew Quarters) caps total crew + officers aboard.
+Your ship needs crew based on its size (1 crew per 2 hull points, rounded up). A size 50 ship needs 25 crew. If undermanned, OC costs for all actions increase proportionally. Officers count as crew but cost 5 cr/week vs 1 cr/week for regular crew. Life support capacity (from Crew Quarters) caps total crew + officers aboard.
 
 ## Your Identifiers
 

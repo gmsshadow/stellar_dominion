@@ -366,6 +366,14 @@ def get_connection(state_db_path=None, universe_db_path=None):
         )""")
         conn.commit()
 
+    # Migrate: fix crew_required to 1 per 2 hulls (was incorrectly 1 per hull)
+    # Uses ceiling division: crew_required = (ship_size + 1) / 2
+    conn.execute("""
+        UPDATE ships SET crew_required = MAX(1, (ship_size + 1) / 2)
+        WHERE crew_required = ship_size AND ship_size > 0
+    """)
+    conn.commit()
+
     # Migrate: add is_gm to players if missing
     player_cols = [r[1] for r in conn.execute("PRAGMA table_info(players)").fetchall()]
     if 'is_gm' not in player_cols:
@@ -1203,8 +1211,8 @@ def recalculate_ship_stats(conn, ship_id):
     # Gravity rating = thrust / ship_size (mass approximated by size)
     gravity_rating = total_thrust / ship_size if ship_size > 0 else 0
 
-    # Crew required = ship_size (1 crew per size point)
-    crew_required = ship_size
+    # Crew required = 1 per 2 hull points (rounded up)
+    crew_required = max(1, -(-ship_size // 2))  # ceiling division
 
     conn.execute("""
         UPDATE ships SET
