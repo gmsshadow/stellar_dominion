@@ -1,0 +1,43 @@
+                             === BEGIN REPORT ===                             
+
+                               Stellar Dominion                               
+                              PBEM Strategy Game                              
+
+                   MTG STARBASE: Tartarus Depot (12340001)                    
+
+Printed on 24 March 2026, Star Date 500.12
+
+|------------------------------ Status Report -------------------------------|
+|                                                                            |
+| Name: Tartarus Depot (12340001)                                            |
+| Faction: Merchant Trade Guild      Efficiency: 100%                        |
+| Type: STARBASE                                                             |
+|                                                                            |
+| R08 - Omicron System (101)                                                 |
+| Orbiting Tartarus (301442)                                                 |
+|                                                                            |
+| Employees: 0/0 required -> 100%                                            |
+| Employee Capacity: 0               Command: 0/0 -> 100%                    |
+|                                                                            |
+|---------------------------- Installed Modules -----------------------------|
+|                                                                            |
+| No modules installed.                                                      |
+|                                                                            |
+|------------------------------ Market Report -------------------------------|
+|                                                                            |
+| Item                           ID   Buy  Sell   Stk   Dmd Role             |
+| -------------------------- ------ ----- ----- ----- ----- ------           |
+| Human Crew                    401     5     3   100   100 Std              |
+| Tartarus Precious Metals   100101    15    14  2285    68 Supply           |
+| Orion Computer Cores       100102    50    47   119   115 Std              |
+| Meridian Food Supplies     100103    48    45    68  2341 Demand           |
+|                                                                            |
+| Market refreshes next week.                                                |
+|                                                                            |
+|-------------------------------- Inventory ---------------------------------|
+|                                                                            |
+| Inventory empty.                                                           |
+|                                                                            |
+|----------------------------------------------------------------------------|
+
+                              === END REPORT ===                              

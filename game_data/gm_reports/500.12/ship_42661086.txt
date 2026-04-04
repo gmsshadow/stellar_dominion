@@ -1,0 +1,95 @@
+                             === BEGIN REPORT ===                             
+
+                               Stellar Dominion                               
+                              PBEM Strategy Game                              
+
+                         STA SHIP Vesuvius (42661086)                         
+                              Account: 54998527                               
+
+Printed on 24 March 2026, Star Date 500.12
+
+------------------------------------------------------------------------------
+                             BETWEEN TURN REPORT                              
+------------------------------------------------------------------------------
+
+Wages: 15 crew x 1 cr = 15 cr + 1 officer x 5 cr = 5 cr = 20 cr deducted.
+  WARNING: Ship undermanned! 16/300 crew. Efficiency: 5% (+95% OC penalty).
+  Life support: 16/20 capacity.
+
+
+------------------------------------------------------------------------------
+                                 TURN REPORT                                  
+------------------------------------------------------------------------------
+
+Starting Location:
+    K10 - Omicron System (101)
+
+>OC 300: MOVE {J09}
+    Moved 1 squares to J09. (K10 -> J09)
+
+>OC 183: ORBIT {247985}
+    Ship entered orbit of Orion (247985) [0.9g]
+
+|------------------------------ Command Report ------------------------------|
+|                                                                            |
+| Name: STA Vesuvius (42661086)      Faction: Stellar Training Academy       |
+| Wealth: 0 Credits                  Ownership: Player owned                 |
+| Efficiency: 5% (+95% OC penalty)   OCs left: 163                           |
+|                                                                            |
+| Design: NPC Military S300                                                  |
+| Size: 300 (Military)               Integrity: 100%                         |
+| Internal: 780/15000 ST             Gravity Rating: 0.1                     |
+| Engines: 1/30 -> 3%                MOVE cost scales with engines           |
+|                                                                            |
+|---------------------------- Navigation Report -----------------------------|
+|                                                                            |
+| LOCATION                                                                   |
+| Orbiting Orion (247985) [0.9g] - Omicron System (101)                      |
+| Omicron (101) - {J09}                                                      |
+|                                                                            |
+| Sensor Rating: 5%                  Cargo: 0/500 ST                         |
+|                                                                            |
+|------------------------------- Crew Report --------------------------------|
+|                                                                            |
+| OFFICERS                                                                   |
+| [1] Captain Voss Richter [ Navigation 0 Xp ] +8 CF 5 cr/wk                 |
+|                                                                            |
+| PREFECT                                                                    |
+| Admiral Regulus (28305187)                                                 |
+|                                                                            |
+| Crew: 16/20                        Required: 300                           |
+| *** WARNING: Ship undermanned! +95% OC penalty on all actions. ***         |
+|                                                                            |
+|------------------------------- Cargo Report -------------------------------|
+|                                                                            |
+| Cargo: 0/500 ST                                                            |
+| Cargo hold empty.                                                          |
+|                                                                            |
+|--------------------------- Space Combat Report ----------------------------|
+|                                                                            |
+| No combat this turn.                                                       |
+|                                                                            |
+|----------------------------- Ship Components ------------------------------|
+| Internal Capacity: 780/15000 ST (14220 ST free)                            |
+|                                                                            |
+| Component                         ID Qty   Each  Total                     |
+| ------------------------------ ----- --- ------ ------                     |
+| Standard Bridge                  100   1  50 ST  50 ST                     |
+| Cargo Bay                        130   5 100 ST 500 ST                     |
+| Commercial Sublight Engine       120   1  20 ST  20 ST                     |
+| Jump Drive Mk1                   160   1 120 ST 120 ST                     |
+| Crew Quarters                    140   1  30 ST  30 ST                     |
+| Basic Sensor Array               150   1  10 ST  10 ST                     |
+| Thruster Array                   110   1  50 ST  50 ST                     |
+|                                                                            |
+|--------------------------------- Contacts ---------------------------------|
+|                                                                            |
+| No known contacts.                                                         |
+|                                                                            |
+|----------------------------- Overflow Orders ------------------------------|
+|                                                                            |
+| No overflow orders.                                                        |
+|                                                                            |
+|----------------------------------------------------------------------------|
+
+                              === END REPORT ===                              

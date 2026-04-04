@@ -1,0 +1,43 @@
+                             === BEGIN REPORT ===                             
+
+                               Stellar Dominion                               
+                              PBEM Strategy Game                              
+
+                   MTG STARBASE: Citadel Station (45687590)                   
+
+Printed on 03 April 2026, Star Date 500.13
+
+|------------------------------ Status Report -------------------------------|
+|                                                                            |
+| Name: Citadel Station (45687590)                                           |
+| Faction: Merchant Trade Guild      Efficiency: 100%                        |
+| Type: STARBASE                                                             |
+|                                                                            |
+| J09 - Omicron System (101)                                                 |
+| Orbiting Orion (247985)                                                    |
+|                                                                            |
+| Employees: 0/0 required -> 100%                                            |
+| Employee Capacity: 0               Command: 0/0 -> 100%                    |
+|                                                                            |
+|---------------------------- Installed Modules -----------------------------|
+|                                                                            |
+| No modules installed.                                                      |
+|                                                                            |
+|------------------------------ Market Report -------------------------------|
+|                                                                            |
+| Item                           ID   Buy  Sell   Stk   Dmd Role             |
+| -------------------------- ------ ----- ----- ----- ----- ------           |
+| Human Crew                    401     5     3   100   100 Std              |
+| Tartarus Precious Metals   100101    31    29    63  2277 Demand           |
+| Orion Computer Cores       100102    40    38  2501    68 Supply           |
+| Meridian Food Supplies     100103    32    30   129   116 Std              |
+|                                                                            |
+| 4 weeks to market refresh.                                                 |
+|                                                                            |
+|-------------------------------- Inventory ---------------------------------|
+|                                                                            |
+| Inventory empty.                                                           |
+|                                                                            |
+|----------------------------------------------------------------------------|
+
+                              === END REPORT ===                              

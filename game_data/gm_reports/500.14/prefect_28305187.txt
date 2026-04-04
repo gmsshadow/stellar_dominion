@@ -1,0 +1,56 @@
+                             === BEGIN REPORT ===                             
+
+                               Stellar Dominion                               
+                              PBEM Strategy Game                              
+
+                    STA PREFECT Admiral Regulus (28305187)                    
+                              Account: 54998527                               
+
+Printed on 03 April 2026, Star Date 500.14
+
+------------------------------------------------------------------------------
+                             BETWEEN TURN REPORT                              
+------------------------------------------------------------------------------
+
+Wage deductions: 20 cr total
+  Vesuvius (42661086): 15 crew + 1 officers, 20 cr [UNDERMANNED]
+
+
+------------------------------------------------------------------------------
+                                 TURN REPORT                                  
+------------------------------------------------------------------------------
+
+------------------------------------------------------------------------------
+                                PLAYER REPORTS                                
+------------------------------------------------------------------------------
+|------------------------------ Prefect Report ------------------------------|
+|                                                                            |
+| Name: Admiral Regulus (28305187)   Faction: Stellar Training Academy       |
+| Rank: Citizen                      Influence: 0                            |
+| Created: 500.11                                                            |
+|                                                                            |
+| LOCATION                                                                   |
+| Aboard STA Vesuvius (42661086) - Omicron System (101)                      |
+|                                                                            |
+|----------------------------- Financial Report -----------------------------|
+|                                                                            |
+| POSITION                                 INCOME  EXPENSES       NET        |
+| STA Vesuvius (42661086)                      0         0         0         |
+|                                         -------   -------   -------        |
+|                                               0         0         0        |
+|                                                                            |
+| Wealth: 0 Credits                                                          |
+|                                                                            |
+|---------------------------------- Ships -----------------------------------|
+|                                                                            |
+| STA Vesuvius (42661086)            Omicron (101) J09                       |
+|    NPC Military S300               OC: 300/300  Size: 300 (Military)       |
+|    Crew: 16/20                     Required: 300 [UNDERMANNED]             |
+|                                                                            |
+|------------------------------ Known Contacts ------------------------------|
+|                                                                            |
+| No known contacts.                                                         |
+|                                                                            |
+|----------------------------------------------------------------------------|
+
+                              === END REPORT ===                              
