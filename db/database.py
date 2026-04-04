@@ -366,11 +366,11 @@ def get_connection(state_db_path=None, universe_db_path=None):
         )""")
         conn.commit()
 
-    # Migrate: fix crew_required to 1 per 2 hulls (was incorrectly 1 per hull)
-    # Uses ceiling division: crew_required = (ship_size + 1) / 2
+    # Migrate: fix crew_required to 1 per 2 hulls
+    # Always recalculate to catch any incorrect values
     conn.execute("""
         UPDATE ships SET crew_required = MAX(1, (ship_size + 1) / 2)
-        WHERE crew_required = ship_size AND ship_size > 0
+        WHERE crew_required != MAX(1, (ship_size + 1) / 2) AND ship_size > 0
     """)
     conn.commit()
 

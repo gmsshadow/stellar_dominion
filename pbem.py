@@ -1433,6 +1433,81 @@ def cmd_show_map(args):
     conn.close()
 
 
+def cmd_show_surface(args):
+    """Display the surface map for a celestial body."""
+    from db.database import get_universe_connection
+    from engine.maps.surface_gen import get_or_generate_surface, render_surface_map
+
+    uconn = get_universe_connection()
+    body = uconn.execute("SELECT * FROM celestial_bodies WHERE body_id = ?", (args.body,)).fetchone()
+    if not body:
+        print(f"Body {args.body} not found.")
+        uconn.close()
+        return
+
+    tiles = get_or_generate_surface(uconn, body)
+    if not tiles:
+        print(f"No surface data for {body['name']} ({args.body}).")
+        uconn.close()
+        return
+
+    # Look up ports, outposts, and landed ships from game_state
+    db_path = Path(args.db) if args.db else None
+    conn = get_connection(db_path)
+
+    port_positions = []
+    ports = conn.execute(
+        "SELECT port_id, name, surface_x, surface_y FROM surface_ports WHERE body_id = ?",
+        (args.body,)
+    ).fetchall()
+    for p in ports:
+        port_positions.append((p['surface_x'], p['surface_y'], f"{p['name']} ({p['port_id']})"))
+
+    outpost_positions = []
+    outposts = conn.execute(
+        "SELECT outpost_id, name, surface_x, surface_y, outpost_type FROM outposts WHERE body_id = ?",
+        (args.body,)
+    ).fetchall()
+    for o in outposts:
+        outpost_positions.append((o['surface_x'], o['surface_y'],
+                                   f"{o['name']} ({o['outpost_id']})", o['outpost_type']))
+
+    # Find landed ships
+    landed_ships = conn.execute(
+        "SELECT ship_id, name, landed_x, landed_y FROM ships WHERE landed_body_id = ?",
+        (args.body,)
+    ).fetchall()
+    ship_positions = [(s['landed_x'], s['landed_y']) for s in landed_ships if s['landed_x'] is not None]
+
+    conn.close()
+
+    # Get system name
+    system = uconn.execute("SELECT name FROM star_systems WHERE system_id = ?",
+                            (body['system_id'],)).fetchone()
+    sys_name = system['name'] if system else f"#{body['system_id']}"
+
+    print(f"\n{body['name']} ({args.body}) - {sys_name} System ({body['system_id']})")
+    print(f"  Type: {body['body_type'].replace('_', ' ').title()}, "
+          f"{body['gravity']}g, {body['temperature']}K, {body['atmosphere']}")
+    print()
+
+    # Render with first landed ship position if any
+    ship_pos = ship_positions[0] if ship_positions else None
+    map_lines = render_surface_map(tiles, body['name'], args.body,
+                                    planetary_data=dict(body), ship_pos=ship_pos,
+                                    port_positions=port_positions or None,
+                                    outpost_positions=outpost_positions or None)
+    print('\n'.join(map_lines))
+
+    # List landed ships if any
+    if landed_ships:
+        print(f"\nLanded Ships:")
+        for s in landed_ships:
+            print(f"  {s['name']} ({s['ship_id']}) at ({s['landed_x']},{s['landed_y']})")
+
+    uconn.close()
+
+
 def cmd_show_status(args):
     """Show status of a ship."""
     db_path = Path(args.db) if args.db else None
@@ -3399,6 +3474,11 @@ Gmail integration (two-stage workflow):
     sp.add_argument('--game', default='OMICRON101', help='Game ID')
     sp.add_argument('--system', type=int, default=101, help='System ID')
 
+    # --- show-surface ---
+    sp = subparsers.add_parser('show-surface', help='Display surface map for a celestial body')
+    sp.add_argument('--body', type=int, required=True, help='Body ID')
+    sp.add_argument('--db', help='Path to game_state.db')
+
     # --- show-status ---
     sp = subparsers.add_parser('show-status', help='Show ship/position status')
     sp.add_argument('--ship', type=int, help='Ship ID')
@@ -3688,6 +3768,7 @@ Gmail integration (two-stage workflow):
         'run-turn': cmd_run_turn,
         'turn-status': cmd_turn_status,
         'show-map': cmd_show_map,
+        'show-surface': cmd_show_surface,
         'show-status': cmd_show_status,
         'list-ships': cmd_list_ships,
         'advance-turn': cmd_advance_turn,

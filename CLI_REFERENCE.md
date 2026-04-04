@@ -354,6 +354,17 @@ Display the ASCII system map.
 | `--game` | No | `OMICRON101` | Game ID |
 | `--system` | No | `101` | System ID |
 
+### show-surface
+Display the surface map for a celestial body. Shows terrain, surface ports, outposts, and any landed ships.
+
+| Parameter | Required | Default | Description |
+|-----------|:--------:|---------|-------------|
+| `--body` | **Yes** | — | Body ID |
+
+```bash
+python pbem.py show-surface --body 247985
+```
+
 ### show-status
 Show a ship's current position and status.
 
