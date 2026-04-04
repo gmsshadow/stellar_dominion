@@ -101,12 +101,20 @@ def add_body(universe_db_path=None, body_id=None, system_id=None, name=None,
           tectonic_activity, hydrosphere, life, map_symbol, surface_size,
           resource_id, created_turn))
     conn.commit()
+
+    # Pre-generate surface terrain
+    body_row = conn.execute("SELECT * FROM celestial_bodies WHERE body_id = ?", (body_id,)).fetchone()
+    if body_row:
+        from engine.maps.surface_gen import generate_surface, store_surface
+        tiles = generate_surface(body_row)
+        store_surface(conn, body_id, tiles)
+
     conn.close()
 
     loc = f"{grid_col}{grid_row:02d}"
     print(f"  Added {body_type}: {name} ({body_id}) at {loc} in {sys['name']}")
     print(f"    {gravity}g, {temperature}K, {atmosphere}, tec={tectonic_activity}, hydro={hydrosphere}%, life={life}")
-    print(f"    Surface: {surface_size}x{surface_size}")
+    print(f"    Surface: {surface_size}x{surface_size} (terrain generated)")
     if resource_id:
         print(f"    Resource: {resource_id}")
     return body_id

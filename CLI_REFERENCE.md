@@ -475,6 +475,19 @@ Add an outpost to a planet or moon.
 
 ---
 
+### regen-surface
+Regenerate the surface terrain for a celestial body. Deletes existing terrain tiles and generates new ones based on the body's current properties (gravity, temperature, atmosphere, hydrosphere, life, tectonic activity). Displays the new surface map after generation.
+
+| Parameter | Required | Default | Description |
+|-----------|:--------:|---------|-------------|
+| `--body-id` | **Yes** | — | Body ID to regenerate |
+
+```bash
+python pbem.py regen-surface --body-id 247985
+```
+
+---
+
 ## Database Utilities
 
 ### split-db

@@ -2532,6 +2532,42 @@ def cmd_list_universe(args):
     list_universe()
 
 
+def cmd_regen_surface(args):
+    """Regenerate surface terrain for a celestial body."""
+    from db.database import get_universe_connection
+    from engine.maps.surface_gen import generate_surface, store_surface, render_surface_map
+
+    conn = get_universe_connection()
+    body = conn.execute("SELECT * FROM celestial_bodies WHERE body_id = ?", (args.body_id,)).fetchone()
+    if not body:
+        print(f"Error: Body {args.body_id} not found.")
+        conn.close()
+        return
+
+    # Delete existing surface data
+    old_count = conn.execute(
+        "SELECT COUNT(*) FROM planet_surface WHERE body_id = ?", (args.body_id,)
+    ).fetchone()[0]
+
+    conn.execute("DELETE FROM planet_surface WHERE body_id = ?", (args.body_id,))
+    conn.commit()
+
+    # Regenerate
+    tiles = generate_surface(body)
+    store_surface(conn, args.body_id, tiles)
+
+    print(f"Surface regenerated for {body['name']} ({args.body_id}):")
+    print(f"  Type: {body['body_type']}, Size: {body['surface_size']}x{body['surface_size']}")
+    print(f"  {body['gravity']}g, {body['temperature']}K, {body['atmosphere']}")
+    print(f"  Tiles: {old_count} old -> {len(tiles)} new")
+    print()
+    map_lines = render_surface_map(tiles, body['name'], args.body_id,
+                                    planetary_data=dict(body))
+    print('\n'.join(map_lines))
+
+    conn.close()
+
+
 def cmd_list_factions(args):
     """List all available factions."""
     from db.database import get_universe_connection
@@ -3522,6 +3558,10 @@ Gmail integration (two-stage workflow):
     # --- list-universe ---
     sp = subparsers.add_parser('list-universe', help='Show all universe content (systems, bodies, links)')
 
+    # --- regen-surface ---
+    sp = subparsers.add_parser('regen-surface', help='Regenerate surface terrain for a celestial body')
+    sp.add_argument('--body-id', type=int, required=True, help='Body ID to regenerate')
+
     # --- list-factions ---
     sp = subparsers.add_parser('list-factions', help='List all available factions')
 
@@ -3638,6 +3678,7 @@ Gmail integration (two-stage workflow):
         'add-port': cmd_add_port,
         'add-outpost': cmd_add_outpost,
         'list-universe': cmd_list_universe,
+        'regen-surface': cmd_regen_surface,
         'list-factions': cmd_list_factions,
         'list-components': cmd_list_components,
         'list-modules': cmd_list_modules,
