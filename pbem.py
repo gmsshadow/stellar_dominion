@@ -2568,6 +2568,35 @@ def cmd_regen_surface(args):
     conn.close()
 
 
+def cmd_gen_surfaces(args):
+    """Generate missing surface terrain for all celestial bodies."""
+    from db.database import get_universe_connection
+    from engine.maps.surface_gen import generate_surface, store_surface
+
+    conn = get_universe_connection()
+    bodies = conn.execute("SELECT * FROM celestial_bodies ORDER BY system_id, body_id").fetchall()
+
+    generated = 0
+    skipped = 0
+    for body in bodies:
+        existing = conn.execute(
+            "SELECT COUNT(*) FROM planet_surface WHERE body_id = ?",
+            (body['body_id'],)
+        ).fetchone()[0]
+        if existing > 0:
+            skipped += 1
+            continue
+
+        tiles = generate_surface(body)
+        store_surface(conn, body['body_id'], tiles)
+        generated += 1
+        print(f"  Generated: {body['name']} ({body['body_id']}) - {body['body_type']} "
+              f"{body['surface_size']}x{body['surface_size']} -> {len(tiles)} tiles")
+
+    print(f"\nDone: {generated} generated, {skipped} already had terrain ({generated + skipped} total bodies)")
+    conn.close()
+
+
 def cmd_list_factions(args):
     """List all available factions."""
     from db.database import get_universe_connection
@@ -3562,6 +3591,9 @@ Gmail integration (two-stage workflow):
     sp = subparsers.add_parser('regen-surface', help='Regenerate surface terrain for a celestial body')
     sp.add_argument('--body-id', type=int, required=True, help='Body ID to regenerate')
 
+    # --- gen-surfaces ---
+    sp = subparsers.add_parser('gen-surfaces', help='Generate missing surface terrain for all bodies')
+
     # --- list-factions ---
     sp = subparsers.add_parser('list-factions', help='List all available factions')
 
@@ -3679,6 +3711,7 @@ Gmail integration (two-stage workflow):
         'add-outpost': cmd_add_outpost,
         'list-universe': cmd_list_universe,
         'regen-surface': cmd_regen_surface,
+        'gen-surfaces': cmd_gen_surfaces,
         'list-factions': cmd_list_factions,
         'list-components': cmd_list_components,
         'list-modules': cmd_list_modules,

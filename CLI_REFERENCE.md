@@ -486,6 +486,15 @@ Regenerate the surface terrain for a celestial body. Deletes existing terrain ti
 python pbem.py regen-surface --body-id 247985
 ```
 
+### gen-surfaces
+Scan all celestial bodies and generate surface terrain for any that are missing. Skips bodies that already have terrain data. Use this after importing bodies via the database or upgrading from a version that didn't pre-generate surfaces.
+
+*No additional parameters.*
+
+```bash
+python pbem.py gen-surfaces
+```
+
 ---
 
 ## Database Utilities
