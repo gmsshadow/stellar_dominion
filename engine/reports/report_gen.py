@@ -887,6 +887,55 @@ def generate_prefect_report(prefect_id, db_path=None, game_id="OMICRON101",
                     f"Aboard {ship_display} ({loc_ship['ship_id']}) - "
                     f"{loc_ship['system_name']} System ({loc_ship['system_id']})"
                 ))
+        else:
+            lines.append(section_line(f"Aboard ship {prefect['location_id']} (not found)"))
+    elif prefect['location_type'] == 'starbase':
+        loc_base = conn.execute(
+            "SELECT b.*, ss.name as system_name FROM starbases b "
+            "JOIN star_systems ss ON b.system_id = ss.system_id WHERE b.base_id = ?",
+            (prefect['location_id'],)
+        ).fetchone()
+        if loc_base:
+            lines.append(section_line(
+                f"At {loc_base['name']} ({loc_base['base_id']}) - "
+                f"{loc_base['system_name']} System ({loc_base['system_id']})"
+            ))
+        else:
+            lines.append(section_line(f"At starbase {prefect['location_id']} (not found)"))
+    elif prefect['location_type'] == 'surface_port':
+        loc_port = conn.execute("SELECT * FROM surface_ports WHERE port_id = ?",
+                                 (prefect['location_id'],)).fetchone()
+        if loc_port:
+            body = conn.execute(
+                "SELECT cb.name, ss.name as system_name, ss.system_id "
+                "FROM celestial_bodies cb JOIN star_systems ss ON cb.system_id = ss.system_id "
+                "WHERE cb.body_id = ?", (loc_port['body_id'],)
+            ).fetchone()
+            loc_str = f"At {loc_port['name']} ({loc_port['port_id']})"
+            if body:
+                loc_str += f" on {body['name']} - {body['system_name']} System ({body['system_id']})"
+            lines.append(section_line(loc_str))
+        else:
+            lines.append(section_line(f"At surface port {prefect['location_id']} (not found)"))
+    elif prefect['location_type'] == 'outpost':
+        loc_op = conn.execute("SELECT * FROM outposts WHERE outpost_id = ?",
+                               (prefect['location_id'],)).fetchone()
+        if loc_op:
+            body = conn.execute(
+                "SELECT cb.name, ss.name as system_name, ss.system_id "
+                "FROM celestial_bodies cb JOIN star_systems ss ON cb.system_id = ss.system_id "
+                "WHERE cb.body_id = ?", (loc_op['body_id'],)
+            ).fetchone()
+            loc_str = f"At {loc_op['name']} ({loc_op['outpost_id']})"
+            if body:
+                loc_str += f" on {body['name']} - {body['system_name']} System ({body['system_id']})"
+            lines.append(section_line(loc_str))
+        else:
+            lines.append(section_line(f"At outpost {prefect['location_id']} (not found)"))
+    elif prefect['location_type'] == 'none' or not prefect['location_type']:
+        lines.append(section_line("No assigned location"))
+    else:
+        lines.append(section_line(f"Unknown location: {prefect['location_type']} {prefect['location_id']}"))
     lines.append(section_line())
 
     # ==========================================

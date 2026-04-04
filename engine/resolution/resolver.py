@@ -23,6 +23,7 @@ TU_COSTS = {
     'ORBIT': 10,
     'DOCK': 30,
     'UNDOCK': 10,
+    'LEAVEORBIT': 0,
     'LAND': 20,
     'TAKEOFF': 20,
     'SCANSURFACE': 20,
@@ -806,6 +807,8 @@ class TurnResolver:
             return self._cmd_dock(state, params)
         elif cmd == 'UNDOCK':
             return self._cmd_undock(state)
+        elif cmd == 'LEAVEORBIT':
+            return self._cmd_leaveorbit(state)
         elif cmd == 'LAND':
             return self._cmd_land(state, params)
         elif cmd == 'TAKEOFF':
@@ -1375,6 +1378,37 @@ class TurnResolver:
             'tu_cost': cost,
             'success': True,
             'message': f"Undocked from {base_name} ({base_id})."
+        }
+
+    def _cmd_leaveorbit(self, state):
+        """LEAVEORBIT - leave orbit and return to the grid square. 0 OC."""
+        tu_before = state['tu']
+
+        if not state['orbiting']:
+            return {
+                'command': 'LEAVEORBIT', 'params': None,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0,
+                'success': False,
+                'message': "Ship is not in orbit."
+            }
+
+        body_id = state['orbiting']
+        body = self.conn.execute(
+            "SELECT name FROM celestial_bodies WHERE body_id = ?", (body_id,)
+        ).fetchone()
+        body_name = body['name'] if body else str(body_id)
+
+        state['orbiting'] = None
+        self._commit_ship_position(state)
+
+        loc = f"{state['col']}{state['row']:02d}"
+        return {
+            'command': 'LEAVEORBIT', 'params': None,
+            'tu_before': tu_before, 'tu_after': state['tu'],
+            'tu_cost': 0,
+            'success': True,
+            'message': f"Left orbit of {body_name} ({body_id}). Now at {loc} in open space."
         }
 
     def _cmd_land(self, state, params):

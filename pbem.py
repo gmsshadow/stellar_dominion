@@ -1699,13 +1699,45 @@ def cmd_add_gm_prefect(args):
     prefect_id = generate_unique_id(conn, 'prefects', 'prefect_id')
     credits = args.credits if hasattr(args, 'credits') and args.credits is not None else 0
 
+    # Determine location
+    location_type = 'none'
+    location_id = None
+    location_name = None
+
+    starbase_arg = getattr(args, 'starbase', None)
+    port_arg = getattr(args, 'port', None)
+    outpost_arg = getattr(args, 'outpost', None)
+
+    if starbase_arg:
+        base = conn.execute("SELECT name FROM starbases WHERE base_id = ?", (starbase_arg,)).fetchone()
+        if not base:
+            print(f"Error: Starbase {starbase_arg} not found.")
+            conn.close()
+            return
+        location_type, location_id, location_name = 'starbase', starbase_arg, base['name']
+    elif port_arg:
+        port = conn.execute("SELECT name FROM surface_ports WHERE port_id = ?", (port_arg,)).fetchone()
+        if not port:
+            print(f"Error: Surface port {port_arg} not found.")
+            conn.close()
+            return
+        location_type, location_id, location_name = 'surface_port', port_arg, port['name']
+    elif outpost_arg:
+        outpost = conn.execute("SELECT name FROM outposts WHERE outpost_id = ?", (outpost_arg,)).fetchone()
+        if not outpost:
+            print(f"Error: Outpost {outpost_arg} not found.")
+            conn.close()
+            return
+        location_type, location_id, location_name = 'outpost', outpost_arg, outpost['name']
+
     conn.execute("""
         INSERT INTO prefects
         (prefect_id, player_id, game_id, name, faction_id, credits, unlimited_credits,
-         location_type, created_turn_year, created_turn_week)
-        VALUES (?, ?, ?, ?, ?, ?, 1, 'none', ?, ?)
+         location_type, location_id, created_turn_year, created_turn_week)
+        VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
     """, (prefect_id, gm['player_id'], args.game, args.name, args.faction,
-          credits, game['current_year'], game['current_week']))
+          credits, location_type, location_id,
+          game['current_year'], game['current_week']))
     conn.commit()
 
     faction = conn.execute("SELECT abbreviation, name FROM factions WHERE faction_id = ?",
@@ -1721,8 +1753,11 @@ def cmd_add_gm_prefect(args):
     print(f"  Prefect: {args.name} ({prefect_id})")
     print(f"  Faction: {faction_str}")
     print(f"  Credits: {'unlimited' if True else credits}")
+    if location_name:
+        print(f"  Location: {location_name} ({location_id})")
+    else:
+        print(f"  Location: none (use 'add-gm-ship' or assign to a base)")
     print(f"  GM now controls {gm_prefects['cnt']} prefect(s)")
-    print(f"\nUse 'add-gm-ship' to give this prefect a ship.")
     conn.close()
 
 
@@ -3348,6 +3383,9 @@ Gmail integration (two-stage workflow):
     sp.add_argument('--name', required=True, help='Prefect name (e.g. "Admiral Voss")')
     sp.add_argument('--faction', type=int, required=True, help='Faction ID')
     sp.add_argument('--credits', type=float, default=0, help='Starting credits (default 0, unlimited anyway)')
+    sp.add_argument('--starbase', type=int, default=None, help='Place prefect at a starbase (base_id)')
+    sp.add_argument('--port', type=int, default=None, help='Place prefect at a surface port (port_id)')
+    sp.add_argument('--outpost', type=int, default=None, help='Place prefect at an outpost (outpost_id)')
 
     # --- add-gm-ship ---
     sp = subparsers.add_parser('add-gm-ship', help='Create an NPC ship under a GM prefect')

@@ -17,6 +17,7 @@ VALID_COMMANDS = {
     'ORBIT': {'params': 'body_id', 'description': 'Orbit a celestial body'},
     'DOCK': {'params': 'base_id', 'description': 'Dock at a starbase'},
     'UNDOCK': {'params': 'none', 'description': 'Leave docked starbase'},
+    'LEAVEORBIT': {'params': 'none', 'description': 'Leave orbit of a celestial body'},
     'LAND': {'params': 'land_order', 'description': 'Land on a planet or moon at coordinates'},
     'TAKEOFF': {'params': 'none', 'description': 'Take off from planet surface to orbit'},
     'SCANSURFACE': {'params': 'none', 'description': 'Scan the surface of the planet you are orbiting or landed on'},

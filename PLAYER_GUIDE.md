@@ -88,6 +88,7 @@ Every action costs OC. Your ship starts each turn with 300 OC.
 | **SCANLOCATION** | 20 | Scan nearby area |
 | **SCANSYSTEM** | 20 | Full system map |
 | **ORBIT** | 10 | Enter orbit around a body |
+| **LEAVEORBIT** | 0 | Leave orbit, return to grid square |
 | **DOCK** | 30 | Dock at a starbase |
 | **UNDOCK** | 10 | Leave a starbase |
 | **LAND** | 20 | Land on a planet surface |
@@ -123,7 +124,9 @@ Note: old command names LOCATIONSCAN, SYSTEMSCAN, and SURFACESCAN still work as 
 
 ### Orbital & Docking
 
-**ORBIT** `<body_id>` · **DOCK** `<base_id>` · **UNDOCK** · **LAND** `<body_id> <x> <y>` · **TAKEOFF**
+**ORBIT** `<body_id>` · **LEAVEORBIT** · **DOCK** `<base_id>` · **UNDOCK** · **LAND** `<body_id> <x> <y>` · **TAKEOFF**
+
+**LEAVEORBIT** — Leave orbit and return to the grid square in open space. No OC cost. You can also leave orbit implicitly by issuing a MOVE command, but LEAVEORBIT is clearer when you just want to break orbit without moving.
 
 ### Trading
 

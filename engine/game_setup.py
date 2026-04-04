@@ -527,6 +527,7 @@ def generate_welcome_reports(db_path, game_id, account_number, prefect_id, ship_
         SCANLOCATION       Scan nearby space. Costs 20 OC.
         SCANSYSTEM         Produce a full system map. Costs 20 OC.
         ORBIT <body_id>    Enter orbit of a planet, moon, or gas giant. Costs 10 OC.
+        LEAVEORBIT         Leave orbit, return to grid square. Free (0 OC).
         DOCK <base_id>     Dock at a starbase (must be at same location). Costs 30 OC.
         UNDOCK             Leave a starbase. Costs 10 OC.
         LAND <body_id> <x> <y>  Land at surface coordinates (must be orbiting). Costs 20 OC.
