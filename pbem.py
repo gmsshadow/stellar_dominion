@@ -1508,6 +1508,52 @@ def cmd_show_surface(args):
     uconn.close()
 
 
+def cmd_preview_ship(args):
+    """Generate a preview ship report from the current database state (no turn resolution)."""
+    db_path = Path(args.db) if args.db else None
+    conn = get_connection(db_path)
+
+    ship = conn.execute("SELECT * FROM ships WHERE ship_id = ?", (args.ship,)).fetchone()
+    if not ship:
+        print(f"Ship {args.ship} not found.")
+        conn.close()
+        return
+
+    game = conn.execute("SELECT * FROM games WHERE game_id = ?", (ship['game_id'],)).fetchone()
+
+    # Build a mock turn_result from current state
+    turn_result = {
+        'ship_id': ship['ship_id'],
+        'ship_name': ship['name'],
+        'system_id': ship['system_id'],
+        'final_system_id': ship['system_id'],
+        'turn_year': game['current_year'],
+        'turn_week': game['current_week'],
+        'start_col': ship['grid_col'],
+        'start_row': ship['grid_row'],
+        'final_col': ship['grid_col'],
+        'final_row': ship['grid_row'],
+        'final_tu': ship['tu_remaining'],
+        'docked_at': ship['docked_at_base_id'],
+        'orbiting': ship['orbiting_body_id'],
+        'landed': ship['landed_body_id'],
+        'landed_x': ship['landed_x'],
+        'landed_y': ship['landed_y'],
+        'start_docked': ship['docked_at_base_id'],
+        'start_orbiting': ship['orbiting_body_id'],
+        'start_landed': ship['landed_body_id'],
+        'start_landed_x': ship['landed_x'],
+        'start_landed_y': ship['landed_y'],
+        'log': [],
+        'overflow': [],
+    }
+
+    conn.close()
+
+    report = generate_ship_report(turn_result, db_path, ship['game_id'])
+    print(report)
+
+
 def cmd_show_status(args):
     """Show status of a ship."""
     db_path = Path(args.db) if args.db else None
@@ -3479,6 +3525,11 @@ Gmail integration (two-stage workflow):
     sp.add_argument('--body', type=int, required=True, help='Body ID')
     sp.add_argument('--db', help='Path to game_state.db')
 
+    # --- preview-ship ---
+    sp = subparsers.add_parser('preview-ship', help='Generate a ship report from current state (no turn resolution)')
+    sp.add_argument('--ship', type=int, required=True, help='Ship ID')
+    sp.add_argument('--db', help='Path to game_state.db')
+
     # --- show-status ---
     sp = subparsers.add_parser('show-status', help='Show ship/position status')
     sp.add_argument('--ship', type=int, help='Ship ID')
@@ -3769,6 +3820,7 @@ Gmail integration (two-stage workflow):
         'turn-status': cmd_turn_status,
         'show-map': cmd_show_map,
         'show-surface': cmd_show_surface,
+        'preview-ship': cmd_preview_ship,
         'show-status': cmd_show_status,
         'list-ships': cmd_list_ships,
         'advance-turn': cmd_advance_turn,

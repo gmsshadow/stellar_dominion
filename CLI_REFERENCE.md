@@ -365,6 +365,17 @@ Display the surface map for a celestial body. Shows terrain, surface ports, outp
 python pbem.py show-surface --body 247985
 ```
 
+### preview-ship
+Generate a full ship turn report from the current database state without running a turn. Useful for verifying database edits to ship components, crew, cargo, or position. Shows the same report format players receive, but with no orders or resolution — just the Command Report, Navigation, Crew, and Components sections.
+
+| Parameter | Required | Default | Description |
+|-----------|:--------:|---------|-------------|
+| `--ship` | **Yes** | — | Ship ID |
+
+```bash
+python pbem.py preview-ship --ship 30158993
+```
+
 ### show-status
 Show a ship's current position and status.
 
