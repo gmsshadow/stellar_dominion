@@ -376,6 +376,15 @@ Generate a full ship turn report from the current database state without running
 python pbem.py preview-ship --ship 30158993
 ```
 
+### recalc-ships
+Recalculate all ship stats from installed components and cargo. Syncs `crew_count` from cargo crew + officers, and recalculates `cargo_capacity`, `life_support_capacity`, `gravity_rating`, `sensor_rating`, and `crew_required` from installed components. Run this after making direct database edits to ships, installed_items, or cargo_items.
+
+*No additional parameters.*
+
+```bash
+python pbem.py recalc-ships
+```
+
 ### show-status
 Show a ship's current position and status.
 

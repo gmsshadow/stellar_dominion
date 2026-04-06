@@ -1510,6 +1510,7 @@ def cmd_show_surface(args):
 
 def cmd_preview_ship(args):
     """Generate a preview ship report from the current database state (no turn resolution)."""
+    from db.database import recalculate_ship_stats
     db_path = Path(args.db) if args.db else None
     conn = get_connection(db_path)
 
@@ -1519,6 +1520,20 @@ def cmd_preview_ship(args):
         conn.close()
         return
 
+    # Sync crew_count from cargo + officers (in case DB was edited directly)
+    cargo_crew = conn.execute(
+        "SELECT COALESCE(SUM(quantity), 0) FROM cargo_items WHERE ship_id = ? AND item_type_id = 401",
+        (args.ship,)
+    ).fetchone()[0]
+    officers = conn.execute("SELECT COUNT(*) FROM officers WHERE ship_id = ?", (args.ship,)).fetchone()[0]
+    conn.execute("UPDATE ships SET crew_count = ? WHERE ship_id = ?", (cargo_crew + officers, args.ship))
+
+    # Recalculate component-derived stats
+    recalculate_ship_stats(conn, args.ship)
+    conn.commit()
+
+    # Re-fetch after sync
+    ship = conn.execute("SELECT * FROM ships WHERE ship_id = ?", (args.ship,)).fetchone()
     game = conn.execute("SELECT * FROM games WHERE game_id = ?", (ship['game_id'],)).fetchone()
 
     # Build a mock turn_result from current state
@@ -1552,6 +1567,43 @@ def cmd_preview_ship(args):
 
     report = generate_ship_report(turn_result, db_path, ship['game_id'])
     print(report)
+
+
+def cmd_recalc_ships(args):
+    """Recalculate all ship stats from installed components and cargo. Use after direct DB edits."""
+    from db.database import recalculate_ship_stats
+    db_path = Path(args.db) if args.db else None
+    conn = get_connection(db_path)
+
+    ships = conn.execute("SELECT ship_id, name, ship_size FROM ships ORDER BY ship_id").fetchall()
+    if not ships:
+        print("No ships found.")
+        conn.close()
+        return
+
+    print(f"Recalculating {len(ships)} ships...")
+    for s in ships:
+        # Sync crew
+        cargo_crew = conn.execute(
+            "SELECT COALESCE(SUM(quantity), 0) FROM cargo_items WHERE ship_id = ? AND item_type_id = 401",
+            (s['ship_id'],)
+        ).fetchone()[0]
+        officers = conn.execute("SELECT COUNT(*) FROM officers WHERE ship_id = ?", (s['ship_id'],)).fetchone()[0]
+        actual_crew = cargo_crew + officers
+        conn.execute("UPDATE ships SET crew_count = ? WHERE ship_id = ?", (actual_crew, s['ship_id']))
+
+        # Recalculate from components
+        stats = recalculate_ship_stats(conn, s['ship_id'])
+
+        ship = conn.execute("SELECT crew_count, crew_required, cargo_capacity, life_support_capacity, gravity_rating FROM ships WHERE ship_id = ?",
+                             (s['ship_id'],)).fetchone()
+        eff = min(100, ship['crew_count'] / ship['crew_required'] * 100) if ship['crew_required'] > 0 else 100
+        print(f"  {s['name']} ({s['ship_id']}): crew={ship['crew_count']}/{ship['crew_required']} ({eff:.0f}%) "
+              f"cargo={ship['cargo_capacity']} life_sup={ship['life_support_capacity']} grav={ship['gravity_rating']}")
+
+    conn.commit()
+    conn.close()
+    print(f"\nDone. {len(ships)} ships recalculated.")
 
 
 def cmd_show_status(args):
@@ -3530,6 +3582,10 @@ Gmail integration (two-stage workflow):
     sp.add_argument('--ship', type=int, required=True, help='Ship ID')
     sp.add_argument('--db', help='Path to game_state.db')
 
+    # --- recalc-ships ---
+    sp = subparsers.add_parser('recalc-ships', help='Recalculate all ship stats from components and cargo')
+    sp.add_argument('--db', help='Path to game_state.db')
+
     # --- show-status ---
     sp = subparsers.add_parser('show-status', help='Show ship/position status')
     sp.add_argument('--ship', type=int, help='Ship ID')
@@ -3821,6 +3877,7 @@ Gmail integration (two-stage workflow):
         'show-map': cmd_show_map,
         'show-surface': cmd_show_surface,
         'preview-ship': cmd_preview_ship,
+        'recalc-ships': cmd_recalc_ships,
         'show-status': cmd_show_status,
         'list-ships': cmd_list_ships,
         'advance-turn': cmd_advance_turn,
