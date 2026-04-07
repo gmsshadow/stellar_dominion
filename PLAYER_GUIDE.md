@@ -20,7 +20,7 @@ Ships are built from modular internal components. Your starting Light Trader MK 
 | Component | Qty | ST Used | Effect |
 |-----------|:---:|--------:|--------|
 | Standard Bridge | 1 | 50 | Required for ship operation |
-| Thruster Array | 14 | 280 | 280 thrust → gravity rating 5.6 |
+| Thruster Array | 14 | 280 | 70 thrust → gravity rating 1.4 |
 | Commercial Sublight Engine | 5 | 50 | Movement (5/5 optimal for size 50) |
 | Cargo Bay | 50 | 1250 | 1000 ST cargo capacity |
 | Crew Quarters | 4 | 120 | 80 crew capacity, 80 life support |

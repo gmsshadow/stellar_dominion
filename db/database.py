@@ -119,8 +119,8 @@ def get_connection(state_db_path=None, universe_db_path=None):
             # Seed default components
             seed_components = [
                 (100, 'Standard Bridge', 'bridge', 50, 0, 0, 0, 0, 0, 0, 0, 0, None, 500, 'Basic command centre.'),
-                (110, 'Thruster Array', 'thruster', 20, 0, 0, 0, 20, 0, 0, 0, 0, None, 800, 'Standard thruster pack.'),
-                (111, 'Heavy Thruster Pack', 'thruster', 30, 0, 0, 0, 40, 0, 0, 0, 0, None, 1500, 'High-output thrusters.'),
+                (110, 'Thruster Array', 'thruster', 20, 0, 0, 0, 5, 0, 0, 0, 0, None, 800, 'Standard thruster pack.'),
+                (111, 'Heavy Thruster Pack', 'thruster', 30, 0, 0, 0, 10, 0, 0, 0, 0, None, 1500, 'High-output thrusters.'),
                 (120, 'Commercial Sublight Engine', 'engine', 10, 0, 0, 0, 0, 1.0, 0, 0, 0, None, 1200, 'Standard propulsion.'),
                 (121, 'Military Sublight Engine', 'engine', 10, 0, 0, 0, 0, 1.5, 0, 0, 0, 'military', 2500, 'High-performance drive.'),
                 (130, 'Cargo Bay', 'cargo', 25, 20, 0, 0, 0, 0, 0, 0, 0, None, 600, 'Standard cargo bay.'),
@@ -142,6 +142,9 @@ def get_connection(state_db_path=None, universe_db_path=None):
         # Migrate: update jump drive OC costs (was 150/100, now 50/40)
         conn.execute("UPDATE universe.ship_components SET jump_oc_cost = 50 WHERE component_id = 160 AND jump_oc_cost > 50")
         conn.execute("UPDATE universe.ship_components SET jump_oc_cost = 40 WHERE component_id = 161 AND jump_oc_cost > 40")
+        # Migrate: rebalance thruster thrust values (was 20/40, now 5/10)
+        conn.execute("UPDATE universe.ship_components SET thrust = 5 WHERE component_id = 110 AND thrust = 20")
+        conn.execute("UPDATE universe.ship_components SET thrust = 10 WHERE component_id = 111 AND thrust = 40")
         conn.commit()
 
         # Migrate universe.db: create base_modules table if missing
@@ -569,9 +572,9 @@ CREATE TABLE IF NOT EXISTS ship_components (
 INSERT OR IGNORE INTO ship_components VALUES
     (100, 'Standard Bridge', 'bridge', 50, 0, 0, 0, 0, 0, 0, 0, 0, NULL, 500, 'Basic command centre. Required for ship operation.');
 INSERT OR IGNORE INTO ship_components VALUES
-    (110, 'Thruster Array', 'thruster', 20, 0, 0, 0, 20, 0, 0, 0, 0, NULL, 800, 'Standard thruster pack. Provides thrust for gravity rating.');
+    (110, 'Thruster Array', 'thruster', 20, 0, 0, 0, 5, 0, 0, 0, 0, NULL, 800, 'Standard thruster pack. Provides thrust for gravity rating.');
 INSERT OR IGNORE INTO ship_components VALUES
-    (111, 'Heavy Thruster Pack', 'thruster', 30, 0, 0, 0, 40, 0, 0, 0, 0, NULL, 1500, 'High-output thrusters for larger vessels or heavy landing.');
+    (111, 'Heavy Thruster Pack', 'thruster', 30, 0, 0, 0, 10, 0, 0, 0, 0, NULL, 1500, 'High-output thrusters for larger vessels or heavy landing.');
 INSERT OR IGNORE INTO ship_components VALUES
     (120, 'Commercial Sublight Engine', 'engine', 10, 0, 0, 0, 0, 1.0, 0, 0, 0, NULL, 1200, 'Standard propulsion. 1.0 efficiency.');
 INSERT OR IGNORE INTO ship_components VALUES

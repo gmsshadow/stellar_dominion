@@ -116,7 +116,7 @@ When components change, `recalculate_ship_stats()` is called automatically.
 
 ```
 Standard Bridge ×1       50 ST
-Thruster Array ×14      280 ST  (thrust 280 → gravity 5.6)
+Thruster Array ×14      280 ST  (thrust 70 → gravity 1.4)
 Commercial Engine ×5     50 ST  (5/5 optimal → 100% engine eff)
 Cargo Bay ×50          1250 ST  (1000 cargo)
 Crew Quarters ×4        120 ST  (80 crew, 80 life)
