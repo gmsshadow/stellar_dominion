@@ -105,7 +105,7 @@ All ship stats are calculated from installed components:
 - **cargo_capacity** = sum of all cargo_capacity values
 - **life_support_capacity** = sum of all life_capacity values
 - **sensor_rating** = sum of all sensor_rating values
-- **gravity_rating** = total_thrust / ship_size — scales ORBIT/LAND/TAKEOFF cost as `base × body_grav / ship_grav`
+- **gravity_rating** = total_thrust / (ship_size + total_installed_st/100) — packed ships are heavier and less manoeuvrable. Scales ORBIT/LAND/TAKEOFF cost as `base × body_grav / ship_grav`
 - **crew_required** = ceil(ship_size / 2) — 1 crew per 2 hull points
 - **engine_efficiency** = engines / optimal × 100%
 - **jump_range** = best installed jump drive range (systems per activation)
@@ -116,7 +116,7 @@ When components change, `recalculate_ship_stats()` is called automatically.
 
 ```
 Standard Bridge ×1       50 ST
-Thruster Array ×14      280 ST  (thrust 70 → gravity 1.4)
+Thruster Array ×14      280 ST  (thrust 70 → gravity 1.02)
 Commercial Engine ×5     50 ST  (5/5 optimal → 100% engine eff)
 Cargo Bay ×50          1250 ST  (1000 cargo)
 Crew Quarters ×4        120 ST  (80 crew, 80 life)

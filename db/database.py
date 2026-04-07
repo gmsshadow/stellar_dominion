@@ -1185,6 +1185,7 @@ def recalculate_ship_stats(conn, ship_id):
     total_thrust = 0
     total_sensor = 0
     total_engine_eff = 0.0
+    total_installed_st = 0
     engine_count = 0
     best_jump_range = 0
     best_jump_oc = 0
@@ -1196,6 +1197,7 @@ def recalculate_ship_stats(conn, ship_id):
         total_life_cap += c['life_capacity'] * qty
         total_thrust += c['thrust'] * qty
         total_sensor += c['sensor_rating'] * qty
+        total_installed_st += c['st_cost'] * qty
         if c['category'] == 'engine':
             engine_count += qty
             total_engine_eff += c['engine_efficiency'] * qty
@@ -1211,8 +1213,11 @@ def recalculate_ship_stats(conn, ship_id):
         # Scale efficiency back to max_engines worth
         total_engine_eff = total_engine_eff * max_engines / engine_count
 
-    # Gravity rating = thrust / ship_size (mass approximated by size)
-    gravity_rating = total_thrust / ship_size if ship_size > 0 else 0
+    # Gravity rating = thrust / effective_mass
+    # effective_mass = ship_size (hull) + installed_st / 100 (component mass)
+    # An empty hull is light; a packed hull is heavy.
+    effective_mass = ship_size + (total_installed_st / 100.0)
+    gravity_rating = total_thrust / effective_mass if effective_mass > 0 else 0
 
     # Crew required = 1 per 2 hull points (rounded up)
     crew_required = max(1, -(-ship_size // 2))  # ceiling division

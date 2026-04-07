@@ -20,7 +20,7 @@ Ships are built from modular internal components. Your starting Light Trader MK 
 | Component | Qty | ST Used | Effect |
 |-----------|:---:|--------:|--------|
 | Standard Bridge | 1 | 50 | Required for ship operation |
-| Thruster Array | 14 | 280 | 70 thrust → gravity rating 1.4 |
+| Thruster Array | 14 | 280 | 70 thrust → gravity rating 1.02 |
 | Commercial Sublight Engine | 5 | 50 | Movement (5/5 optimal for size 50) |
 | Cargo Bay | 50 | 1250 | 1000 ST cargo capacity |
 | Crew Quarters | 4 | 120 | 80 crew capacity, 80 life support |
@@ -40,13 +40,22 @@ Your ship needs crew based on its size (1 crew per 2 hull points, rounded up). A
 
 ### Gravity Rating
 
-Your ship's gravity rating is `total_thrust / ship_size` — the higher the rating, the more responsive the ship is in a gravity well. It directly affects three commands:
+Your ship's gravity rating reflects how responsive it is in a gravity well. It's calculated from thrust vs effective mass:
+
+```
+effective_mass = ship_size + (total_installed_st / 100)
+gravity_rating = total_thrust / effective_mass
+```
+
+The hull itself contributes mass equal to its size, and every 100 ST of installed components adds another mass unit. An empty 50-hull ship is lighter than one packed to 2500 ST of components. Building a fast ship means balancing thrust, hulls, and how much gear you bolt on.
+
+Gravity rating directly affects three commands:
 
 - **ORBIT**: cost = `ceil(10 × body_gravity / ship_gravity)`
 - **LAND**: cost = `ceil(20 × body_gravity / ship_gravity)`
 - **TAKEOFF**: cost = `ceil(20 × body_gravity / ship_gravity)`
 
-A starter ship with gravity 1.4 lands on a 1g planet for 15 OC instead of the 20 base cost. Landing on a 2g world costs 29 OC. A ship with no thrusters cannot orbit, land, or take off at all. Add Thruster Arrays or Heavy Thruster Packs to improve gravity rating; remove them or add hulls to reduce it.
+A starter ship with gravity 1.0 lands on a 1g planet for 20 OC. Strip out some cargo bays or add thrusters and that drops. Pack the ship full of trade goods and mining rigs, and the cost climbs. A ship with no thrusters cannot orbit, land, or take off at all.
 
 ## Your Identifiers
 
