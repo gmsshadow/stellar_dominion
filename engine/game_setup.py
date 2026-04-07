@@ -701,16 +701,17 @@ def add_player(db_path=None, game_id="OMICRON101", player_name="Player 1",
         VALUES (?, 1, ?, 'Captain', 'Navigation', 0, 8, 401, 5)
     """, (ship_id, captain_name))
 
-    # Install starting components (Light Trader MK I, size 10 = 500 ST)
-    # Bridge(20) + Thruster(50) + Engine(60) + 5×Cargo(200) + Quarters(30) + Sensor(20) + Jump(120) = 500 ST
+    # Install starting components (Light Trader MK I, size 50 = 2500 ST capacity)
+    # Bridge(50) + 14×Thruster(280) + 5×Engine(50) + 50×Cargo(1250) + 4×Quarters(120)
+    # + 5×Sensor(50) + Jump(50) = 1850 ST used, 650 ST free
     starting_components = [
-        (ship_id, 100, 1),   # Standard Bridge ×1
-        (ship_id, 110, 1),   # Thruster Array ×1
-        (ship_id, 120, 1),   # Commercial Sublight Engine ×1
-        (ship_id, 130, 5),   # Cargo Bay ×5 (500 ST cargo)
-        (ship_id, 140, 1),   # Crew Quarters ×1 (20 crew, 20 life support)
-        (ship_id, 150, 1),   # Basic Sensor Array ×1
-        (ship_id, 160, 1),   # Jump Drive Mk1 ×1
+        (ship_id, 100, 1),    # Standard Bridge ×1
+        (ship_id, 110, 14),   # Thruster Array ×14 (gravity 5.6 for size 50)
+        (ship_id, 120, 5),    # Commercial Sublight Engine ×5 (optimal for size 50)
+        (ship_id, 130, 50),   # Cargo Bay ×50 (1000 ST cargo)
+        (ship_id, 140, 4),    # Crew Quarters ×4 (80 crew capacity, 80 life support)
+        (ship_id, 150, 5),    # Basic Sensor Array ×5 (25 sensor rating)
+        (ship_id, 160, 1),    # Jump Drive Mk1 ×1 (range 5, 50 OC)
     ]
     for sid, comp_id, qty in starting_components:
         c.execute("""
@@ -723,11 +724,15 @@ def add_player(db_path=None, game_id="OMICRON101", player_name="Player 1",
     from db.database import recalculate_ship_stats
     recalculate_ship_stats(conn, ship_id)
 
-    # Add starting crew as cargo (Human Crew item 401) - mass 0 as crew use life support, not cargo space
+    # Add starting crew as cargo (Human Crew item 401) - mass 0 as crew use life support
+    # 60 crew + 1 captain = 61 total (well above the 25 required for size 50)
     c.execute("""
         INSERT INTO cargo_items (ship_id, item_type_id, item_name, quantity, mass_per_unit)
-        VALUES (?, 401, 'Human Crew', 15, 0)
+        VALUES (?, 401, 'Human Crew', 60, 0)
     """, (ship_id,))
+
+    # Sync crew_count
+    c.execute("UPDATE ships SET crew_count = 61 WHERE ship_id = ?", (ship_id,))
 
     conn.commit()
     conn.close()

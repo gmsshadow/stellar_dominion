@@ -118,21 +118,21 @@ def get_connection(state_db_path=None, universe_db_path=None):
             )""")
             # Seed default components
             seed_components = [
-                (100, 'Standard Bridge', 'bridge', 20, 0, 0, 0, 0, 0, 0, 0, 0, None, 500, 'Basic command centre.'),
-                (110, 'Thruster Array', 'thruster', 50, 0, 0, 0, 20, 0, 0, 0, 0, None, 800, 'Standard thruster pack.'),
-                (111, 'Heavy Thruster Pack', 'thruster', 80, 0, 0, 0, 40, 0, 0, 0, 0, None, 1500, 'High-output thrusters.'),
-                (120, 'Commercial Sublight Engine', 'engine', 60, 0, 0, 0, 0, 1.0, 0, 0, 0, None, 1200, 'Standard propulsion.'),
-                (121, 'Military Sublight Engine', 'engine', 70, 0, 0, 0, 0, 1.5, 0, 0, 0, 'military', 2500, 'High-performance drive.'),
-                (130, 'Cargo Bay', 'cargo', 40, 100, 0, 0, 0, 0, 0, 0, 0, None, 600, 'Standard cargo bay.'),
-                (131, 'Reinforced Cargo Bay', 'cargo', 50, 120, 0, 0, 0, 0, 0, 0, 0, None, 900, 'Armoured cargo storage.'),
+                (100, 'Standard Bridge', 'bridge', 50, 0, 0, 0, 0, 0, 0, 0, 0, None, 500, 'Basic command centre.'),
+                (110, 'Thruster Array', 'thruster', 20, 0, 0, 0, 20, 0, 0, 0, 0, None, 800, 'Standard thruster pack.'),
+                (111, 'Heavy Thruster Pack', 'thruster', 30, 0, 0, 0, 40, 0, 0, 0, 0, None, 1500, 'High-output thrusters.'),
+                (120, 'Commercial Sublight Engine', 'engine', 10, 0, 0, 0, 0, 1.0, 0, 0, 0, None, 1200, 'Standard propulsion.'),
+                (121, 'Military Sublight Engine', 'engine', 10, 0, 0, 0, 0, 1.5, 0, 0, 0, 'military', 2500, 'High-performance drive.'),
+                (130, 'Cargo Bay', 'cargo', 25, 20, 0, 0, 0, 0, 0, 0, 0, None, 600, 'Standard cargo bay.'),
+                (131, 'Reinforced Cargo Bay', 'cargo', 30, 20, 0, 0, 0, 0, 0, 0, 0, None, 900, 'Armoured cargo storage.'),
                 (140, 'Crew Quarters', 'quarters', 30, 0, 20, 20, 0, 0, 0, 0, 0, None, 400, 'Standard crew accommodation.'),
                 (141, 'Military Bunks', 'quarters', 30, 0, 40, 25, 0, 0, 0, 0, 0, 'military', 500, 'Compact military berths.'),
                 (142, 'Luxury Cabins', 'quarters', 30, 0, 10, 15, 0, 0, 0, 0, 0, None, 700, 'Comfortable passenger cabins.'),
-                (150, 'Basic Sensor Array', 'sensor', 20, 0, 0, 0, 0, 0, 5, 0, 0, None, 300, 'Standard detection suite.'),
-                (151, 'Military Sensor Suite', 'sensor', 30, 0, 0, 0, 0, 0, 10, 0, 0, 'military', 1000, 'Advanced military sensors.'),
-                (152, 'Deep Space Scanner', 'sensor', 40, 0, 0, 0, 0, 0, 15, 0, 0, None, 1800, 'Long-range detection.'),
-                (160, 'Jump Drive Mk1', 'jump_drive', 120, 0, 0, 0, 0, 0, 0, 5, 50, None, 5000, 'Basic hyperspace drive.'),
-                (161, 'Jump Drive Mk2', 'jump_drive', 150, 0, 0, 0, 0, 0, 0, 10, 40, None, 12000, 'Advanced jump drive.'),
+                (150, 'Basic Sensor Array', 'sensor', 10, 0, 0, 0, 0, 0, 5, 0, 0, None, 300, 'Standard detection suite.'),
+                (151, 'Military Sensor Suite', 'sensor', 15, 0, 0, 0, 0, 0, 10, 0, 0, 'military', 1000, 'Advanced military sensors.'),
+                (152, 'Deep Space Scanner', 'sensor', 20, 0, 0, 0, 0, 0, 15, 0, 0, None, 1800, 'Long-range detection.'),
+                (160, 'Jump Drive Mk1', 'jump_drive', 50, 0, 0, 0, 0, 0, 0, 5, 50, None, 5000, 'Basic hyperspace drive.'),
+                (161, 'Jump Drive Mk2', 'jump_drive', 60, 0, 0, 0, 0, 0, 0, 6, 40, None, 12000, 'Advanced jump drive.'),
             ]
             for c in seed_components:
                 conn.execute("""INSERT OR IGNORE INTO universe.ship_components VALUES
@@ -567,19 +567,19 @@ CREATE TABLE IF NOT EXISTS ship_components (
 
 -- Seed ship components
 INSERT OR IGNORE INTO ship_components VALUES
-    (100, 'Standard Bridge', 'bridge', 20, 0, 0, 0, 0, 0, 0, 0, 0, NULL, 500, 'Basic command centre. Required for ship operation.');
+    (100, 'Standard Bridge', 'bridge', 50, 0, 0, 0, 0, 0, 0, 0, 0, NULL, 500, 'Basic command centre. Required for ship operation.');
 INSERT OR IGNORE INTO ship_components VALUES
-    (110, 'Thruster Array', 'thruster', 50, 0, 0, 0, 20, 0, 0, 0, 0, NULL, 800, 'Standard thruster pack. Provides thrust for gravity rating.');
+    (110, 'Thruster Array', 'thruster', 20, 0, 0, 0, 20, 0, 0, 0, 0, NULL, 800, 'Standard thruster pack. Provides thrust for gravity rating.');
 INSERT OR IGNORE INTO ship_components VALUES
-    (111, 'Heavy Thruster Pack', 'thruster', 80, 0, 0, 0, 40, 0, 0, 0, 0, NULL, 1500, 'High-output thrusters for larger vessels or heavy landing.');
+    (111, 'Heavy Thruster Pack', 'thruster', 30, 0, 0, 0, 40, 0, 0, 0, 0, NULL, 1500, 'High-output thrusters for larger vessels or heavy landing.');
 INSERT OR IGNORE INTO ship_components VALUES
-    (120, 'Commercial Sublight Engine', 'engine', 60, 0, 0, 0, 0, 1.0, 0, 0, 0, NULL, 1200, 'Standard propulsion. 1.0 efficiency.');
+    (120, 'Commercial Sublight Engine', 'engine', 10, 0, 0, 0, 0, 1.0, 0, 0, 0, NULL, 1200, 'Standard propulsion. 1.0 efficiency.');
 INSERT OR IGNORE INTO ship_components VALUES
-    (121, 'Military Sublight Engine', 'engine', 70, 0, 0, 0, 0, 1.5, 0, 0, 0, 'military', 2500, 'High-performance drive. 1.5 efficiency. Military hulls only.');
+    (121, 'Military Sublight Engine', 'engine', 10, 0, 0, 0, 0, 1.5, 0, 0, 0, 'military', 2500, 'High-performance drive. 1.5 efficiency. Military hulls only.');
 INSERT OR IGNORE INTO ship_components VALUES
-    (130, 'Cargo Bay', 'cargo', 40, 100, 0, 0, 0, 0, 0, 0, 0, NULL, 600, 'Standard modular cargo bay. 100 ST capacity.');
+    (130, 'Cargo Bay', 'cargo', 25, 20, 0, 0, 0, 0, 0, 0, 0, NULL, 600, 'Standard modular cargo bay. 20 ST capacity.');
 INSERT OR IGNORE INTO ship_components VALUES
-    (131, 'Reinforced Cargo Bay', 'cargo', 50, 120, 0, 0, 0, 0, 0, 0, 0, NULL, 900, 'Armoured cargo storage. 120 ST capacity.');
+    (131, 'Reinforced Cargo Bay', 'cargo', 30, 20, 0, 0, 0, 0, 0, 0, 0, NULL, 900, 'Armoured cargo storage. 20 ST capacity.');
 INSERT OR IGNORE INTO ship_components VALUES
     (140, 'Crew Quarters', 'quarters', 30, 0, 20, 20, 0, 0, 0, 0, 0, NULL, 400, 'Standard crew accommodation with life support.');
 INSERT OR IGNORE INTO ship_components VALUES
@@ -587,15 +587,15 @@ INSERT OR IGNORE INTO ship_components VALUES
 INSERT OR IGNORE INTO ship_components VALUES
     (142, 'Luxury Cabins', 'quarters', 30, 0, 10, 15, 0, 0, 0, 0, 0, NULL, 700, 'Comfortable passenger cabins. Low density.');
 INSERT OR IGNORE INTO ship_components VALUES
-    (150, 'Basic Sensor Array', 'sensor', 20, 0, 0, 0, 0, 0, 5, 0, 0, NULL, 300, 'Standard detection and scanning suite.');
+    (150, 'Basic Sensor Array', 'sensor', 10, 0, 0, 0, 0, 0, 5, 0, 0, NULL, 300, 'Standard detection and scanning suite.');
 INSERT OR IGNORE INTO ship_components VALUES
-    (151, 'Military Sensor Suite', 'sensor', 30, 0, 0, 0, 0, 0, 10, 0, 0, 'military', 1000, 'Advanced military-grade sensors.');
+    (151, 'Military Sensor Suite', 'sensor', 15, 0, 0, 0, 0, 0, 10, 0, 0, 'military', 1000, 'Advanced military-grade sensors.');
 INSERT OR IGNORE INTO ship_components VALUES
-    (152, 'Deep Space Scanner', 'sensor', 40, 0, 0, 0, 0, 0, 15, 0, 0, NULL, 1800, 'Long-range deep space detection system.');
+    (152, 'Deep Space Scanner', 'sensor', 20, 0, 0, 0, 0, 0, 15, 0, 0, NULL, 1800, 'Long-range deep space detection system.');
 INSERT OR IGNORE INTO ship_components VALUES
-    (160, 'Jump Drive Mk1', 'jump_drive', 120, 0, 0, 0, 0, 0, 0, 5, 50, NULL, 5000, 'Basic hyperspace jump drive. Range 5 systems, 50 OC per activation.');
+    (160, 'Jump Drive Mk1', 'jump_drive', 50, 0, 0, 0, 0, 0, 0, 5, 50, NULL, 5000, 'Basic hyperspace jump drive. Range 5 systems, 50 OC per activation.');
 INSERT OR IGNORE INTO ship_components VALUES
-    (161, 'Jump Drive Mk2', 'jump_drive', 150, 0, 0, 0, 0, 0, 0, 10, 40, NULL, 12000, 'Advanced jump drive. Range 10 systems, 40 OC per activation.');
+    (161, 'Jump Drive Mk2', 'jump_drive', 60, 0, 0, 0, 0, 0, 0, 6, 40, NULL, 12000, 'Advanced jump drive. Range 6 systems, 40 OC per activation.');
 
 -- Base module catalogue (what modules can be installed on starbases/ports/outposts)
 -- 3-digit IDs in 500-599 range. Category groups:

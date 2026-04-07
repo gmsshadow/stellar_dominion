@@ -80,7 +80,7 @@ Ships are built from modular internal components stored in the `ship_components`
 
 ### ST Capacity
 
-Ship internal capacity is determined by size: `ST_capacity = ship_size × 50`. The starting Light Trader MK I is size 50 = 2500 ST, with 500 ST used and 2000 ST free.
+Ship internal capacity is determined by size: `ST_capacity = ship_size × 50`. The starting Light Trader MK I is size 50 = 2500 ST, with 1850 ST used and 650 ST free.
 
 ### Component Categories
 
@@ -115,15 +115,17 @@ When components change, `recalculate_ship_stats()` is called automatically.
 ### Starting Ship (Light Trader MK I, Size 50)
 
 ```
-Standard Bridge ×1      20 ST
-Thruster Array ×1       50 ST  (thrust 20 → gravity 0.4)
-Commercial Engine ×1    60 ST  (1/5 optimal → 20% engine eff)
-Cargo Bay ×5           200 ST  (500 cargo)
-Crew Quarters ×1        30 ST  (20 crew, 20 life)
-Basic Sensor Array ×1   20 ST  (sensor 5)
-Jump Drive Mk1 ×1     120 ST  (range 5 systems, 50 OC/activation)
+Standard Bridge ×1       50 ST
+Thruster Array ×14      280 ST  (thrust 280 → gravity 5.6)
+Commercial Engine ×5     50 ST  (5/5 optimal → 100% engine eff)
+Cargo Bay ×50          1250 ST  (1000 cargo)
+Crew Quarters ×4        120 ST  (80 crew, 80 life)
+Basic Sensor Array ×5    50 ST  (sensor 25)
+Jump Drive Mk1 ×1        50 ST  (range 5 systems, 50 OC/activation)
                        -------
-Total:                 500/2500 ST (2000 ST free)
+Total:                 1850/2500 ST (650 ST free)
+
+Starting crew: 60 + 1 captain = 61 (required: 25, capacity: 80)
 ```
 
 ### Component Commands

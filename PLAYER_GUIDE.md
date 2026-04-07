@@ -15,24 +15,24 @@ Your ship starts in orbit around a planet in one of the game's star systems.
 
 ## Your Ship
 
-Ships are built from modular internal components. Your starting Light Trader MK I (size 50) has 2500 ST of internal capacity, with 500 ST used and 2000 ST free for upgrades:
+Ships are built from modular internal components. Your starting Light Trader MK I (size 50) has 2500 ST of internal capacity, with 1850 ST used and 650 ST free for upgrades:
 
 | Component | Qty | ST Used | Effect |
 |-----------|:---:|--------:|--------|
-| Standard Bridge | 1 | 20 | Required for ship operation |
-| Thruster Array | 1 | 50 | 20 thrust → gravity rating 0.4 |
-| Commercial Sublight Engine | 1 | 60 | Enables movement (1 of 5 optimal) |
-| Cargo Bay | 5 | 200 | 500 ST cargo capacity |
-| Crew Quarters | 1 | 30 | 20 crew capacity, 20 life support |
-| Basic Sensor Array | 1 | 20 | Sensor rating 5 |
-| Jump Drive Mk1 | 1 | 120 | Range 5 systems, 50 OC per activation |
-| **Total** | | **500/2500** | **2000 ST free** |
+| Standard Bridge | 1 | 50 | Required for ship operation |
+| Thruster Array | 14 | 280 | 280 thrust → gravity rating 5.6 |
+| Commercial Sublight Engine | 5 | 50 | Movement (5/5 optimal for size 50) |
+| Cargo Bay | 50 | 1250 | 1000 ST cargo capacity |
+| Crew Quarters | 4 | 120 | 80 crew capacity, 80 life support |
+| Basic Sensor Array | 5 | 50 | Sensor rating 25 |
+| Jump Drive Mk1 | 1 | 50 | Range 5 systems, 50 OC per activation |
+| **Total** | | **1850/2500** | **650 ST free** |
 
 Ship stats like cargo capacity, sensor rating, life support, and gravity rating are all derived from your installed components. To upgrade, install new components into your free ST space — or remove existing ones to make room.
 
 ### Engine Efficiency
 
-Movement requires engines. The optimal number is 1 engine per 10 ship size (size 50 = 5 engines optimal). With fewer engines, MOVE costs increase. With zero engines, your ship cannot move at all. Your ship report shows your engine status (e.g. `Engines: 1/5 -> 20%`).
+Movement requires engines. The optimal number is 1 engine per 10 ship size (size 50 = 5 engines optimal). With fewer engines, MOVE costs increase. With zero engines, your ship cannot move at all. Your ship report shows your engine status (e.g. `Engines: 5/5 -> 100%`).
 
 ### Crew Efficiency
 
@@ -211,6 +211,6 @@ Starbases have markets with rotating prices on a 4-week cycle. Each base special
 1. Scan first — `SCANLOCATION` and `SCANSYSTEM` reveal the map.
 2. Trade between bases — buy where goods are produced, sell where they're demanded.
 3. Keep your ship crewed — undermanning increases all OC costs.
-4. Buy more engines early — your starting ship has 1 of 5 optimal engines, making movement very expensive.
-5. You have 2000 ST free — plenty of room for new components without removing anything.
+4. Your starter has 5/5 engines and 1000 ST cargo — ready for trading from day one.
+5. You have 650 ST free — room for additional sensors, jump drive upgrades, or specialised modules.
 6. Use `MODERATOR` for anything non-standard — the GM can modify your ship between orders.
