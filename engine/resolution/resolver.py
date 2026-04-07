@@ -206,6 +206,7 @@ class TurnResolver:
                 'start_row': ship['grid_row'],
                 'start_tu': ship['tu_per_turn'],
                 'efficiency': self._calc_efficiency(ship),
+                'gravity_rating': ship['gravity_rating'] if 'gravity_rating' in ship.keys() else 1.0,
             }
             ship_size = ship['ship_size'] if 'ship_size' in ship.keys() else ship['hull_count']
             states[ship_id]['move_efficiency'] = self._calc_move_efficiency(ship_id, ship_size)
@@ -613,6 +614,28 @@ class TurnResolver:
         penalty_pct = (100.0 - efficiency) / 100.0
         return math.ceil(base_cost * (1.0 + penalty_pct))
 
+    def _gravity_adjusted_cost(self, base_cost, ship_grav, body_grav, efficiency):
+        """
+        Apply gravity scaling to maneuvering OC costs (ORBIT, LAND, TAKEOFF).
+
+        - body_grav=None: cost = base / ship_grav (orbit — fights ship's own gravity well entry)
+        - body_grav set: cost = base * body_grav / ship_grav (land/takeoff — fights body gravity)
+
+        Higher ship gravity rating (more thrust per hull) = lower cost.
+        Heavier bodies = higher cost.
+        Crew efficiency penalty applied last.
+        Returns None if ship has zero thrust (no thrusters installed).
+        """
+        if ship_grav is None or ship_grav <= 0:
+            return None  # blocked: no thrust at all
+        if body_grav is None:
+            scaled = base_cost / ship_grav
+        else:
+            scaled = base_cost * body_grav / ship_grav
+        # Floor at 1 OC for any successful maneuver
+        cost = max(1, math.ceil(scaled))
+        return self._effective_tu_cost(cost, efficiency)
+
     def _get_faction(self, faction_id):
         """Get faction details."""
         return get_faction(self.conn, faction_id)
@@ -721,6 +744,7 @@ class TurnResolver:
             'start_row': ship['grid_row'],
             'start_tu': ship['tu_per_turn'],
             'efficiency': self._calc_efficiency(ship),
+            'gravity_rating': ship['gravity_rating'] if 'gravity_rating' in ship.keys() else 1.0,
         }
         ship_size = ship['ship_size'] if 'ship_size' in ship.keys() else ship['hull_count']
         state['move_efficiency'] = self._calc_move_efficiency(ship_id, ship_size)
@@ -1210,18 +1234,8 @@ class TurnResolver:
     def _cmd_orbit(self, state, body_id):
         """ORBIT {body_id} - enter orbit of a celestial body."""
         tu_before = state['tu']
-        cost = self._effective_tu_cost(TU_COSTS['ORBIT'], state['efficiency'])
 
-        if state['tu'] < cost:
-            return {
-                'command': 'ORBIT', 'params': body_id,
-                'tu_before': tu_before, 'tu_after': state['tu'],
-                'tu_cost': 0,
-                'success': False, 'tu_exhausted': True,
-                'message': f"Insufficient OC for orbit ({state['tu']} < {cost}). Order carries forward."
-            }
-
-        # Check body exists and is at ship's location
+        # Check body exists and is at ship's location (need body before computing cost)
         body = self.conn.execute(
             "SELECT * FROM celestial_bodies WHERE body_id = ? AND system_id = ?",
             (body_id, state['system_id'])
@@ -1244,6 +1258,29 @@ class TurnResolver:
                 'tu_cost': 0,
                 'success': False,
                 'message': f"Unable to orbit: ship is not at {body['name']} location ({loc}). Order dropped."
+            }
+
+        # Gravity-adjusted cost: base × body_grav / ship_grav
+        body_grav = body['gravity'] or 1.0
+        cost = self._gravity_adjusted_cost(
+            TU_COSTS['ORBIT'], state.get('gravity_rating', 1.0), body_grav, state['efficiency']
+        )
+        if cost is None:
+            return {
+                'command': 'ORBIT', 'params': body_id,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0,
+                'success': False,
+                'message': "Unable to orbit: ship has no thrusters installed."
+            }
+
+        if state['tu'] < cost:
+            return {
+                'command': 'ORBIT', 'params': body_id,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0,
+                'success': False, 'tu_exhausted': True,
+                'message': f"Insufficient OC for orbit ({state['tu']} < {cost}). Order carries forward."
             }
 
         state['orbiting'] = body_id
@@ -1415,7 +1452,6 @@ class TurnResolver:
         """LAND <body_id> <x> <y> - land on a planet or moon surface at coordinates."""
         from engine.maps.surface_gen import get_or_generate_surface, TERRAIN_SYMBOLS
         tu_before = state['tu']
-        cost = self._effective_tu_cost(TU_COSTS['LAND'], state['efficiency'])
 
         body_id = params['body_id']
         land_x = params['x']
@@ -1468,6 +1504,19 @@ class TurnResolver:
                 'message': f"Cannot land: coordinates ({land_x},{land_y}) out of range (1-{surface_size})."
             }
 
+        # Gravity-adjusted cost: base × body_grav / ship_grav
+        body_grav = body['gravity'] or 1.0
+        cost = self._gravity_adjusted_cost(
+            TU_COSTS['LAND'], state.get('gravity_rating', 1.0), body_grav, state['efficiency']
+        )
+        if cost is None:
+            return {
+                'command': 'LAND', 'params': params_str,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': False,
+                'message': "Cannot land: ship has no thrusters installed."
+            }
+
         # Check TU
         if state['tu'] < cost:
             return {
@@ -1476,11 +1525,6 @@ class TurnResolver:
                 'tu_cost': 0, 'success': False, 'tu_exhausted': True,
                 'message': f"Insufficient OC to land ({state['tu']} < {cost}). Order carries forward."
             }
-
-        # Future: gravity check would go here
-        # ship_gravity_rating = state.get('gravity_rating', 1.5)
-        # if body['gravity'] > ship_gravity_rating:
-        #     return error...
 
         # Generate/fetch surface to look up terrain at landing site
         tiles = get_or_generate_surface(self.conn, body)
@@ -1506,7 +1550,6 @@ class TurnResolver:
     def _cmd_takeoff(self, state):
         """TAKEOFF - lift off from planet surface, return to orbit."""
         tu_before = state['tu']
-        cost = self._effective_tu_cost(TU_COSTS['TAKEOFF'], state['efficiency'])
 
         if not state['landed']:
             return {
@@ -1516,6 +1559,25 @@ class TurnResolver:
                 'message': "Cannot take off: ship is not landed on any surface."
             }
 
+        body_id = state['landed']
+        body = self.conn.execute(
+            "SELECT * FROM celestial_bodies WHERE body_id = ?", (body_id,)
+        ).fetchone()
+        body_name = body['name'] if body else str(body_id)
+        body_grav = (body['gravity'] if body and body['gravity'] else 1.0)
+
+        # Gravity-adjusted cost: base × body_grav / ship_grav
+        cost = self._gravity_adjusted_cost(
+            TU_COSTS['TAKEOFF'], state.get('gravity_rating', 1.0), body_grav, state['efficiency']
+        )
+        if cost is None:
+            return {
+                'command': 'TAKEOFF', 'params': None,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': False,
+                'message': "Cannot take off: ship has no thrusters installed."
+            }
+
         if state['tu'] < cost:
             return {
                 'command': 'TAKEOFF', 'params': None,
@@ -1523,12 +1585,6 @@ class TurnResolver:
                 'tu_cost': 0, 'success': False, 'tu_exhausted': True,
                 'message': f"Insufficient OC to take off ({state['tu']} < {cost}). Order carries forward."
             }
-
-        body_id = state['landed']
-        body = self.conn.execute(
-            "SELECT * FROM celestial_bodies WHERE body_id = ?", (body_id,)
-        ).fetchone()
-        body_name = body['name'] if body else str(body_id)
 
         # Return to orbit around the body we were landed on
         state['landed'] = None

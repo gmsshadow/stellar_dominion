@@ -526,12 +526,12 @@ def generate_welcome_reports(db_path, game_id, account_number, prefect_id, ship_
         MOVE <coord>       Move to a grid square (e.g. M13, H04). Costs 2 OC/square.
         SCANLOCATION       Scan nearby space. Costs 20 OC.
         SCANSYSTEM         Produce a full system map. Costs 20 OC.
-        ORBIT <body_id>    Enter orbit of a planet, moon, or gas giant. Costs 10 OC.
+        ORBIT <body_id>    Enter orbit of a planet, moon, or gas giant. Base 10 OC × body_grav / ship_grav.
         LEAVEORBIT         Leave orbit, return to grid square. Free (0 OC).
         DOCK <base_id>     Dock at a starbase (must be at same location). Costs 30 OC.
         UNDOCK             Leave a starbase. Costs 10 OC.
-        LAND <body_id> <x> <y>  Land at surface coordinates (must be orbiting). Costs 20 OC.
-        TAKEOFF            Take off from planet surface to orbit. Costs 20 OC.
+        LAND <body_id> <x> <y>  Land at surface coordinates (must be orbiting). Base 20 OC × body_grav / ship_grav.
+        TAKEOFF            Take off from planet surface to orbit. Base 20 OC × body_grav / ship_grav.
         SCANSURFACE        Produce a terrain map (must be orbiting or landed). Costs 20 OC.
         WAIT <oc>          Wait and do nothing for a number of Operational Cycles.
         JUMP <system_id>   Jump to a star system. Cost depends on drive (Mk1: 50 OC, range 5).

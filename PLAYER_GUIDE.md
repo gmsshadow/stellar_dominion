@@ -38,6 +38,16 @@ Movement requires engines. The optimal number is 1 engine per 10 ship size (size
 
 Your ship needs crew based on its size (1 crew per 2 hull points, rounded up). A size 50 ship needs 25 crew. If undermanned, OC costs for all actions increase proportionally. Officers count as crew but cost 5 cr/week vs 1 cr/week for regular crew. Life support capacity (from Crew Quarters) caps total crew + officers aboard.
 
+### Gravity Rating
+
+Your ship's gravity rating is `total_thrust / ship_size` — the higher the rating, the more responsive the ship is in a gravity well. It directly affects three commands:
+
+- **ORBIT**: cost = `ceil(10 × body_gravity / ship_gravity)`
+- **LAND**: cost = `ceil(20 × body_gravity / ship_gravity)`
+- **TAKEOFF**: cost = `ceil(20 × body_gravity / ship_gravity)`
+
+A starter ship with gravity 1.4 lands on a 1g planet for 15 OC instead of the 20 base cost. Landing on a 2g world costs 29 OC. A ship with no thrusters cannot orbit, land, or take off at all. Add Thruster Arrays or Heavy Thruster Packs to improve gravity rating; remove them or add hulls to reduce it.
+
 ## Your Identifiers
 
 | Identifier | Visibility | Purpose |
@@ -87,12 +97,12 @@ Every action costs OC. Your ship starts each turn with 300 OC.
 | **MOVE** | 2 per step | Move one grid square (engine/crew penalties may increase) |
 | **SCANLOCATION** | 20 | Scan nearby area |
 | **SCANSYSTEM** | 20 | Full system map |
-| **ORBIT** | 10 | Enter orbit around a body |
+| **ORBIT** | 10 × body_grav / ship_grav | Enter orbit around a body |
 | **LEAVEORBIT** | 0 | Leave orbit, return to grid square |
 | **DOCK** | 30 | Dock at a starbase |
 | **UNDOCK** | 10 | Leave a starbase |
-| **LAND** | 20 | Land on a planet surface |
-| **TAKEOFF** | 20 | Take off to orbit |
+| **LAND** | 20 × body_grav / ship_grav | Land on a planet surface |
+| **TAKEOFF** | 20 × body_grav / ship_grav | Take off to orbit |
 | **SCANSURFACE** | 20 | Scan planet surface |
 | **JUMP** | per drive | Jump to a star system (Mk1: 50 OC per activation, range 5 hops) |
 | **MAKEOFFICER** | 10 | Promote a crew member |
