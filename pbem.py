@@ -524,8 +524,9 @@ def cmd_run_turn(args):
             'account_number': account_number,
         }
 
-    # Phase 1.1: Check for MODERATOR orders — auto-hold if pending
+    # Phase 1.1: Check for MODERATOR / CHANGEFACTION orders — auto-hold if pending
     mod_orders_found = []
+    changefaction_orders_found = []
     for sid, orders in ship_orders_map.items():
         ship_row = conn.execute("SELECT name, owner_prefect_id FROM ships WHERE ship_id = ?", (sid,)).fetchone()
         for order in orders:
@@ -535,6 +536,14 @@ def cmd_run_turn(args):
                     'ship_name': ship_row['name'],
                     'prefect_id': ship_row['owner_prefect_id'],
                     'text': order['params']['text'],
+                })
+            elif order['command'] == 'CHANGEFACTION':
+                changefaction_orders_found.append({
+                    'ship_id': sid,
+                    'ship_name': ship_row['name'],
+                    'prefect_id': ship_row['owner_prefect_id'],
+                    'target_faction_id': order['params'].get('faction_id'),
+                    'reason': order['params'].get('reason', ''),
                 })
 
     if mod_orders_found:
@@ -556,7 +565,34 @@ def cmd_run_turn(args):
                       game['current_year'], game['current_week']))
         conn.commit()
 
-        # Check for any still-pending (unresponded) moderator actions this turn
+    if changefaction_orders_found:
+        # Create faction_requests records for any that don't already exist for this prefect this turn
+        for cf in changefaction_orders_found:
+            prefect_row = conn.execute(
+                "SELECT faction_id FROM prefects WHERE prefect_id = ?",
+                (cf['prefect_id'],)
+            ).fetchone()
+            current_faction = prefect_row['faction_id'] if prefect_row else None
+
+            existing = conn.execute("""
+                SELECT request_id FROM faction_requests
+                WHERE game_id = ? AND prefect_id = ? AND status = 'pending'
+            """, (args.game, cf['prefect_id'])).fetchone()
+            if not existing:
+                conn.execute("""
+                    INSERT INTO faction_requests
+                    (game_id, prefect_id, current_faction_id, target_faction_id,
+                     reason, status, requested_turn_year, requested_turn_week)
+                    VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)
+                """, (args.game, cf['prefect_id'], current_faction,
+                      cf['target_faction_id'], cf['reason'],
+                      game['current_year'], game['current_week']))
+        conn.commit()
+
+    # Check for any still-pending moderator actions or faction requests this turn
+    pending_actions = []
+    pending_faction_reqs = []
+    if mod_orders_found or changefaction_orders_found:
         pending_actions = conn.execute("""
             SELECT ma.action_id, ma.request_text, s.name as ship_name, p.name as prefect_name
             FROM moderator_actions ma
@@ -566,18 +602,40 @@ def cmd_run_turn(args):
             AND ma.status = 'pending'
         """, (args.game, game['current_year'], game['current_week'])).fetchall()
 
-        if pending_actions:
+        pending_faction_reqs = conn.execute("""
+            SELECT fr.request_id, fr.reason, fr.target_faction_id,
+                   p.name as prefect_name,
+                   cf.abbreviation as current_fac,
+                   tf.abbreviation as target_fac
+            FROM faction_requests fr
+            JOIN prefects p ON fr.prefect_id = p.prefect_id
+            LEFT JOIN universe.factions cf ON fr.current_faction_id = cf.faction_id
+            LEFT JOIN universe.factions tf ON fr.target_faction_id = tf.faction_id
+            WHERE fr.game_id = ? AND fr.status = 'pending'
+        """, (args.game,)).fetchall()
+
+        if pending_actions or pending_faction_reqs:
             # Auto-hold the turn
             conn.execute(
                 "UPDATE games SET turn_status = 'held' WHERE game_id = ?",
                 (args.game,)
             )
             conn.commit()
-            print(f"\n  *** TURN AUTO-HELD: {len(pending_actions)} moderator action(s) require GM response ***")
+            total = len(pending_actions) + len(pending_faction_reqs)
+            print(f"\n  *** TURN AUTO-HELD: {total} GM item(s) require response ***")
             for pa in pending_actions:
-                print(f"    #{pa['action_id']}: {pa['prefect_name']}/{pa['ship_name']}: \"{pa['request_text']}\"")
-            print(f"\n  Use 'list-actions --game {args.game}' to review.")
-            print(f"  Use 'respond-action --action-id N --response \"...\"' to respond.")
+                print(f"    [action #{pa['action_id']}] {pa['prefect_name']}/{pa['ship_name']}: \"{pa['request_text']}\"")
+            for fr in pending_faction_reqs:
+                cur = fr['current_fac'] or '?'
+                tgt = fr['target_fac'] or str(fr['target_faction_id'])
+                reason = f' "{fr["reason"]}"' if fr['reason'] else ''
+                print(f"    [faction req #{fr['request_id']}] {fr['prefect_name']}: {cur} -> {tgt}{reason}")
+            if pending_actions:
+                print(f"\n  Use 'list-actions --game {args.game}' to review moderator actions.")
+                print(f"  Use 'respond-action --action-id N --response \"...\"' to respond.")
+            if pending_faction_reqs:
+                print(f"  Use 'faction-requests --game {args.game}' to review faction changes.")
+                print(f"  Use 'approve-faction --game {args.game} --request-id N' or 'deny-faction' to respond.")
             print(f"  Then 'release-turn --game {args.game}' and 'run-turn --game {args.game}' to continue.")
             resolver.close()
             conn.close()
