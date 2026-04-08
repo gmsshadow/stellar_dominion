@@ -394,6 +394,17 @@ Recalculate all base stats from installed modules and inventory. Updates `dockin
 python pbem.py recalc-bases
 ```
 
+### preview-base
+Generate a full base turn report from the current database state without running a turn. Auto-detects whether the ID belongs to a starbase, surface port, or outpost. Useful for verifying database edits to base modules, inventory, employees, or location. The report shows the same format players receive — Status, Modules, Market (if applicable), and Inventory.
+
+| Parameter | Required | Default | Description |
+|-----------|:--------:|---------|-------------|
+| `--base` | **Yes** | — | Base ID (starbase, port, or outpost) |
+
+```bash
+python pbem.py preview-base --base 45687590
+```
+
 ### show-status
 Show a ship's current position and status.
 

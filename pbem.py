@@ -1641,6 +1641,48 @@ def cmd_recalc_bases(args):
     print(f"\nDone. {total} bases recalculated.")
 
 
+def cmd_preview_base(args):
+    """Generate a preview base report from the current database state (no turn resolution)."""
+    db_path = Path(args.db) if args.db else None
+    conn = get_connection(db_path)
+
+    # Auto-detect base type from ID
+    base_type = None
+    game_id = None
+    name = None
+
+    sb = conn.execute("SELECT name, game_id FROM starbases WHERE base_id = ?", (args.base,)).fetchone()
+    if sb:
+        base_type = 'starbase'
+        game_id = sb['game_id']
+        name = sb['name']
+    else:
+        port = conn.execute("SELECT name, game_id FROM surface_ports WHERE port_id = ?", (args.base,)).fetchone()
+        if port:
+            base_type = 'port'
+            game_id = port['game_id']
+            name = port['name']
+        else:
+            op = conn.execute("SELECT name, game_id FROM outposts WHERE outpost_id = ?", (args.base,)).fetchone()
+            if op:
+                base_type = 'outpost'
+                game_id = op['game_id']
+                name = op['name']
+
+    if not base_type:
+        print(f"Error: No starbase, surface port, or outpost found with ID {args.base}.")
+        conn.close()
+        return
+
+    print(f"Previewing {base_type}: {name} ({args.base})")
+    conn.close()
+
+    # generate_base_report calls recalculate_base_stats internally,
+    # so the preview always reflects current DB state.
+    report = generate_base_report(base_type, args.base, db_path, game_id)
+    print(report)
+
+
 def cmd_show_status(args):
     """Show status of a ship."""
     db_path = Path(args.db) if args.db else None
@@ -3617,6 +3659,11 @@ Gmail integration (two-stage workflow):
     sp.add_argument('--ship', type=int, required=True, help='Ship ID')
     sp.add_argument('--db', help='Path to game_state.db')
 
+    # --- preview-base ---
+    sp = subparsers.add_parser('preview-base', help='Generate a base report from current state (starbase/port/outpost)')
+    sp.add_argument('--base', type=int, required=True, help='Base ID (starbase, port, or outpost)')
+    sp.add_argument('--db', help='Path to game_state.db')
+
     # --- recalc-ships ---
     sp = subparsers.add_parser('recalc-ships', help='Recalculate all ship stats from components and cargo')
     sp.add_argument('--db', help='Path to game_state.db')
@@ -3916,6 +3963,7 @@ Gmail integration (two-stage workflow):
         'show-map': cmd_show_map,
         'show-surface': cmd_show_surface,
         'preview-ship': cmd_preview_ship,
+        'preview-base': cmd_preview_base,
         'recalc-ships': cmd_recalc_ships,
         'recalc-bases': cmd_recalc_bases,
         'show-status': cmd_show_status,
