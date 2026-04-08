@@ -532,9 +532,21 @@ class StellarDominionGUI:
         )
         self.wizard_next_btn.config(state=tk.DISABLED)
 
-        # Add --game flag
+        # Build full args, injecting --game and stage-specific extras
         game = self.wizard_game.get().strip() or self.config_data['game_id']
         full_args = list(args) + ['--game', game]
+
+        cmd = args[0]
+        creds = self.config_data.get('credentials_path', '').strip()
+
+        # Mail commands need credentials (if configured)
+        if cmd in ('fetch-mail', 'send-turns') and creds:
+            full_args.extend(['--credentials', creds])
+
+        # Mail commands need an inbox directory
+        if cmd in ('fetch-mail', 'process-inbox'):
+            full_args.extend(['--inbox', './inbox'])
+
         self._run_pbem(full_args, f"Wizard: {name}",
                        on_complete=self._wizard_stage_complete)
 
@@ -635,14 +647,46 @@ class StellarDominionGUI:
         self.notebook.add(tab, text="Turn Ops")
         inner = self._scrollable_frame(tab)
 
+        # Custom builders that auto-inject mail settings
+        def fetch_mail_builder(entries):
+            args = ['fetch-mail', '--game',
+                    entries['game'].get().strip() or self.config_data['game_id']]
+            creds = self.config_data.get('credentials_path', '').strip()
+            if creds:
+                args.extend(['--credentials', creds])
+            inbox = entries.get('inbox')
+            if inbox and inbox.get().strip():
+                args.extend(['--inbox', inbox.get().strip()])
+            return args
+
+        def process_inbox_builder(entries):
+            args = ['process-inbox', '--game',
+                    entries['game'].get().strip() or self.config_data['game_id']]
+            inbox = entries['inbox'].get().strip() or './inbox'
+            args.extend(['--inbox', inbox])
+            return args
+
+        def send_turns_builder(entries):
+            args = ['send-turns', '--game',
+                    entries['game'].get().strip() or self.config_data['game_id']]
+            creds = self.config_data.get('credentials_path', '').strip()
+            if creds:
+                args.extend(['--credentials', creds])
+            return args
+
         self._section_header(inner, "Email Workflow")
-        self._action_row(inner, "Fetch Mail", ['fetch-mail'], [self._game_field()])
-        self._action_row(inner, "Process Inbox", ['process-inbox'], [self._game_field()])
+        self._action_row(inner, "Fetch Mail", [], custom_builder=fetch_mail_builder,
+                         fields=[self._game_field(),
+                                 ('inbox', 'Inbox:', './inbox', 14)])
+        self._action_row(inner, "Process Inbox", [], custom_builder=process_inbox_builder,
+                         fields=[self._game_field(),
+                                 ('inbox', 'Inbox:', './inbox', 14)])
         self._action_row(inner, "Review Orders", ['review-orders'], [self._game_field()])
 
         self._section_header(inner, "Turn Resolution")
         self._action_row(inner, "Run Turn", ['run-turn'], [self._game_field()])
-        self._action_row(inner, "Send Turns (Email)", ['send-turns'], [self._game_field()])
+        self._action_row(inner, "Send Turns (Email)", [], custom_builder=send_turns_builder,
+                         fields=[self._game_field()])
         self._action_row(inner, "Advance Turn", ['advance-turn'], [self._game_field()])
         self._action_row(inner, "Turn Pipeline (full)", ['turn-pipeline'], [self._game_field()])
 
@@ -669,20 +713,29 @@ class StellarDominionGUI:
                          [('name', 'Name:', '', 16),
                           ('email', 'Email:', '', 24)])
         self._action_row(inner, "List Players", ['list-players'])
-        self._action_row(inner, "Register Player", ['register-player'],
-                         [('name', 'Name:', '', 16),
-                          ('email', 'Email:', '', 24)])
+
+        def register_builder(entries):
+            form = entries['form'].get().strip()
+            if not form:
+                raise ValueError("form path is required")
+            return ['register-player', form]
+        self._action_row(inner, "Register Player", [], custom_builder=register_builder,
+                         fields=[('form', 'Form file:', '', 36)])
+
         self._action_row(inner, "Join Game", ['join-game'],
-                         [('account', 'Account:', '', 12),
-                          ('game', 'Game:', self.config_data['game_id'], 14)])
+                         [('game', 'Game:', self.config_data['game_id'], 14)])
 
         self._section_header(inner, "Faction Requests")
-        self._action_row(inner, "List Faction Requests", ['faction-requests'])
+        self._action_row(inner, "List Faction Requests", ['faction-requests'],
+                         [self._game_field()])
         self._action_row(inner, "Approve Faction", ['approve-faction'],
-                         [('request', 'Request ID:', '', 12)])
+                         [self._game_field(),
+                          ('request-id', 'Request ID:', '', 12),
+                          ('note', 'Note:', '', 20)])
         self._action_row(inner, "Deny Faction", ['deny-faction'],
-                         [('request', 'Request ID:', '', 12),
-                          ('reason', 'Reason:', '', 24)])
+                         [self._game_field(),
+                          ('request-id', 'Request ID:', '', 12),
+                          ('note', 'Note:', '', 20)])
 
         self._section_header(inner, "Player Management")
         self._action_row(inner, "Suspend Player", ['suspend-player'],
@@ -696,8 +749,8 @@ class StellarDominionGUI:
                           ('amount', 'Amount:', '', 10)],
                          validators={'prefect': 'prefect'})
         self._action_row(inner, "Generate Order Form", ['generate-form'],
-                         [('account', 'Account:', '', 12)],
-                         validators={'account': 'account'})
+                         [self._game_field(),
+                          ('output', 'Output dir:', '', 24)])
 
     # ========================================================================
     # Tab: Universe
@@ -717,8 +770,8 @@ class StellarDominionGUI:
         self._section_header(inner, "Add Star Systems & Bodies")
         self._action_row(inner, "Add System", ['add-system'],
                          [('name', 'Name:', '', 16),
-                          ('col', 'Col:', 'M', 4),
-                          ('row', 'Row:', '13', 4)])
+                          ('star-col', 'Col:', 'M', 4),
+                          ('star-row', 'Row:', '13', 4)])
         self._action_row(inner, "Add Body", ['add-body'],
                          [('name', 'Name:', '', 14),
                           ('system-id', 'Sys:', '101', 5),
@@ -727,10 +780,17 @@ class StellarDominionGUI:
                           ('body-type', 'Type:', 'planet', 8),
                           ('gravity', 'Grav:', '1.0', 5)],
                          validators={'system-id': 'system'})
-        self._action_row(inner, "Add Link", ['add-link'],
-                         [('system-a', 'Sys A:', '', 6),
-                          ('system-b', 'Sys B:', '', 6)],
-                         validators={'system-a': 'system', 'system-b': 'system'})
+
+        def add_link_builder(entries):
+            a = entries['system_a'].get().strip()
+            b = entries['system_b'].get().strip()
+            if not a or not b:
+                raise ValueError("Both system IDs required")
+            return ['add-link', a, b]
+        self._action_row(inner, "Add Link", [], custom_builder=add_link_builder,
+                         fields=[('system_a', 'Sys A:', '', 6),
+                                 ('system_b', 'Sys B:', '', 6)],
+                         validators={'system_a': 'system', 'system_b': 'system'})
 
         self._section_header(inner, "Surface Generation")
         self._action_row(inner, "Gen Missing Surfaces", ['gen-surfaces'])
@@ -770,18 +830,30 @@ class StellarDominionGUI:
                                  ('y', 'Y:', '15', 4)],
                          validators={'body_id': 'body'})
 
-        self._action_row(inner, "Add Outpost", ['add-outpost'],
-                         [('name', 'Name:', '', 14),
-                          ('body-id', 'Body:', '', 10),
-                          ('x', 'X:', '5', 4),
-                          ('y', 'Y:', '5', 4),
-                          ('type', 'Type:', 'General', 10)],
-                         validators={'body-id': 'body'})
+        def add_outpost_builder(entries):
+            args = ['add-outpost']
+            for k in ('outpost_id', 'body_id', 'name', 'x', 'y'):
+                v = entries[k].get().strip()
+                if not v:
+                    raise ValueError(f"{k} is required")
+                args.append(v)
+            t = entries.get('type')
+            if t and t.get().strip():
+                args.extend(['--type', t.get().strip()])
+            return args
+        self._action_row(inner, "Add Outpost", [], custom_builder=add_outpost_builder,
+                         fields=[('outpost_id', 'Outpost ID:', '', 10),
+                                 ('body_id', 'Body ID:', '', 10),
+                                 ('name', 'Name:', '', 14),
+                                 ('x', 'X:', '5', 4),
+                                 ('y', 'Y:', '5', 4),
+                                 ('type', 'Type:', 'General', 10)],
+                         validators={'body_id': 'body'})
 
         self._section_header(inner, "Base Information")
         self._action_row(inner, "Base Status", ['base-status'],
-                         [('base', 'Base ID:', '', 12)],
-                         validators={'base': 'base'})
+                         [('id', 'Base ID:', '', 12)],
+                         validators={'id': 'base'})
 
         # Note about starbases
         note = ttk.Label(inner,
@@ -808,13 +880,16 @@ class StellarDominionGUI:
         self._action_row(inner, "Add GM Ship", ['add-gm-ship'],
                          [('prefect', 'Prefect:', '', 10),
                           ('ship-name', 'Ship Name:', '', 14),
+                          ('system', 'Sys:', '101', 5),
+                          ('col', 'Col:', 'M', 4),
+                          ('row', 'Row:', '13', 4),
                           ('hull-type', 'Hull:', 'Commercial', 10)],
-                         validators={'prefect': 'prefect'})
+                         validators={'prefect': 'prefect', 'system': 'system'})
 
         self._section_header(inner, "Action Requests")
         self._action_row(inner, "List Pending Actions", ['list-actions'])
         self._action_row(inner, "Respond to Action", ['respond-action'],
-                         [('action', 'Action ID:', '', 10),
+                         [('action-id', 'Action ID:', '', 10),
                           ('response', 'Response:', '', 30)])
 
         self._section_header(inner, "Order Manipulation")
@@ -823,12 +898,20 @@ class StellarDominionGUI:
                           ('command', 'Command:', '', 16)],
                          validators={'ship': 'ship'})
         self._action_row(inner, "Edit Order", ['edit-order'],
-                         [('order-id', 'Order ID:', '', 10)])
+                         [('order-id', 'Order ID:', '', 10),
+                          ('command', 'Command:', '', 16)])
         self._action_row(inner, "Delete Order", ['delete-order'],
                          [('order-id', 'Order ID:', '', 10)])
-        self._action_row(inner, "Submit Orders", ['submit-orders'],
-                         [('account', 'Account:', '', 12),
-                          ('file', 'File:', '', 24)])
+
+        def submit_builder(entries):
+            email = entries['email'].get().strip()
+            orders = entries['orders_file'].get().strip()
+            if not email or not orders:
+                raise ValueError("Both email and orders file are required")
+            return ['submit-orders', '--email', email, orders]
+        self._action_row(inner, "Submit Orders", [], custom_builder=submit_builder,
+                         fields=[('email', 'Email:', '', 20),
+                                 ('orders_file', 'Orders file:', '', 28)])
 
         self._section_header(inner, "DB Recalculation")
         self._action_row(inner, "Recalc All Ships", ['recalc-ships'])
