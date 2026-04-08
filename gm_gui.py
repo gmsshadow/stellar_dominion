@@ -31,6 +31,10 @@ PROJECT_DIR = Path(__file__).parent.resolve()
 CONFIG_FILE = PROJECT_DIR / "gm_gui_config.json"
 PBEM_SCRIPT = PROJECT_DIR / "pbem.py"
 
+# Ensure stellar_dominion modules are importable for the DB editors
+if str(PROJECT_DIR) not in sys.path:
+    sys.path.insert(0, str(PROJECT_DIR))
+
 
 def load_config():
     defaults = {
@@ -113,6 +117,8 @@ class StellarDominionGUI:
         self._build_moderator_tab()
         self._build_previews_tab()
         self._build_dbbrowser_tab()
+        self._build_ship_editor_tab()
+        self._build_base_editor_tab()
         self._build_settings_tab()
 
         # Right: console output
@@ -850,16 +856,68 @@ class StellarDominionGUI:
                                  ('type', 'Type:', 'General', 10)],
                          validators={'body_id': 'body'})
 
+        def add_starbase_builder(entries):
+            args = ['add-starbase']
+            for k in ('base_id', 'surface_port_id', 'name'):
+                v = entries[k].get().strip()
+                if not v:
+                    raise ValueError(f"{k} is required")
+                args.append(v)
+            complexes = entries['complexes'].get().strip()
+            if complexes:
+                args.extend(['--complexes', complexes])
+            if entries['market_var'].get():
+                args.append('--market')
+            return args
+
+        # Custom row for starbase — needs a checkbox for --market
+        sb_row = ttk.Frame(inner, padding=(5, 2))
+        sb_row.pack(fill=tk.X, padx=2, pady=1)
+
+        sb_entries = {}
+        sb_btn = ttk.Button(sb_row, text="Add Starbase", width=22)
+        sb_btn.pack(side=tk.LEFT, padx=(0, 8))
+
+        for key, lbl, default, width in [
+            ('base_id', 'Base ID:', '', 10),
+            ('surface_port_id', 'Port ID:', '', 10),
+            ('name', 'Name:', '', 14),
+            ('complexes', 'Cx:', '0', 4),
+        ]:
+            ttk.Label(sb_row, text=lbl).pack(side=tk.LEFT, padx=(4, 2))
+            e = ttk.Entry(sb_row, width=width)
+            if default:
+                e.insert(0, default)
+            e.pack(side=tk.LEFT)
+            sb_entries[key] = e
+
+        sb_entries['market_var'] = tk.BooleanVar(value=True)
+        ttk.Checkbutton(sb_row, text="Market", variable=sb_entries['market_var']
+                        ).pack(side=tk.LEFT, padx=(6, 0))
+
+        def run_starbase():
+            # Validate surface_port_id exists (as a port)
+            pid = sb_entries['surface_port_id'].get().strip()
+            if pid:
+                ok, err = self._validate_id('port', pid)
+                if not ok:
+                    self._append(f"\n>>> Add Starbase\n", "cmd")
+                    self._append(f"[validation failed] {err}\n", "err")
+                    messagebox.showerror("Validation failed", err)
+                    return
+            try:
+                args = add_starbase_builder(sb_entries)
+            except Exception as ex:
+                messagebox.showerror("Input error", str(ex))
+                return
+            self._run_pbem(args, "Add Starbase")
+
+        sb_btn.config(command=run_starbase)
+
         self._section_header(inner, "Base Information")
         self._action_row(inner, "Base Status", ['base-status'],
                          [('id', 'Base ID:', '', 12)],
                          validators={'id': 'base'})
-
-        # Note about starbases
-        note = ttk.Label(inner,
-                         text="Note: starbases are typically created during game setup or via the database.",
-                         foreground="#666", font=("", 9, "italic"))
-        note.pack(anchor=tk.W, padx=10, pady=(8, 4))
 
     # ========================================================================
     # Tab: Moderator
@@ -1185,6 +1243,1145 @@ class StellarDominionGUI:
             self.result_status.config(text=f"SQL error: {ex}", foreground="#e74c3c")
         finally:
             conn.close()
+
+    # ========================================================================
+    # Tab: Ship Editor
+    # ========================================================================
+
+    def _build_ship_editor_tab(self):
+        tab = ttk.Frame(self.notebook)
+        self.notebook.add(tab, text="Ship Editor")
+        inner = self._scrollable_frame(tab)
+
+        ttk.Label(inner,
+                  text="⚠ Direct database editor. Changes are written immediately. "
+                       "Stats auto-recalculate after every edit.",
+                  foreground="#c87000", font=("", 9, "italic")).pack(
+            anchor=tk.W, padx=5, pady=(5, 8))
+
+        # ----- Ship picker -----
+        pick = ttk.Frame(inner)
+        pick.pack(fill=tk.X, padx=5, pady=(0, 8))
+        ttk.Label(pick, text="Ship:", font=("", 10, "bold")).pack(side=tk.LEFT, padx=(0, 4))
+        self.ship_ed_combo = ttk.Combobox(pick, width=34, state='readonly')
+        self.ship_ed_combo.pack(side=tk.LEFT, padx=(0, 4))
+        ttk.Button(pick, text="Load", width=8,
+                   command=self._ship_ed_load_selected).pack(side=tk.LEFT, padx=2)
+        ttk.Button(pick, text="Refresh List", width=14,
+                   command=self._ship_ed_load_list).pack(side=tk.LEFT, padx=2)
+
+        self.ship_ed_current_id = None
+
+        # ----- Basic Info -----
+        basic = ttk.LabelFrame(inner, text="Basic Info", padding=6)
+        basic.pack(fill=tk.X, padx=5, pady=4)
+
+        self.ship_ed_fields = {}
+        BASIC_FIELDS = [
+            ('name', 'Name:', 30),
+            ('ship_size', 'Hull Size:', 10),
+            ('hull_type', 'Hull Type:', 20),
+            ('ship_class', 'Class:', 20),
+            ('design', 'Design:', 20),
+            ('system_id', 'System ID:', 10),
+            ('grid_col', 'Grid Col:', 6),
+            ('grid_row', 'Grid Row:', 6),
+            ('tu_remaining', 'OC Remaining:', 10),
+        ]
+        for key, label, width in BASIC_FIELDS:
+            row = ttk.Frame(basic)
+            row.pack(fill=tk.X, pady=2)
+            ttk.Label(row, text=label, width=14).pack(side=tk.LEFT)
+            e = ttk.Entry(row, width=width)
+            e.pack(side=tk.LEFT, padx=(2, 10))
+            self.ship_ed_fields[key] = e
+
+        ttk.Button(basic, text="Save Basic Info", width=18,
+                   command=self._ship_ed_save_basic).pack(anchor=tk.W, pady=(4, 0))
+
+        # ----- Installed Components -----
+        comp = ttk.LabelFrame(inner, text="Installed Components", padding=6)
+        comp.pack(fill=tk.X, padx=5, pady=4)
+
+        tv_wrap = ttk.Frame(comp)
+        tv_wrap.pack(fill=tk.X)
+        self.ship_comp_tree = ttk.Treeview(
+            tv_wrap, show='headings',
+            columns=('id', 'name', 'qty', 'st_each', 'st_total'), height=8)
+        for col, hd, w in [('id', 'ID', 55), ('name', 'Name', 220),
+                            ('qty', 'Qty', 50), ('st_each', 'ST Each', 70),
+                            ('st_total', 'ST Total', 70)]:
+            self.ship_comp_tree.heading(col, text=hd)
+            self.ship_comp_tree.column(col, width=w, anchor=tk.W)
+        comp_sb = ttk.Scrollbar(tv_wrap, orient=tk.VERTICAL,
+                                 command=self.ship_comp_tree.yview)
+        self.ship_comp_tree.configure(yscrollcommand=comp_sb.set)
+        self.ship_comp_tree.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        comp_sb.pack(side=tk.LEFT, fill=tk.Y)
+
+        ccr = ttk.Frame(comp)
+        ccr.pack(fill=tk.X, pady=(4, 0))
+        ttk.Label(ccr, text="Component:").pack(side=tk.LEFT)
+        self.ship_comp_combo = ttk.Combobox(ccr, width=30, state='readonly')
+        self.ship_comp_combo.pack(side=tk.LEFT, padx=2)
+        ttk.Label(ccr, text="Qty:").pack(side=tk.LEFT, padx=(6, 2))
+        self.ship_comp_qty = ttk.Entry(ccr, width=5)
+        self.ship_comp_qty.insert(0, "1")
+        self.ship_comp_qty.pack(side=tk.LEFT)
+        ttk.Button(ccr, text="Add", width=6,
+                   command=self._ship_ed_add_component).pack(side=tk.LEFT, padx=(4, 2))
+        ttk.Button(ccr, text="Set Qty", width=8,
+                   command=self._ship_ed_set_component_qty).pack(side=tk.LEFT, padx=2)
+        ttk.Button(ccr, text="Remove Selected", width=16,
+                   command=self._ship_ed_remove_component).pack(side=tk.LEFT, padx=2)
+
+        # ----- Cargo -----
+        cargo = ttk.LabelFrame(inner, text="Cargo", padding=6)
+        cargo.pack(fill=tk.X, padx=5, pady=4)
+
+        cg_wrap = ttk.Frame(cargo)
+        cg_wrap.pack(fill=tk.X)
+        self.ship_cargo_tree = ttk.Treeview(
+            cg_wrap, show='headings',
+            columns=('id', 'name', 'qty', 'mass', 'total'), height=6)
+        for col, hd, w in [('id', 'ID', 55), ('name', 'Name', 190),
+                            ('qty', 'Qty', 60), ('mass', 'Mass/Unit', 80),
+                            ('total', 'Total ST', 80)]:
+            self.ship_cargo_tree.heading(col, text=hd)
+            self.ship_cargo_tree.column(col, width=w, anchor=tk.W)
+        cg_sb = ttk.Scrollbar(cg_wrap, orient=tk.VERTICAL,
+                               command=self.ship_cargo_tree.yview)
+        self.ship_cargo_tree.configure(yscrollcommand=cg_sb.set)
+        self.ship_cargo_tree.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        cg_sb.pack(side=tk.LEFT, fill=tk.Y)
+
+        cgr = ttk.Frame(cargo)
+        cgr.pack(fill=tk.X, pady=(4, 0))
+        ttk.Label(cgr, text="Item:").pack(side=tk.LEFT)
+        self.ship_cargo_combo = ttk.Combobox(cgr, width=30, state='readonly')
+        self.ship_cargo_combo.pack(side=tk.LEFT, padx=2)
+        ttk.Label(cgr, text="Qty:").pack(side=tk.LEFT, padx=(6, 2))
+        self.ship_cargo_qty = ttk.Entry(cgr, width=6)
+        self.ship_cargo_qty.insert(0, "1")
+        self.ship_cargo_qty.pack(side=tk.LEFT)
+        ttk.Button(cgr, text="Add", width=6,
+                   command=self._ship_ed_add_cargo).pack(side=tk.LEFT, padx=(4, 2))
+        ttk.Button(cgr, text="Set Qty", width=8,
+                   command=self._ship_ed_set_cargo_qty).pack(side=tk.LEFT, padx=2)
+        ttk.Button(cgr, text="Remove Selected", width=16,
+                   command=self._ship_ed_remove_cargo).pack(side=tk.LEFT, padx=2)
+
+        self.ship_ed_status = ttk.Label(inner, text="No ship loaded.",
+                                         foreground="#666", font=("", 9, "italic"))
+        self.ship_ed_status.pack(anchor=tk.W, padx=5, pady=(4, 0))
+
+        self._ship_ed_load_list()
+        self._ship_ed_load_catalogs()
+
+    # ----- Ship editor helpers -----
+
+    def _ship_ed_msg(self, msg, ok=True):
+        self.ship_ed_status.config(text=msg,
+                                    foreground="#2ecc71" if ok else "#e74c3c")
+
+    def _ship_ed_rw_conn(self):
+        """Open a read-write connection. Caller must close()."""
+        from db.database import get_connection
+        return get_connection()
+
+    def _ship_ed_load_list(self):
+        try:
+            conn = self._ship_ed_rw_conn()
+            ships = conn.execute(
+                "SELECT ship_id, name FROM ships ORDER BY name"
+            ).fetchall()
+            conn.close()
+            self.ship_ed_combo['values'] = [
+                f"{s['name']} ({s['ship_id']})" for s in ships
+            ]
+            self._ship_ed_msg(f"Loaded {len(ships)} ships.")
+        except Exception as ex:
+            self._ship_ed_msg(f"Error loading ships: {ex}", ok=False)
+
+    def _ship_ed_load_catalogs(self):
+        """Load component and cargo item dropdowns."""
+        try:
+            conn = self._ship_ed_rw_conn()
+            comps = conn.execute(
+                "SELECT component_id, name, st_cost "
+                "FROM ship_components ORDER BY component_id"
+            ).fetchall()
+            goods = conn.execute(
+                "SELECT item_id, name, mass_per_unit "
+                "FROM trade_goods ORDER BY item_id"
+            ).fetchall()
+            conn.close()
+
+            self._ship_comp_map = {}
+            labels = []
+            for c in comps:
+                lbl = f"{c['component_id']}: {c['name']} ({c['st_cost']} ST)"
+                labels.append(lbl)
+                self._ship_comp_map[lbl] = dict(c)
+            self.ship_comp_combo['values'] = labels
+
+            self._ship_cargo_map = {}
+            labels = []
+            for g in goods:
+                lbl = f"{g['item_id']}: {g['name']}"
+                labels.append(lbl)
+                self._ship_cargo_map[lbl] = dict(g)
+            self.ship_cargo_combo['values'] = labels
+        except Exception as ex:
+            self._ship_ed_msg(f"Catalog load failed: {ex}", ok=False)
+
+    def _ship_ed_load_selected(self):
+        val = self.ship_ed_combo.get().strip()
+        if not val:
+            messagebox.showinfo("Select ship", "Pick a ship from the dropdown first.")
+            return
+        import re
+        m = re.search(r'\((\d+)\)\s*$', val)
+        if not m:
+            return
+        self._ship_ed_load(int(m.group(1)))
+
+    def _ship_ed_load(self, ship_id):
+        try:
+            conn = self._ship_ed_rw_conn()
+            ship = conn.execute("SELECT * FROM ships WHERE ship_id = ?",
+                                 (ship_id,)).fetchone()
+            conn.close()
+            if not ship:
+                self._ship_ed_msg(f"Ship {ship_id} not found.", ok=False)
+                return
+            self.ship_ed_current_id = ship_id
+            for key, _lbl, _w in [
+                ('name', '', 0), ('ship_size', '', 0), ('hull_type', '', 0),
+                ('ship_class', '', 0), ('design', '', 0),
+                ('system_id', '', 0), ('grid_col', '', 0), ('grid_row', '', 0),
+                ('tu_remaining', '', 0),
+            ]:
+                self.ship_ed_fields[key].delete(0, tk.END)
+                v = ship[key] if ship[key] is not None else ''
+                self.ship_ed_fields[key].insert(0, str(v))
+            self._ship_ed_refresh_components()
+            self._ship_ed_refresh_cargo()
+            self._ship_ed_msg(f"Loaded: {ship['name']} ({ship_id})")
+        except Exception as ex:
+            self._ship_ed_msg(f"Load failed: {ex}", ok=False)
+
+    def _ship_ed_refresh_components(self):
+        for r in self.ship_comp_tree.get_children():
+            self.ship_comp_tree.delete(r)
+        if self.ship_ed_current_id is None:
+            return
+        try:
+            conn = self._ship_ed_rw_conn()
+            rows = conn.execute("""
+                SELECT ii.component_id, sc.name, ii.quantity, sc.st_cost
+                FROM installed_items ii
+                JOIN ship_components sc ON ii.component_id = sc.component_id
+                WHERE ii.ship_id = ?
+                ORDER BY sc.component_id
+            """, (self.ship_ed_current_id,)).fetchall()
+            conn.close()
+            for r in rows:
+                self.ship_comp_tree.insert('', tk.END, values=(
+                    r['component_id'], r['name'], r['quantity'],
+                    r['st_cost'], r['st_cost'] * r['quantity']))
+        except Exception as ex:
+            self._ship_ed_msg(f"Refresh components failed: {ex}", ok=False)
+
+    def _ship_ed_refresh_cargo(self):
+        for r in self.ship_cargo_tree.get_children():
+            self.ship_cargo_tree.delete(r)
+        if self.ship_ed_current_id is None:
+            return
+        try:
+            conn = self._ship_ed_rw_conn()
+            rows = conn.execute("""
+                SELECT item_type_id, item_name, quantity, mass_per_unit
+                FROM cargo_items
+                WHERE ship_id = ?
+                ORDER BY item_type_id
+            """, (self.ship_ed_current_id,)).fetchall()
+            conn.close()
+            for r in rows:
+                self.ship_cargo_tree.insert('', tk.END, values=(
+                    r['item_type_id'], r['item_name'], r['quantity'],
+                    r['mass_per_unit'], r['mass_per_unit'] * r['quantity']))
+        except Exception as ex:
+            self._ship_ed_msg(f"Refresh cargo failed: {ex}", ok=False)
+
+    def _ship_ed_require_loaded(self):
+        if self.ship_ed_current_id is None:
+            messagebox.showinfo("No ship", "Load a ship first.")
+            return False
+        return True
+
+    def _ship_ed_save_basic(self):
+        if not self._ship_ed_require_loaded():
+            return
+        try:
+            from db.database import recalculate_ship_stats
+            f = self.ship_ed_fields
+            conn = self._ship_ed_rw_conn()
+            conn.execute("""
+                UPDATE ships SET
+                    name = ?, ship_size = ?, hull_type = ?,
+                    ship_class = ?, design = ?,
+                    system_id = ?, grid_col = ?, grid_row = ?,
+                    tu_remaining = ?
+                WHERE ship_id = ?
+            """, (
+                f['name'].get().strip(),
+                int(f['ship_size'].get().strip() or '50'),
+                f['hull_type'].get().strip() or 'Commercial',
+                f['ship_class'].get().strip() or None,
+                f['design'].get().strip() or None,
+                int(f['system_id'].get().strip() or '101'),
+                f['grid_col'].get().strip() or 'M',
+                int(f['grid_row'].get().strip() or '13'),
+                int(f['tu_remaining'].get().strip() or '0'),
+                self.ship_ed_current_id,
+            ))
+            conn.commit()
+            recalculate_ship_stats(conn, self.ship_ed_current_id)
+            conn.commit()
+            conn.close()
+            self._ship_ed_msg("Basic info saved, stats recalculated.")
+            self._ship_ed_load_list()
+        except Exception as ex:
+            self._ship_ed_msg(f"Save failed: {ex}", ok=False)
+
+    def _ship_ed_sync_crew(self, conn):
+        """Re-derive ships.crew_count from cargo_items (401) + officers."""
+        sid = self.ship_ed_current_id
+        cc = conn.execute(
+            "SELECT COALESCE(SUM(quantity),0) FROM cargo_items "
+            "WHERE ship_id = ? AND item_type_id = 401", (sid,)
+        ).fetchone()[0]
+        off = conn.execute(
+            "SELECT COUNT(*) FROM officers WHERE ship_id = ?", (sid,)
+        ).fetchone()[0]
+        conn.execute("UPDATE ships SET crew_count = ? WHERE ship_id = ?",
+                     (cc + off, sid))
+
+    def _ship_ed_sel_row(self, tree):
+        sel = tree.selection()
+        return tree.item(sel[0], 'values') if sel else None
+
+    def _ship_ed_add_component(self):
+        if not self._ship_ed_require_loaded():
+            return
+        label = self.ship_comp_combo.get()
+        if not label or label not in self._ship_comp_map:
+            self._ship_ed_msg("Select a component from the dropdown.", ok=False)
+            return
+        comp = self._ship_comp_map[label]
+        try:
+            qty = int(self.ship_comp_qty.get())
+            if qty <= 0:
+                raise ValueError
+        except ValueError:
+            self._ship_ed_msg("Invalid quantity.", ok=False)
+            return
+        try:
+            from db.database import recalculate_ship_stats
+            conn = self._ship_ed_rw_conn()
+            existing = conn.execute(
+                "SELECT item_install_id, quantity FROM installed_items "
+                "WHERE ship_id = ? AND component_id = ?",
+                (self.ship_ed_current_id, comp['component_id'])
+            ).fetchone()
+            if existing:
+                new_q = existing['quantity'] + qty
+                conn.execute(
+                    "UPDATE installed_items SET quantity = ? WHERE item_install_id = ?",
+                    (new_q, existing['item_install_id']))
+                msg = f"{comp['name']}: qty now {new_q}"
+            else:
+                conn.execute(
+                    "INSERT INTO installed_items (ship_id, component_id, quantity) "
+                    "VALUES (?, ?, ?)",
+                    (self.ship_ed_current_id, comp['component_id'], qty))
+                msg = f"Added {qty}× {comp['name']}"
+            conn.commit()
+            recalculate_ship_stats(conn, self.ship_ed_current_id)
+            conn.commit()
+            conn.close()
+            self._ship_ed_refresh_components()
+            self._ship_ed_msg(msg)
+        except Exception as ex:
+            self._ship_ed_msg(f"Add failed: {ex}", ok=False)
+
+    def _ship_ed_set_component_qty(self):
+        if not self._ship_ed_require_loaded():
+            return
+        row = self._ship_ed_sel_row(self.ship_comp_tree)
+        if not row:
+            messagebox.showinfo("Select row", "Select a component row first.")
+            return
+        comp_id = int(row[0])
+        try:
+            qty = int(self.ship_comp_qty.get())
+            if qty < 0:
+                raise ValueError
+        except ValueError:
+            self._ship_ed_msg("Invalid quantity.", ok=False)
+            return
+        try:
+            from db.database import recalculate_ship_stats
+            conn = self._ship_ed_rw_conn()
+            if qty == 0:
+                conn.execute(
+                    "DELETE FROM installed_items WHERE ship_id = ? AND component_id = ?",
+                    (self.ship_ed_current_id, comp_id))
+            else:
+                conn.execute(
+                    "UPDATE installed_items SET quantity = ? "
+                    "WHERE ship_id = ? AND component_id = ?",
+                    (qty, self.ship_ed_current_id, comp_id))
+            conn.commit()
+            recalculate_ship_stats(conn, self.ship_ed_current_id)
+            conn.commit()
+            conn.close()
+            self._ship_ed_refresh_components()
+            self._ship_ed_msg(f"Component {comp_id}: qty = {qty}")
+        except Exception as ex:
+            self._ship_ed_msg(f"Set failed: {ex}", ok=False)
+
+    def _ship_ed_remove_component(self):
+        if not self._ship_ed_require_loaded():
+            return
+        row = self._ship_ed_sel_row(self.ship_comp_tree)
+        if not row:
+            messagebox.showinfo("Select row", "Select a component row first.")
+            return
+        comp_id = int(row[0])
+        if not messagebox.askyesno(
+            "Confirm", f"Remove '{row[1]}' completely from this ship?"
+        ):
+            return
+        try:
+            from db.database import recalculate_ship_stats
+            conn = self._ship_ed_rw_conn()
+            conn.execute(
+                "DELETE FROM installed_items WHERE ship_id = ? AND component_id = ?",
+                (self.ship_ed_current_id, comp_id))
+            conn.commit()
+            recalculate_ship_stats(conn, self.ship_ed_current_id)
+            conn.commit()
+            conn.close()
+            self._ship_ed_refresh_components()
+            self._ship_ed_msg(f"Removed component {comp_id}")
+        except Exception as ex:
+            self._ship_ed_msg(f"Remove failed: {ex}", ok=False)
+
+    def _ship_ed_add_cargo(self):
+        if not self._ship_ed_require_loaded():
+            return
+        label = self.ship_cargo_combo.get()
+        if not label or label not in self._ship_cargo_map:
+            self._ship_ed_msg("Select a cargo item from the dropdown.", ok=False)
+            return
+        item = self._ship_cargo_map[label]
+        try:
+            qty = int(self.ship_cargo_qty.get())
+            if qty <= 0:
+                raise ValueError
+        except ValueError:
+            self._ship_ed_msg("Invalid quantity.", ok=False)
+            return
+        try:
+            from db.database import recalculate_ship_stats
+            conn = self._ship_ed_rw_conn()
+            existing = conn.execute(
+                "SELECT cargo_id, quantity FROM cargo_items "
+                "WHERE ship_id = ? AND item_type_id = ?",
+                (self.ship_ed_current_id, item['item_id'])
+            ).fetchone()
+            if existing:
+                new_q = existing['quantity'] + qty
+                conn.execute(
+                    "UPDATE cargo_items SET quantity = ? WHERE cargo_id = ?",
+                    (new_q, existing['cargo_id']))
+                msg = f"{item['name']}: qty now {new_q}"
+            else:
+                conn.execute(
+                    "INSERT INTO cargo_items "
+                    "(ship_id, item_type_id, item_name, quantity, mass_per_unit) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (self.ship_ed_current_id, item['item_id'],
+                     item['name'], qty, item['mass_per_unit']))
+                msg = f"Added {qty}× {item['name']}"
+            conn.commit()
+            if item['item_id'] == 401:
+                self._ship_ed_sync_crew(conn)
+            recalculate_ship_stats(conn, self.ship_ed_current_id)
+            conn.commit()
+            conn.close()
+            self._ship_ed_refresh_cargo()
+            self._ship_ed_msg(msg)
+        except Exception as ex:
+            self._ship_ed_msg(f"Add cargo failed: {ex}", ok=False)
+
+    def _ship_ed_set_cargo_qty(self):
+        if not self._ship_ed_require_loaded():
+            return
+        row = self._ship_ed_sel_row(self.ship_cargo_tree)
+        if not row:
+            messagebox.showinfo("Select row", "Select a cargo row first.")
+            return
+        item_id = int(row[0])
+        try:
+            qty = int(self.ship_cargo_qty.get())
+            if qty < 0:
+                raise ValueError
+        except ValueError:
+            self._ship_ed_msg("Invalid quantity.", ok=False)
+            return
+        try:
+            from db.database import recalculate_ship_stats
+            conn = self._ship_ed_rw_conn()
+            if qty == 0:
+                conn.execute(
+                    "DELETE FROM cargo_items WHERE ship_id = ? AND item_type_id = ?",
+                    (self.ship_ed_current_id, item_id))
+            else:
+                conn.execute(
+                    "UPDATE cargo_items SET quantity = ? "
+                    "WHERE ship_id = ? AND item_type_id = ?",
+                    (qty, self.ship_ed_current_id, item_id))
+            conn.commit()
+            if item_id == 401:
+                self._ship_ed_sync_crew(conn)
+            recalculate_ship_stats(conn, self.ship_ed_current_id)
+            conn.commit()
+            conn.close()
+            self._ship_ed_refresh_cargo()
+            self._ship_ed_msg(f"Cargo {item_id}: qty = {qty}")
+        except Exception as ex:
+            self._ship_ed_msg(f"Set cargo failed: {ex}", ok=False)
+
+    def _ship_ed_remove_cargo(self):
+        if not self._ship_ed_require_loaded():
+            return
+        row = self._ship_ed_sel_row(self.ship_cargo_tree)
+        if not row:
+            messagebox.showinfo("Select row", "Select a cargo row first.")
+            return
+        item_id = int(row[0])
+        if not messagebox.askyesno("Confirm",
+                                     f"Remove '{row[1]}' completely from this ship's cargo?"):
+            return
+        try:
+            from db.database import recalculate_ship_stats
+            conn = self._ship_ed_rw_conn()
+            conn.execute(
+                "DELETE FROM cargo_items WHERE ship_id = ? AND item_type_id = ?",
+                (self.ship_ed_current_id, item_id))
+            conn.commit()
+            if item_id == 401:
+                self._ship_ed_sync_crew(conn)
+            recalculate_ship_stats(conn, self.ship_ed_current_id)
+            conn.commit()
+            conn.close()
+            self._ship_ed_refresh_cargo()
+            self._ship_ed_msg(f"Removed cargo {item_id}")
+        except Exception as ex:
+            self._ship_ed_msg(f"Remove cargo failed: {ex}", ok=False)
+
+    # ========================================================================
+    # Tab: Base Editor
+    # ========================================================================
+
+    def _build_base_editor_tab(self):
+        tab = ttk.Frame(self.notebook)
+        self.notebook.add(tab, text="Base Editor")
+        inner = self._scrollable_frame(tab)
+
+        ttk.Label(inner,
+                  text="⚠ Direct database editor. Changes are written immediately. "
+                       "Stats auto-recalculate after every edit.",
+                  foreground="#c87000", font=("", 9, "italic")).pack(
+            anchor=tk.W, padx=5, pady=(5, 8))
+
+        # ----- Base picker -----
+        pick = ttk.Frame(inner)
+        pick.pack(fill=tk.X, padx=5, pady=(0, 8))
+        ttk.Label(pick, text="Base:", font=("", 10, "bold")).pack(side=tk.LEFT, padx=(0, 4))
+        self.base_ed_combo = ttk.Combobox(pick, width=40, state='readonly')
+        self.base_ed_combo.pack(side=tk.LEFT, padx=(0, 4))
+        ttk.Button(pick, text="Load", width=8,
+                   command=self._base_ed_load_selected).pack(side=tk.LEFT, padx=2)
+        ttk.Button(pick, text="Refresh List", width=14,
+                   command=self._base_ed_load_list).pack(side=tk.LEFT, padx=2)
+
+        # Current base state: (kind, id) where kind in {'starbase','port','outpost'}
+        self.base_ed_current = None
+
+        # ----- Basic Info -----
+        basic = ttk.LabelFrame(inner, text="Basic Info", padding=6)
+        basic.pack(fill=tk.X, padx=5, pady=4)
+
+        self.base_ed_fields = {}
+        BASE_BASIC = [
+            ('name', 'Name:', 30),
+            ('employees', 'Employees:', 10),
+            ('workers', 'Workers:', 10),
+            ('troops', 'Troops:', 10),
+            ('complexes', 'Complexes:', 10),
+        ]
+        for key, label, width in BASE_BASIC:
+            row = ttk.Frame(basic)
+            row.pack(fill=tk.X, pady=2)
+            ttk.Label(row, text=label, width=14).pack(side=tk.LEFT)
+            e = ttk.Entry(row, width=width)
+            e.pack(side=tk.LEFT, padx=(2, 10))
+            self.base_ed_fields[key] = e
+
+        # has_market checkbox (starbase only)
+        self.base_ed_market_var = tk.BooleanVar(value=False)
+        self.base_ed_market_chk = ttk.Checkbutton(
+            basic, text="Has Market (starbase only)",
+            variable=self.base_ed_market_var)
+        self.base_ed_market_chk.pack(anchor=tk.W, pady=(2, 4))
+
+        ttk.Button(basic, text="Save Basic Info", width=18,
+                   command=self._base_ed_save_basic).pack(anchor=tk.W, pady=(4, 0))
+
+        # ----- Installed Modules -----
+        mods = ttk.LabelFrame(inner, text="Installed Modules", padding=6)
+        mods.pack(fill=tk.X, padx=5, pady=4)
+
+        mw = ttk.Frame(mods)
+        mw.pack(fill=tk.X)
+        self.base_mod_tree = ttk.Treeview(
+            mw, show='headings',
+            columns=('id', 'name', 'cat', 'qty', 'emp'), height=8)
+        for col, hd, w in [('id', 'ID', 50), ('name', 'Name', 200),
+                            ('cat', 'Category', 90),
+                            ('qty', 'Qty', 50), ('emp', 'Emp/Each', 70)]:
+            self.base_mod_tree.heading(col, text=hd)
+            self.base_mod_tree.column(col, width=w, anchor=tk.W)
+        mod_sb = ttk.Scrollbar(mw, orient=tk.VERTICAL,
+                                command=self.base_mod_tree.yview)
+        self.base_mod_tree.configure(yscrollcommand=mod_sb.set)
+        self.base_mod_tree.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        mod_sb.pack(side=tk.LEFT, fill=tk.Y)
+
+        mcr = ttk.Frame(mods)
+        mcr.pack(fill=tk.X, pady=(4, 0))
+        ttk.Label(mcr, text="Module:").pack(side=tk.LEFT)
+        self.base_mod_combo = ttk.Combobox(mcr, width=32, state='readonly')
+        self.base_mod_combo.pack(side=tk.LEFT, padx=2)
+        ttk.Label(mcr, text="Qty:").pack(side=tk.LEFT, padx=(6, 2))
+        self.base_mod_qty = ttk.Entry(mcr, width=5)
+        self.base_mod_qty.insert(0, "1")
+        self.base_mod_qty.pack(side=tk.LEFT)
+        ttk.Button(mcr, text="Add", width=6,
+                   command=self._base_ed_add_module).pack(side=tk.LEFT, padx=(4, 2))
+        ttk.Button(mcr, text="Set Qty", width=8,
+                   command=self._base_ed_set_module_qty).pack(side=tk.LEFT, padx=2)
+        ttk.Button(mcr, text="Remove Selected", width=16,
+                   command=self._base_ed_remove_module).pack(side=tk.LEFT, padx=2)
+
+        # ----- Inventory -----
+        inv = ttk.LabelFrame(inner, text="Inventory", padding=6)
+        inv.pack(fill=tk.X, padx=5, pady=4)
+
+        iw = ttk.Frame(inv)
+        iw.pack(fill=tk.X)
+        self.base_inv_tree = ttk.Treeview(
+            iw, show='headings',
+            columns=('id', 'name', 'qty', 'mass', 'total'), height=6)
+        for col, hd, w in [('id', 'ID', 55), ('name', 'Name', 190),
+                            ('qty', 'Qty', 60), ('mass', 'Mass/Unit', 80),
+                            ('total', 'Total ST', 80)]:
+            self.base_inv_tree.heading(col, text=hd)
+            self.base_inv_tree.column(col, width=w, anchor=tk.W)
+        inv_sb = ttk.Scrollbar(iw, orient=tk.VERTICAL,
+                                command=self.base_inv_tree.yview)
+        self.base_inv_tree.configure(yscrollcommand=inv_sb.set)
+        self.base_inv_tree.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        inv_sb.pack(side=tk.LEFT, fill=tk.Y)
+
+        icr = ttk.Frame(inv)
+        icr.pack(fill=tk.X, pady=(4, 0))
+        ttk.Label(icr, text="Item:").pack(side=tk.LEFT)
+        self.base_inv_combo = ttk.Combobox(icr, width=30, state='readonly')
+        self.base_inv_combo.pack(side=tk.LEFT, padx=2)
+        ttk.Label(icr, text="Qty:").pack(side=tk.LEFT, padx=(6, 2))
+        self.base_inv_qty = ttk.Entry(icr, width=6)
+        self.base_inv_qty.insert(0, "1")
+        self.base_inv_qty.pack(side=tk.LEFT)
+        ttk.Button(icr, text="Add", width=6,
+                   command=self._base_ed_add_inv).pack(side=tk.LEFT, padx=(4, 2))
+        ttk.Button(icr, text="Set Qty", width=8,
+                   command=self._base_ed_set_inv_qty).pack(side=tk.LEFT, padx=2)
+        ttk.Button(icr, text="Remove Selected", width=16,
+                   command=self._base_ed_remove_inv).pack(side=tk.LEFT, padx=2)
+
+        self.base_ed_status = ttk.Label(inner, text="No base loaded.",
+                                         foreground="#666", font=("", 9, "italic"))
+        self.base_ed_status.pack(anchor=tk.W, padx=5, pady=(4, 0))
+
+        self._base_ed_load_list()
+        self._base_ed_load_catalogs()
+
+    # ----- Base editor helpers -----
+
+    def _base_ed_msg(self, msg, ok=True):
+        self.base_ed_status.config(text=msg,
+                                    foreground="#2ecc71" if ok else "#e74c3c")
+
+    def _base_ed_rw_conn(self):
+        from db.database import get_connection
+        return get_connection()
+
+    def _base_ed_load_list(self):
+        try:
+            conn = self._base_ed_rw_conn()
+            items = []
+            for row in conn.execute(
+                "SELECT base_id AS id, name FROM starbases ORDER BY name"
+            ).fetchall():
+                items.append(('starbase', row['id'], f"[Starbase] {row['name']} ({row['id']})"))
+            for row in conn.execute(
+                "SELECT port_id AS id, name FROM surface_ports ORDER BY name"
+            ).fetchall():
+                items.append(('port', row['id'], f"[Port] {row['name']} ({row['id']})"))
+            for row in conn.execute(
+                "SELECT outpost_id AS id, name FROM outposts ORDER BY name"
+            ).fetchall():
+                items.append(('outpost', row['id'], f"[Outpost] {row['name']} ({row['id']})"))
+            conn.close()
+            self._base_ed_items = items
+            self.base_ed_combo['values'] = [i[2] for i in items]
+            self._base_ed_msg(f"Loaded {len(items)} bases.")
+        except Exception as ex:
+            self._base_ed_msg(f"Error loading bases: {ex}", ok=False)
+
+    def _base_ed_load_catalogs(self):
+        try:
+            conn = self._base_ed_rw_conn()
+            mods = conn.execute(
+                "SELECT module_id, name, category, employees_required "
+                "FROM base_modules ORDER BY module_id"
+            ).fetchall()
+            goods = conn.execute(
+                "SELECT item_id, name, mass_per_unit "
+                "FROM trade_goods ORDER BY item_id"
+            ).fetchall()
+            conn.close()
+
+            self._base_mod_map = {}
+            labels = []
+            for m in mods:
+                lbl = f"{m['module_id']}: {m['name']} ({m['category']})"
+                labels.append(lbl)
+                self._base_mod_map[lbl] = dict(m)
+            self.base_mod_combo['values'] = labels
+
+            self._base_inv_map = {}
+            labels = []
+            for g in goods:
+                lbl = f"{g['item_id']}: {g['name']}"
+                labels.append(lbl)
+                self._base_inv_map[lbl] = dict(g)
+            self.base_inv_combo['values'] = labels
+        except Exception as ex:
+            self._base_ed_msg(f"Catalog load failed: {ex}", ok=False)
+
+    def _base_ed_load_selected(self):
+        val = self.base_ed_combo.get().strip()
+        if not val:
+            messagebox.showinfo("Select base", "Pick a base from the dropdown first.")
+            return
+        # Find item in our list by display string
+        for kind, bid, label in getattr(self, '_base_ed_items', []):
+            if label == val:
+                self._base_ed_load(kind, bid)
+                return
+
+    def _base_ed_load(self, kind, bid):
+        """Load base data. kind in {'starbase','port','outpost'}"""
+        table = {'starbase': 'starbases', 'port': 'surface_ports',
+                 'outpost': 'outposts'}[kind]
+        id_col = {'starbase': 'base_id', 'port': 'port_id',
+                  'outpost': 'outpost_id'}[kind]
+        try:
+            conn = self._base_ed_rw_conn()
+            base = conn.execute(
+                f"SELECT * FROM {table} WHERE {id_col} = ?", (bid,)
+            ).fetchone()
+            conn.close()
+            if not base:
+                self._base_ed_msg(f"{kind} {bid} not found.", ok=False)
+                return
+            self.base_ed_current = (kind, bid)
+
+            f = self.base_ed_fields
+            for key in ('name', 'employees', 'workers', 'troops', 'complexes'):
+                f[key].delete(0, tk.END)
+                # outposts have no complexes/troops column
+                try:
+                    v = base[key]
+                except (IndexError, KeyError):
+                    v = 0
+                if v is None:
+                    v = 0
+                f[key].insert(0, str(v))
+
+            # Market flag: only starbases
+            if kind == 'starbase':
+                try:
+                    self.base_ed_market_var.set(bool(base['has_market']))
+                except (IndexError, KeyError):
+                    self.base_ed_market_var.set(False)
+                self.base_ed_market_chk.state(['!disabled'])
+            else:
+                self.base_ed_market_var.set(False)
+                self.base_ed_market_chk.state(['disabled'])
+
+            self._base_ed_refresh_modules()
+            self._base_ed_refresh_inventory()
+            self._base_ed_msg(f"Loaded {kind}: {base['name']} ({bid})")
+        except Exception as ex:
+            self._base_ed_msg(f"Load failed: {ex}", ok=False)
+
+    def _base_ed_where_clause(self):
+        """Return (column_name, id_value) for the current base's FK in modules/inventory."""
+        if not self.base_ed_current:
+            return None, None
+        kind, bid = self.base_ed_current
+        col = {'starbase': 'starbase_id', 'port': 'port_id',
+               'outpost': 'outpost_id'}[kind]
+        return col, bid
+
+    def _base_ed_refresh_modules(self):
+        for r in self.base_mod_tree.get_children():
+            self.base_mod_tree.delete(r)
+        col, bid = self._base_ed_where_clause()
+        if not col:
+            return
+        try:
+            conn = self._base_ed_rw_conn()
+            rows = conn.execute(f"""
+                SELECT im.module_id, bm.name, bm.category, im.quantity, bm.employees_required
+                FROM installed_modules im
+                JOIN base_modules bm ON im.module_id = bm.module_id
+                WHERE im.{col} = ?
+                ORDER BY bm.module_id
+            """, (bid,)).fetchall()
+            conn.close()
+            for r in rows:
+                self.base_mod_tree.insert('', tk.END, values=(
+                    r['module_id'], r['name'], r['category'],
+                    r['quantity'], r['employees_required']))
+        except Exception as ex:
+            self._base_ed_msg(f"Refresh modules failed: {ex}", ok=False)
+
+    def _base_ed_refresh_inventory(self):
+        for r in self.base_inv_tree.get_children():
+            self.base_inv_tree.delete(r)
+        col, bid = self._base_ed_where_clause()
+        if not col:
+            return
+        try:
+            conn = self._base_ed_rw_conn()
+            rows = conn.execute(f"""
+                SELECT item_type_id, item_name, quantity, mass_per_unit
+                FROM base_inventory
+                WHERE {col} = ?
+                ORDER BY item_type_id
+            """, (bid,)).fetchall()
+            conn.close()
+            for r in rows:
+                self.base_inv_tree.insert('', tk.END, values=(
+                    r['item_type_id'], r['item_name'], r['quantity'],
+                    r['mass_per_unit'], r['mass_per_unit'] * r['quantity']))
+        except Exception as ex:
+            self._base_ed_msg(f"Refresh inventory failed: {ex}", ok=False)
+
+    def _base_ed_require_loaded(self):
+        if not self.base_ed_current:
+            messagebox.showinfo("No base", "Load a base first.")
+            return False
+        return True
+
+    def _base_ed_save_basic(self):
+        if not self._base_ed_require_loaded():
+            return
+        kind, bid = self.base_ed_current
+        f = self.base_ed_fields
+        try:
+            from db.database import recalculate_base_stats
+            conn = self._base_ed_rw_conn()
+            name = f['name'].get().strip() or 'Unnamed'
+            employees = int(f['employees'].get().strip() or '0')
+            workers = int(f['workers'].get().strip() or '0')
+            troops = int(f['troops'].get().strip() or '0')
+            complexes = int(f['complexes'].get().strip() or '0')
+
+            if kind == 'starbase':
+                conn.execute("""
+                    UPDATE starbases SET name = ?, employees = ?, workers = ?,
+                    troops = ?, complexes = ?, has_market = ?
+                    WHERE base_id = ?
+                """, (name, employees, workers, troops, complexes,
+                      1 if self.base_ed_market_var.get() else 0, bid))
+                recalculate_base_stats(conn, starbase_id=bid)
+            elif kind == 'port':
+                conn.execute("""
+                    UPDATE surface_ports SET name = ?, employees = ?, workers = ?,
+                    troops = ?, complexes = ?
+                    WHERE port_id = ?
+                """, (name, employees, workers, troops, complexes, bid))
+                recalculate_base_stats(conn, port_id=bid)
+            else:  # outpost - no complexes/troops
+                conn.execute("""
+                    UPDATE outposts SET name = ?, employees = ?, workers = ?
+                    WHERE outpost_id = ?
+                """, (name, employees, workers, bid))
+                recalculate_base_stats(conn, outpost_id=bid)
+
+            conn.commit()
+            conn.close()
+            self._base_ed_msg("Basic info saved, stats recalculated.")
+            self._base_ed_load_list()
+        except Exception as ex:
+            self._base_ed_msg(f"Save failed: {ex}", ok=False)
+
+    def _base_ed_recalc(self, conn):
+        from db.database import recalculate_base_stats
+        kind, bid = self.base_ed_current
+        if kind == 'starbase':
+            recalculate_base_stats(conn, starbase_id=bid)
+        elif kind == 'port':
+            recalculate_base_stats(conn, port_id=bid)
+        else:
+            recalculate_base_stats(conn, outpost_id=bid)
+
+    def _base_ed_sel_row(self, tree):
+        sel = tree.selection()
+        return tree.item(sel[0], 'values') if sel else None
+
+    def _base_ed_add_module(self):
+        if not self._base_ed_require_loaded():
+            return
+        label = self.base_mod_combo.get()
+        if not label or label not in self._base_mod_map:
+            self._base_ed_msg("Select a module from the dropdown.", ok=False)
+            return
+        mod = self._base_mod_map[label]
+        try:
+            qty = int(self.base_mod_qty.get())
+            if qty <= 0:
+                raise ValueError
+        except ValueError:
+            self._base_ed_msg("Invalid quantity.", ok=False)
+            return
+        col, bid = self._base_ed_where_clause()
+        try:
+            conn = self._base_ed_rw_conn()
+            existing = conn.execute(
+                f"SELECT install_id, quantity FROM installed_modules "
+                f"WHERE {col} = ? AND module_id = ?",
+                (bid, mod['module_id'])
+            ).fetchone()
+            if existing:
+                new_q = existing['quantity'] + qty
+                conn.execute(
+                    "UPDATE installed_modules SET quantity = ? WHERE install_id = ?",
+                    (new_q, existing['install_id']))
+                msg = f"{mod['name']}: qty now {new_q}"
+            else:
+                conn.execute(
+                    f"INSERT INTO installed_modules ({col}, module_id, quantity) "
+                    f"VALUES (?, ?, ?)",
+                    (bid, mod['module_id'], qty))
+                msg = f"Added {qty}× {mod['name']}"
+            conn.commit()
+            self._base_ed_recalc(conn)
+            conn.commit()
+            conn.close()
+            self._base_ed_refresh_modules()
+            self._base_ed_msg(msg)
+        except Exception as ex:
+            self._base_ed_msg(f"Add module failed: {ex}", ok=False)
+
+    def _base_ed_set_module_qty(self):
+        if not self._base_ed_require_loaded():
+            return
+        row = self._base_ed_sel_row(self.base_mod_tree)
+        if not row:
+            messagebox.showinfo("Select row", "Select a module row first.")
+            return
+        mod_id = int(row[0])
+        try:
+            qty = int(self.base_mod_qty.get())
+            if qty < 0:
+                raise ValueError
+        except ValueError:
+            self._base_ed_msg("Invalid quantity.", ok=False)
+            return
+        col, bid = self._base_ed_where_clause()
+        try:
+            conn = self._base_ed_rw_conn()
+            if qty == 0:
+                conn.execute(
+                    f"DELETE FROM installed_modules WHERE {col} = ? AND module_id = ?",
+                    (bid, mod_id))
+            else:
+                conn.execute(
+                    f"UPDATE installed_modules SET quantity = ? "
+                    f"WHERE {col} = ? AND module_id = ?",
+                    (qty, bid, mod_id))
+            conn.commit()
+            self._base_ed_recalc(conn)
+            conn.commit()
+            conn.close()
+            self._base_ed_refresh_modules()
+            self._base_ed_msg(f"Module {mod_id}: qty = {qty}")
+        except Exception as ex:
+            self._base_ed_msg(f"Set failed: {ex}", ok=False)
+
+    def _base_ed_remove_module(self):
+        if not self._base_ed_require_loaded():
+            return
+        row = self._base_ed_sel_row(self.base_mod_tree)
+        if not row:
+            messagebox.showinfo("Select row", "Select a module row first.")
+            return
+        mod_id = int(row[0])
+        if not messagebox.askyesno("Confirm",
+                                     f"Remove '{row[1]}' completely from this base?"):
+            return
+        col, bid = self._base_ed_where_clause()
+        try:
+            conn = self._base_ed_rw_conn()
+            conn.execute(
+                f"DELETE FROM installed_modules WHERE {col} = ? AND module_id = ?",
+                (bid, mod_id))
+            conn.commit()
+            self._base_ed_recalc(conn)
+            conn.commit()
+            conn.close()
+            self._base_ed_refresh_modules()
+            self._base_ed_msg(f"Removed module {mod_id}")
+        except Exception as ex:
+            self._base_ed_msg(f"Remove failed: {ex}", ok=False)
+
+    def _base_ed_add_inv(self):
+        if not self._base_ed_require_loaded():
+            return
+        label = self.base_inv_combo.get()
+        if not label or label not in self._base_inv_map:
+            self._base_ed_msg("Select an item from the dropdown.", ok=False)
+            return
+        item = self._base_inv_map[label]
+        try:
+            qty = int(self.base_inv_qty.get())
+            if qty <= 0:
+                raise ValueError
+        except ValueError:
+            self._base_ed_msg("Invalid quantity.", ok=False)
+            return
+        col, bid = self._base_ed_where_clause()
+        try:
+            conn = self._base_ed_rw_conn()
+            existing = conn.execute(
+                f"SELECT inventory_id, quantity FROM base_inventory "
+                f"WHERE {col} = ? AND item_type_id = ?",
+                (bid, item['item_id'])
+            ).fetchone()
+            if existing:
+                new_q = existing['quantity'] + qty
+                conn.execute(
+                    "UPDATE base_inventory SET quantity = ? WHERE inventory_id = ?",
+                    (new_q, existing['inventory_id']))
+                msg = f"{item['name']}: qty now {new_q}"
+            else:
+                conn.execute(
+                    f"INSERT INTO base_inventory "
+                    f"({col}, item_type_id, item_name, quantity, mass_per_unit) "
+                    f"VALUES (?, ?, ?, ?, ?)",
+                    (bid, item['item_id'], item['name'],
+                     qty, item['mass_per_unit']))
+                msg = f"Added {qty}× {item['name']}"
+            conn.commit()
+            self._base_ed_recalc(conn)
+            conn.commit()
+            conn.close()
+            self._base_ed_refresh_inventory()
+            self._base_ed_msg(msg)
+        except Exception as ex:
+            self._base_ed_msg(f"Add inv failed: {ex}", ok=False)
+
+    def _base_ed_set_inv_qty(self):
+        if not self._base_ed_require_loaded():
+            return
+        row = self._base_ed_sel_row(self.base_inv_tree)
+        if not row:
+            messagebox.showinfo("Select row", "Select an inventory row first.")
+            return
+        item_id = int(row[0])
+        try:
+            qty = int(self.base_inv_qty.get())
+            if qty < 0:
+                raise ValueError
+        except ValueError:
+            self._base_ed_msg("Invalid quantity.", ok=False)
+            return
+        col, bid = self._base_ed_where_clause()
+        try:
+            conn = self._base_ed_rw_conn()
+            if qty == 0:
+                conn.execute(
+                    f"DELETE FROM base_inventory WHERE {col} = ? AND item_type_id = ?",
+                    (bid, item_id))
+            else:
+                conn.execute(
+                    f"UPDATE base_inventory SET quantity = ? "
+                    f"WHERE {col} = ? AND item_type_id = ?",
+                    (qty, bid, item_id))
+            conn.commit()
+            self._base_ed_recalc(conn)
+            conn.commit()
+            conn.close()
+            self._base_ed_refresh_inventory()
+            self._base_ed_msg(f"Inv {item_id}: qty = {qty}")
+        except Exception as ex:
+            self._base_ed_msg(f"Set inv failed: {ex}", ok=False)
+
+    def _base_ed_remove_inv(self):
+        if not self._base_ed_require_loaded():
+            return
+        row = self._base_ed_sel_row(self.base_inv_tree)
+        if not row:
+            messagebox.showinfo("Select row", "Select an inventory row first.")
+            return
+        item_id = int(row[0])
+        if not messagebox.askyesno("Confirm",
+                                     f"Remove '{row[1]}' completely from this base's inventory?"):
+            return
+        col, bid = self._base_ed_where_clause()
+        try:
+            conn = self._base_ed_rw_conn()
+            conn.execute(
+                f"DELETE FROM base_inventory WHERE {col} = ? AND item_type_id = ?",
+                (bid, item_id))
+            conn.commit()
+            self._base_ed_recalc(conn)
+            conn.commit()
+            conn.close()
+            self._base_ed_refresh_inventory()
+            self._base_ed_msg(f"Removed inv item {item_id}")
+        except Exception as ex:
+            self._base_ed_msg(f"Remove inv failed: {ex}", ok=False)
 
     # ========================================================================
     # Tab: Settings

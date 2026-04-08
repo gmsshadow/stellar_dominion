@@ -526,6 +526,27 @@ Add an outpost to a planet or moon.
 
 ---
 
+### add-starbase
+Add a starbase in orbit above an existing surface port. The starbase inherits the port's system, grid coordinates, and orbiting body automatically. Each surface port can host at most one starbase.
+
+| Parameter | Required | Default | Description |
+|-----------|:--------:|---------|-------------|
+| `base_id` | **Yes** | — | Unique starbase ID (positional) |
+| `surface_port_id` | **Yes** | — | Surface port this starbase orbits above (positional) |
+| `name` | **Yes** | — | Starbase name (positional) |
+| `--type` | No | `Starbase` | Base type label |
+| `--complexes` | No | `0` | Number of complexes |
+| `--workers` | No | `0` | Worker count |
+| `--troops` | No | `0` | Troop count |
+| `--market` | No | off | Enable market for trading |
+| `--db` | No | auto | Path to game_state.db |
+
+```bash
+python pbem.py add-starbase 99000001 30100001 "Orion Citadel" --complexes 10 --market
+```
+
+---
+
 ### regen-surface
 Regenerate the surface terrain for a celestial body. Deletes existing terrain tiles and generates new ones based on the body's current properties (gravity, temperature, atmosphere, hydrosphere, life, tectonic activity). Displays the new surface map after generation.
 

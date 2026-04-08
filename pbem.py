@@ -2776,6 +2776,82 @@ def cmd_add_outpost(args):
     conn.close()
 
 
+def cmd_add_starbase(args):
+    """Add a starbase in orbit above an existing surface port."""
+    from db.database import recalculate_base_stats
+    conn = get_connection(Path(args.db) if args.db else None)
+
+    # Verify the surface port exists
+    port = conn.execute(
+        "SELECT * FROM surface_ports WHERE port_id = ?", (args.surface_port_id,)
+    ).fetchone()
+    if not port:
+        print(f"Error: Surface port {args.surface_port_id} not found.")
+        print("Create a surface port first with 'add-port'.")
+        conn.close()
+        return
+
+    # Check if the port already has a starbase above it
+    existing = conn.execute(
+        "SELECT base_id, name FROM starbases WHERE surface_port_id = ?",
+        (args.surface_port_id,)
+    ).fetchone()
+    if existing:
+        print(f"Error: Surface port {args.surface_port_id} already has a starbase "
+              f"above it: {existing['name']} ({existing['base_id']}).")
+        conn.close()
+        return
+
+    # Check base_id isn't already taken
+    taken = conn.execute(
+        "SELECT name FROM starbases WHERE base_id = ?", (args.base_id,)
+    ).fetchone()
+    if taken:
+        print(f"Error: Base ID {args.base_id} already in use by '{taken['name']}'.")
+        conn.close()
+        return
+
+    # Look up the body this port is on (from universe.db via ATTACH)
+    body = conn.execute(
+        "SELECT * FROM celestial_bodies WHERE body_id = ?", (port['body_id'],)
+    ).fetchone()
+    if not body:
+        print(f"Error: Body {port['body_id']} (from port) not found in universe.")
+        conn.close()
+        return
+
+    # Auto-detect game_id
+    game = conn.execute("SELECT game_id FROM games LIMIT 1").fetchone()
+    game_id = game['game_id'] if game else 'DEFAULT'
+
+    # Insert starbase - orbits the body the port is on
+    conn.execute("""
+        INSERT INTO starbases
+        (base_id, game_id, name, base_type, system_id, grid_col, grid_row,
+         orbiting_body_id, surface_port_id, complexes, workers, troops,
+         has_market, docking_capacity, employees, employee_capacity)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0)
+    """, (args.base_id, game_id, args.name, args.type or 'Starbase',
+          body['system_id'], body['grid_col'], body['grid_row'],
+          body['body_id'], args.surface_port_id,
+          args.complexes or 0, args.workers or 0, args.troops or 0,
+          1 if args.market else 0))
+    conn.commit()
+
+    # Recalculate derived stats (sensor_profile, capacities from modules)
+    stats = recalculate_base_stats(conn, starbase_id=args.base_id)
+
+    print(f"Starbase '{args.name}' ({args.base_id}) added:")
+    print(f"  System: {body['system_id']} at {body['grid_col']}{body['grid_row']:02d}")
+    print(f"  Orbiting: {body['name']} ({body['body_id']})")
+    print(f"  Above surface port: {port['name']} ({args.surface_port_id})")
+    print(f"  Complexes: {args.complexes or 0}   Workers: {args.workers or 0}   "
+          f"Troops: {args.troops or 0}")
+    print(f"  Has market: {'yes' if args.market else 'no'}")
+    print(f"  Sensor profile: {stats['sensor_profile']}")
+    conn.close()
+
+
 def cmd_list_universe(args):
     """Show all universe content."""
     from db.universe_admin import list_universe
@@ -3857,6 +3933,22 @@ Gmail integration (two-stage workflow):
     sp.add_argument('--type', default='General', help='Outpost type (e.g. Mining, Communications)')
     sp.add_argument('--workers', type=int, default=0, help='Worker count')
 
+    # --- add-starbase ---
+    sp = subparsers.add_parser('add-starbase',
+                                help='Add a starbase in orbit above an existing surface port')
+    sp.add_argument('base_id', type=int, help='Unique starbase ID')
+    sp.add_argument('surface_port_id', type=int,
+                    help='Surface port ID this starbase will be built above')
+    sp.add_argument('name', help='Starbase name')
+    sp.add_argument('--type', default='Starbase',
+                    help='Base type label (default: Starbase)')
+    sp.add_argument('--complexes', type=int, default=0, help='Number of complexes')
+    sp.add_argument('--workers', type=int, default=0, help='Worker count')
+    sp.add_argument('--troops', type=int, default=0, help='Troop count')
+    sp.add_argument('--market', action='store_true',
+                    help='Mark the starbase as having a market (default off)')
+    sp.add_argument('--db', help='Path to game_state.db')
+
     # --- list-universe ---
     sp = subparsers.add_parser('list-universe', help='Show all universe content (systems, bodies, links)')
 
@@ -3987,6 +4079,7 @@ Gmail integration (two-stage workflow):
         'add-link': cmd_add_link,
         'add-port': cmd_add_port,
         'add-outpost': cmd_add_outpost,
+        'add-starbase': cmd_add_starbase,
         'list-universe': cmd_list_universe,
         'regen-surface': cmd_regen_surface,
         'gen-surfaces': cmd_gen_surfaces,
