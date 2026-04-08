@@ -1595,15 +1595,50 @@ def cmd_recalc_ships(args):
         # Recalculate from components
         stats = recalculate_ship_stats(conn, s['ship_id'])
 
-        ship = conn.execute("SELECT crew_count, crew_required, cargo_capacity, life_support_capacity, gravity_rating FROM ships WHERE ship_id = ?",
+        ship = conn.execute("SELECT crew_count, crew_required, cargo_capacity, life_support_capacity, gravity_rating, sensor_profile FROM ships WHERE ship_id = ?",
                              (s['ship_id'],)).fetchone()
         eff = min(100, ship['crew_count'] / ship['crew_required'] * 100) if ship['crew_required'] > 0 else 100
         print(f"  {s['name']} ({s['ship_id']}): crew={ship['crew_count']}/{ship['crew_required']} ({eff:.0f}%) "
-              f"cargo={ship['cargo_capacity']} life_sup={ship['life_support_capacity']} grav={ship['gravity_rating']}")
+              f"cargo={ship['cargo_capacity']} life_sup={ship['life_support_capacity']} grav={ship['gravity_rating']} profile={ship['sensor_profile']}")
 
     conn.commit()
     conn.close()
     print(f"\nDone. {len(ships)} ships recalculated.")
+
+
+def cmd_recalc_bases(args):
+    """Recalculate all base stats from installed modules and inventory. Use after direct DB edits."""
+    from db.database import recalculate_base_stats
+    db_path = Path(args.db) if args.db else None
+    conn = get_connection(db_path)
+
+    starbases = conn.execute("SELECT base_id, name FROM starbases ORDER BY base_id").fetchall()
+    ports = conn.execute("SELECT port_id, name FROM surface_ports ORDER BY port_id").fetchall()
+    outposts = conn.execute("SELECT outpost_id, name FROM outposts ORDER BY outpost_id").fetchall()
+    total = len(starbases) + len(ports) + len(outposts)
+
+    if not total:
+        print("No bases found.")
+        conn.close()
+        return
+
+    print(f"Recalculating {total} bases...")
+    for b in starbases:
+        stats = recalculate_base_stats(conn, starbase_id=b['base_id'])
+        print(f"  [Starbase] {b['name']} ({b['base_id']}): modules={stats['total_modules']} "
+              f"eff={stats['overall_efficiency']}% profile={stats['sensor_profile']}")
+    for p in ports:
+        stats = recalculate_base_stats(conn, port_id=p['port_id'])
+        print(f"  [Port] {p['name']} ({p['port_id']}): modules={stats['total_modules']} "
+              f"eff={stats['overall_efficiency']}% profile={stats['sensor_profile']}")
+    for o in outposts:
+        stats = recalculate_base_stats(conn, outpost_id=o['outpost_id'])
+        print(f"  [Outpost] {o['name']} ({o['outpost_id']}): modules={stats['total_modules']} "
+              f"eff={stats['overall_efficiency']}% profile={stats['sensor_profile']}")
+
+    conn.commit()
+    conn.close()
+    print(f"\nDone. {total} bases recalculated.")
 
 
 def cmd_show_status(args):
@@ -3586,6 +3621,10 @@ Gmail integration (two-stage workflow):
     sp = subparsers.add_parser('recalc-ships', help='Recalculate all ship stats from components and cargo')
     sp.add_argument('--db', help='Path to game_state.db')
 
+    # --- recalc-bases ---
+    sp = subparsers.add_parser('recalc-bases', help='Recalculate all base stats from modules and inventory')
+    sp.add_argument('--db', help='Path to game_state.db')
+
     # --- show-status ---
     sp = subparsers.add_parser('show-status', help='Show ship/position status')
     sp.add_argument('--ship', type=int, help='Ship ID')
@@ -3878,6 +3917,7 @@ Gmail integration (two-stage workflow):
         'show-surface': cmd_show_surface,
         'preview-ship': cmd_preview_ship,
         'recalc-ships': cmd_recalc_ships,
+        'recalc-bases': cmd_recalc_bases,
         'show-status': cmd_show_status,
         'list-ships': cmd_list_ships,
         'advance-turn': cmd_advance_turn,

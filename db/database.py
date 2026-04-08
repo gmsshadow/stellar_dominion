@@ -375,6 +375,19 @@ def get_connection(state_db_path=None, universe_db_path=None):
         UPDATE ships SET crew_required = MAX(1, (ship_size + 1) / 2)
         WHERE crew_required != MAX(1, (ship_size + 1) / 2) AND ship_size > 0
     """)
+
+    # Migrate: add sensor_profile column to ships if missing
+    ship_cols = [r[1] for r in conn.execute("PRAGMA table_info(ships)").fetchall()]
+    if 'sensor_profile' not in ship_cols:
+        conn.execute("ALTER TABLE ships ADD COLUMN sensor_profile REAL DEFAULT 0.5")
+        conn.execute("UPDATE ships SET sensor_profile = ship_size / 100.0 WHERE ship_size > 0")
+    conn.commit()
+
+    # Migrate: add sensor_profile column to bases if missing
+    for table in ('starbases', 'surface_ports', 'outposts'):
+        cols = [r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]
+        if 'sensor_profile' not in cols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN sensor_profile REAL DEFAULT 1.0")
     conn.commit()
 
     # Migrate: add is_gm to players if missing
@@ -782,6 +795,7 @@ CREATE TABLE IF NOT EXISTS ships (
     tu_per_turn INTEGER NOT NULL DEFAULT 300,
     tu_remaining INTEGER NOT NULL DEFAULT 300,
     sensor_rating INTEGER DEFAULT 20,
+    sensor_profile REAL DEFAULT 0.5,
     cargo_capacity INTEGER DEFAULT 500,
     cargo_used INTEGER DEFAULT 0,
     crew_count INTEGER DEFAULT 10,
@@ -807,6 +821,7 @@ CREATE TABLE IF NOT EXISTS surface_ports (
     troops INTEGER DEFAULT 0,
     employees INTEGER DEFAULT 0,
     employee_capacity INTEGER DEFAULT 0,
+    sensor_profile REAL DEFAULT 1.0,
     FOREIGN KEY (game_id) REFERENCES games(game_id)
 );
 
@@ -829,6 +844,7 @@ CREATE TABLE IF NOT EXISTS starbases (
     docking_capacity INTEGER DEFAULT 0,
     employees INTEGER DEFAULT 0,
     employee_capacity INTEGER DEFAULT 0,
+    sensor_profile REAL DEFAULT 1.0,
     FOREIGN KEY (game_id) REFERENCES games(game_id),
     FOREIGN KEY (surface_port_id) REFERENCES surface_ports(port_id)
 );
@@ -846,6 +862,7 @@ CREATE TABLE IF NOT EXISTS outposts (
     workers INTEGER DEFAULT 0,
     employees INTEGER DEFAULT 0,
     employee_capacity INTEGER DEFAULT 0,
+    sensor_profile REAL DEFAULT 1.0,
     FOREIGN KEY (game_id) REFERENCES games(game_id)
 );
 
@@ -1222,15 +1239,19 @@ def recalculate_ship_stats(conn, ship_id):
     # Crew required = 1 per 2 hull points (rounded up)
     crew_required = max(1, -(-ship_size // 2))  # ceiling division
 
+    # Sensor profile = ship_size / 100 (detection signature strength)
+    sensor_profile = ship_size / 100.0 if ship_size > 0 else 0.5
+
     conn.execute("""
         UPDATE ships SET
             cargo_capacity = ?,
             life_support_capacity = ?,
             sensor_rating = ?,
+            sensor_profile = ?,
             gravity_rating = ?,
             crew_required = ?
         WHERE ship_id = ?
-    """, (total_cargo, total_life_cap, total_sensor,
+    """, (total_cargo, total_life_cap, total_sensor, round(sensor_profile, 2),
           round(gravity_rating, 2), crew_required, ship_id))
     conn.commit()
 
@@ -1239,6 +1260,7 @@ def recalculate_ship_stats(conn, ship_id):
         'life_support_capacity': total_life_cap,
         'crew_capacity': total_crew_cap,
         'sensor_rating': total_sensor,
+        'sensor_profile': round(sensor_profile, 2),
         'gravity_rating': round(gravity_rating, 2),
         'thrust': total_thrust,
         'engine_efficiency': round(total_engine_eff, 2),
@@ -1346,22 +1368,37 @@ def recalculate_base_stats(conn, starbase_id=None, port_id=None, outpost_id=None
     employee_pct = min(100, (employees / total_employees_required * 100)) if total_employees_required > 0 else 100
     overall_efficiency = min(command_pct, employee_pct)
 
+    # Sensor profile = max(1, total_modules) + inventory_mass/100
+    # Bases throw a strong signature; more modules + cargo = more visible
+    if starbase_id:
+        inv_col = 'starbase_id'; inv_id = starbase_id
+    elif port_id:
+        inv_col = 'port_id'; inv_id = port_id
+    else:
+        inv_col = 'outpost_id'; inv_id = outpost_id
+    inv_mass_row = conn.execute(
+        f"SELECT COALESCE(SUM(quantity * mass_per_unit), 0) AS m FROM base_inventory WHERE {inv_col} = ?",
+        (inv_id,)
+    ).fetchone()
+    inv_mass = inv_mass_row['m'] if inv_mass_row else 0
+    sensor_profile = round(max(1, total_modules) + (inv_mass / 100.0), 2)
+
     # Update the base record
     if starbase_id:
         conn.execute("""
-            UPDATE starbases SET docking_capacity = ?, employee_capacity = ?
+            UPDATE starbases SET docking_capacity = ?, employee_capacity = ?, sensor_profile = ?
             WHERE base_id = ?
-        """, (total_docking, total_habitat, starbase_id))
+        """, (total_docking, total_habitat, sensor_profile, starbase_id))
     elif port_id:
         conn.execute("""
-            UPDATE surface_ports SET employee_capacity = ?
+            UPDATE surface_ports SET employee_capacity = ?, sensor_profile = ?
             WHERE port_id = ?
-        """, (total_habitat, port_id))
+        """, (total_habitat, sensor_profile, port_id))
     elif outpost_id:
         conn.execute("""
-            UPDATE outposts SET employee_capacity = ?
+            UPDATE outposts SET employee_capacity = ?, sensor_profile = ?
             WHERE outpost_id = ?
-        """, (total_habitat, outpost_id))
+        """, (total_habitat, sensor_profile, outpost_id))
     conn.commit()
 
     return {
@@ -1374,6 +1411,7 @@ def recalculate_base_stats(conn, starbase_id=None, port_id=None, outpost_id=None
         'command_required': command_required,
         'command_pct': round(command_pct, 1),
         'overall_efficiency': round(overall_efficiency, 1),
+        'sensor_profile': sensor_profile,
         'docking_capacity': total_docking,
         'mining_capacity': total_mining,
         'factory_capacity': total_factory,

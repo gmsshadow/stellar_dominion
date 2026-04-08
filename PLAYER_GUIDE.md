@@ -57,6 +57,10 @@ Gravity rating directly affects three commands:
 
 A starter ship with gravity 1.0 lands on a 1g planet for 20 OC. Strip out some cargo bays or add thrusters and that drops. Pack the ship full of trade goods and mining rigs, and the cost climbs. A ship with no thrusters cannot orbit, land, or take off at all.
 
+### Sensor Profile
+
+Every ship has a **sensor profile** equal to `ship_size / 100`. A size 50 starter has profile 0.5; a size 300 cruiser has profile 3.0. This represents how easy your ship is to detect — bigger ships throw off a stronger signature. It's compared against another ship's sensor rating when scans happen, so hiding a small scout is much easier than concealing a freighter or warship. Your sensor profile is shown in the Navigation Report.
+
 ## Your Identifiers
 
 | Identifier | Visibility | Purpose |

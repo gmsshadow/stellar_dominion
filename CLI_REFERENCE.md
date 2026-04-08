@@ -385,6 +385,15 @@ Recalculate all ship stats from installed components and cargo. Syncs `crew_coun
 python pbem.py recalc-ships
 ```
 
+### recalc-bases
+Recalculate all base stats from installed modules and inventory. Updates `docking_capacity`, `employee_capacity`, and `sensor_profile` for every starbase, surface port, and outpost. Run after making direct database edits to bases, installed_modules, or base_inventory.
+
+*No additional parameters.*
+
+```bash
+python pbem.py recalc-bases
+```
+
 ### show-status
 Show a ship's current position and status.
 

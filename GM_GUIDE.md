@@ -105,6 +105,7 @@ All ship stats are calculated from installed components:
 - **cargo_capacity** = sum of all cargo_capacity values
 - **life_support_capacity** = sum of all life_capacity values
 - **sensor_rating** = sum of all sensor_rating values
+- **sensor_profile** = ship_size / 100 — detection signature strength (how easy this ship is to spot)
 - **gravity_rating** = total_thrust / (ship_size + total_installed_st/100) — packed ships are heavier and less manoeuvrable. Scales ORBIT/LAND/TAKEOFF cost as `base × body_grav / ship_grav`
 - **crew_required** = ceil(ship_size / 2) — 1 crew per 2 hull points
 - **engine_efficiency** = engines / optimal × 100%

@@ -369,8 +369,11 @@ def generate_ship_report(turn_result, db_path=None, game_id="OMICRON101",
 
     lines.append(section_line(f"{system['name']} ({system_id}) - {{{final_loc}}}"))
     lines.append(section_line())
+    sensor_profile = ship['sensor_profile'] if 'sensor_profile' in ship.keys() and ship['sensor_profile'] is not None else (ship['ship_size'] / 100.0 if 'ship_size' in ship.keys() else 0.5)
     lines.append(section_line(f"Sensor Rating: {ship['sensor_rating']}%".ljust(COL_LEFT) +
                                f"Cargo: {ship['cargo_used']}/{ship['cargo_capacity']} ST"))
+    lines.append(section_line(f"Sensor Profile: {sensor_profile:.2f}".ljust(COL_LEFT) +
+                               f"(detection signature)"))
     lines.append(section_line())
 
     # ==========================================
@@ -645,6 +648,8 @@ def generate_base_report(base_type, base_id, db_path=None, game_id="OMICRON101",
         lines.append(section_line(f"Repair Capacity: {stats['repair_capacity']}"))
     if stats['defence_rating']:
         lines.append(section_line(f"Defence Rating: {stats['defence_rating']}"))
+    lines.append(section_line(f"Sensor Profile: {stats.get('sensor_profile', 1.0):.2f}".ljust(COL_LEFT) +
+                               f"(detection signature)"))
     lines.append(section_line())
 
     # ==========================================
