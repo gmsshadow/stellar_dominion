@@ -436,6 +436,11 @@ class StellarDominionGUI:
         self.wizard_game.insert(0, self.config_data['game_id'])
         self.wizard_game.pack(side=tk.LEFT)
 
+        self.wizard_reply_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(game_row, text="Send reply on Fetch Mail",
+                        variable=self.wizard_reply_var
+                        ).pack(side=tk.LEFT, padx=(16, 0))
+
         # Stages list
         stages_frame = ttk.LabelFrame(tab, text="Stages", padding=8)
         stages_frame.pack(fill=tk.X, pady=(0, 12))
@@ -553,6 +558,10 @@ class StellarDominionGUI:
         if cmd in ('fetch-mail', 'process-inbox'):
             full_args.extend(['--inbox', './inbox'])
 
+        # Fetch Mail can optionally send an acknowledgement reply
+        if cmd == 'fetch-mail' and getattr(self, 'wizard_reply_var', None) and self.wizard_reply_var.get():
+            full_args.append('--reply')
+
         self._run_pbem(full_args, f"Wizard: {name}",
                        on_complete=self._wizard_stage_complete)
 
@@ -663,6 +672,9 @@ class StellarDominionGUI:
             inbox = entries.get('inbox')
             if inbox and inbox.get().strip():
                 args.extend(['--inbox', inbox.get().strip()])
+            reply_var = entries.get('reply_var')
+            if reply_var and reply_var.get():
+                args.append('--reply')
             return args
 
         def process_inbox_builder(entries):
@@ -681,9 +693,37 @@ class StellarDominionGUI:
             return args
 
         self._section_header(inner, "Email Workflow")
-        self._action_row(inner, "Fetch Mail", [], custom_builder=fetch_mail_builder,
-                         fields=[self._game_field(),
-                                 ('inbox', 'Inbox:', './inbox', 14)])
+
+        # Fetch Mail — custom row with a Reply checkbox
+        fm_row = ttk.Frame(inner, padding=(5, 2))
+        fm_row.pack(fill=tk.X, padx=2, pady=1)
+
+        fm_entries = {}
+        fm_btn = ttk.Button(fm_row, text="Fetch Mail", width=22)
+        fm_btn.pack(side=tk.LEFT, padx=(0, 8))
+
+        ttk.Label(fm_row, text="Game:").pack(side=tk.LEFT, padx=(4, 2))
+        e = ttk.Entry(fm_row, width=14)
+        e.insert(0, self.config_data['game_id'])
+        e.pack(side=tk.LEFT)
+        fm_entries['game'] = e
+
+        ttk.Label(fm_row, text="Inbox:").pack(side=tk.LEFT, padx=(4, 2))
+        e = ttk.Entry(fm_row, width=14)
+        e.insert(0, './inbox')
+        e.pack(side=tk.LEFT)
+        fm_entries['inbox'] = e
+
+        fm_entries['reply_var'] = tk.BooleanVar(value=False)
+        ttk.Checkbutton(fm_row, text="Send reply",
+                        variable=fm_entries['reply_var']
+                        ).pack(side=tk.LEFT, padx=(6, 0))
+
+        def run_fetch_mail():
+            args = fetch_mail_builder(fm_entries)
+            self._run_pbem(args, "Fetch Mail")
+        fm_btn.config(command=run_fetch_mail)
+
         self._action_row(inner, "Process Inbox", [], custom_builder=process_inbox_builder,
                          fields=[self._game_field(),
                                  ('inbox', 'Inbox:', './inbox', 14)])
