@@ -1,128 +1,428 @@
-# Stellar Dominion — PBEM Strategy Game Engine
+"""
+Stellar Dominion - Order Processor
+Shared logic for validating, filing, and storing submissions from any source.
+Handles both player orders and registration forms.
+"""
 
-A play-by-email (PBEM) grand strategy game engine inspired by classic Phoenix-BSE style games. Players command starships, trade goods, recruit officers, and navigate a persistent galaxy — submitting orders by email and receiving detailed ASCII and PDF reports each turn.
+import json
+import yaml
+from datetime import datetime
+from engine.orders.parser import parse_yaml_orders, parse_text_orders
+from engine.registration import (
+    parse_yaml_registration, parse_text_registration,
+    validate_registration,
+)
+from engine.game_setup import add_player
 
-Built in Python with SQLite. No web server required — the entire game runs from the command line.
 
-## Features
+# ======================================================================
+# Content Type Detection
+# ======================================================================
 
-- **Modular ship components** — ships built from internal components (thrusters, engines, cargo bays, sensors, jump drives) that determine all ship stats. Buy, install, uninstall, and scrap components at starbases. Components use 3-digit IDs (100-169).
-- **Modular base system** — starbases, surface ports, and outposts use installable modules (500-589) for docking, mining, manufacturing, trade, storage, defence, and habitat. Employee efficiency and command efficiency drive base output.
-- **Turn-based order resolution** with an Operational Cycle (OC) system and interleaved priority queue across all ships
-- **Play-by-email** — players submit YAML or text order files; the engine validates, resolves, and emails back reports
-- **ASCII + PDF reports** — Phoenix-style ship and prefect reports with system maps, cargo manifests, crew rosters, and component breakdowns
-- **Persistent universe** — two-database architecture separating world definition (GM-editable) from live game state (engine-managed)
-- **Trading economy** — market cycles, base specialisation, price fluctuation, cargo capacity, and circular trade routes
-- **Crew management** — hire crew at starbases, promote officers, pay wages, and manage ship efficiency
-- **Engine efficiency** — movement cost scales with installed engines vs ship size; ships without engines cannot move
-- **Faction system** — six factions with GM-moderated transfers
-- **GM NPC system** — GM account with unlimited credits, multiple prefects across factions, NPC ships, local order submission (gm_orders/), and local report output (gm_reports/)
-- **Moderator actions** — players submit free-text requests to the GM; the turn auto-holds for GM review and response before resolving
-- **GM moderation tools** — hold/release turn pipeline, review/edit/delete/inject orders, respond to moderator actions
-- **Gmail integration** — fetch orders from Gmail, send reports back automatically
-- **Universe expansion** — add star systems, celestial bodies, hyperspace links, surface ports, starbases, and outposts via CLI
+def detect_content_type(content):
+    """
+    Detect whether content is player orders or a registration form.
+    
+    Returns: 'orders' | 'registration' | 'unknown'
+    
+    Detection rules:
+      YAML: 'orders' key or 'ship'+'account' keys -> orders
+            'player_name' or 'prefect_name' key  -> registration
+      Text: PLAYER_NAME or PREFECT_NAME line     -> registration
+            SHIP or ACCOUNT line                  -> orders
+    """
+    content = content.strip()
+    if not content:
+        return 'unknown'
 
-## Quick Start
+    # Try YAML first
+    try:
+        data = yaml.safe_load(content)
+        if isinstance(data, dict):
+            # Registration markers
+            if any(k in data for k in ('player_name', 'prefect_name', 'planet')):
+                return 'registration'
+            # Order markers
+            if 'orders' in data or ('ship' in data and 'account' in data):
+                return 'orders'
+    except yaml.YAMLError:
+        pass
 
-```bash
-python pbem.py setup-game --demo
-python pbem.py show-map --game OMICRON101
-python pbem.py list-components                     # Ship component catalogue
-python pbem.py list-modules                        # Base module catalogue
-python pbem.py turn-pipeline --game OMICRON101
-python pbem.py submit-orders orders.yaml --email alice@example.com
-python pbem.py run-turn --game OMICRON101
-python pbem.py advance-turn --game OMICRON101
-```
+    # Fall back to text line scanning
+    for line in content.splitlines():
+        line = line.strip().upper()
+        if not line or line.startswith('#'):
+            continue
+        first_word = line.split(None, 1)[0] if line.split() else ''
+        if first_word in ('PLAYER_NAME', 'PREFECT_NAME', 'PLANET'):
+            return 'registration'
+        if first_word in ('SHIP', 'ACCOUNT'):
+            return 'orders'
 
-## Requirements
+    return 'unknown'
 
-- Python 3.10+
-- PyYAML (`pip install pyyaml`)
-- SQLite (built-in)
-- ReportLab (`pip install reportlab`) — optional, enables PDF report export
 
-## Documentation
+# ======================================================================
+# Order Processing
+# ======================================================================
 
-| Guide | Audience | Contents |
-|-------|----------|----------|
-| [Player Guide](PLAYER_GUIDE.md) | Players | Ship components, orders reference, trading, crew, factions |
-| [GM Guide](GM_GUIDE.md) | Game Masters | Turn pipeline, NPC management, base modules, moderation tools, universe management |
-| [CLI Reference](CLI_REFERENCE.md) | All | Complete command reference with all parameters |
+def process_single_order(conn, folders, turn_str, game_id, email, content):
+    """
+    Validate, file, and store a single order submission.
+    
+    Args:
+        conn: open database connection
+        folders: TurnFolders instance
+        turn_str: current turn string (e.g. "500.1")
+        game_id: game ID string
+        email: sender's email address
+        content: raw orders text content
+    
+    Returns dict with:
+        status: 'accepted' | 'rejected' | 'skipped'
+        type: 'orders'
+        ship_id: int or None
+        ship_name: str or None
+        order_count: int (if accepted)
+        orders_summary: list of str (if accepted)
+        error: str (if rejected/skipped)
+    """
+    base = {'type': 'orders'}
 
-## Ship Component System
+    # Try YAML first, fall back to text
+    try:
+        parsed = parse_yaml_orders(content)
+        if parsed.get('error') or (not parsed.get('orders') and not parsed.get('ship')):
+            parsed = parse_text_orders(content)
+    except Exception as e:
+        return {**base, 'status': 'rejected', 'ship_id': None, 'ship_name': None,
+                'order_count': 0, 'orders_summary': [],
+                'error': f"Parse error: {e}"}
 
-Ships are built from modular internal components. Each ship has an ST (Stellar Ton) capacity determined by its size: `ST_capacity = ship_size × 50`. The starting Light Trader MK I is size 50 = 2500 ST, with 500 ST of starting components and 2000 ST free for upgrades.
+    if parsed.get('error'):
+        return {**base, 'status': 'rejected', 'ship_id': None, 'ship_name': None,
+                'order_count': 0, 'orders_summary': [],
+                'error': parsed['error']}
 
-Component categories: Bridge, Thrusters, Sublight Engines, Cargo Bays, Crew Quarters, Sensors, and Jump Drives. All components have 3-digit IDs (100-169 range).
+    orders = parsed.get('orders', [])
+    if not orders:
+        errors = parsed.get('errors', [])
+        if errors:
+            return {**base, 'status': 'rejected', 'ship_id': None, 'ship_name': None,
+                    'order_count': 0, 'orders_summary': [],
+                    'error': '; '.join(errors)}
+        return {**base, 'status': 'skipped', 'ship_id': None, 'ship_name': None,
+                'order_count': 0, 'orders_summary': [],
+                'error': 'No valid orders found'}
 
-Ship stats (cargo capacity, sensor rating, life support, gravity rating, engine efficiency) are derived entirely from installed components.
+    # Determine subject type: ship, starbase, port, or outpost
+    ship_id = parsed.get('ship')
+    starbase_id = parsed.get('starbase')
+    port_id = parsed.get('port')
+    outpost_id = parsed.get('outpost')
 
-```bash
-python pbem.py list-components    # View the full component catalogue
-```
+    if starbase_id:
+        subject_type, subject_id_raw, label = 'starbase', starbase_id, 'Starbase'
+    elif port_id:
+        subject_type, subject_id_raw, label = 'port', port_id, 'Port'
+    elif outpost_id:
+        subject_type, subject_id_raw, label = 'outpost', outpost_id, 'Outpost'
+    elif ship_id:
+        subject_type, subject_id_raw, label = 'ship', ship_id, 'Ship'
+    else:
+        return {**base, 'status': 'skipped', 'ship_id': None, 'ship_name': None,
+                'order_count': 0, 'orders_summary': [],
+                'error': 'No ship/starbase/port/outpost ID in orders'}
 
-## Base Module System
+    try:
+        subject_id = int(subject_id_raw)
+    except (ValueError, TypeError):
+        return {**base, 'status': 'rejected', 'ship_id': None, 'ship_name': None,
+                'order_count': 0, 'orders_summary': [],
+                'error': f"Invalid {label} ID '{subject_id_raw}'"}
 
-Starbases, surface ports, and outposts are equipped with installable modules (500-589 range) that determine their capabilities. Surface ports are built on planet surfaces, starbases orbit above them, and outposts are lightweight surface installations. Modules have location restrictions — some are starbase-only (docking, repair), some surface-only (mining, market).
+    # Check account number
+    account = parsed.get('account', '')
+    if not account:
+        return {**base, 'status': 'rejected', 'ship_id': subject_id if subject_type == 'ship' else None,
+                'ship_name': None, 'order_count': 0, 'orders_summary': [],
+                'error': 'No account number in orders'}
 
-Module categories: Command, Docking, Mining, Factory, Maintenance, Market, Storage, Habitat, and Defence. Base efficiency depends on having enough employees and command modules (1 per 100 modules).
+    # Validate ownership
+    if subject_type == 'ship':
+        valid, account_number, error = folders.validate_ship_ownership(email, subject_id, account)
+    else:
+        valid, account_number, error = folders.validate_base_ownership(email, subject_type, subject_id, account)
 
-```bash
-python pbem.py list-modules                # View the full module catalogue
-python pbem.py base-status --id 45687590   # Detailed status for a base
-```
+    if not valid:
+        folders.store_rejected(turn_str, email, subject_id, content, [error])
+        return {**base, 'status': 'rejected', 'ship_id': subject_id if subject_type == 'ship' else None,
+                'ship_name': None, 'order_count': 0, 'orders_summary': [],
+                'error': error}
 
-## Project Structure
+    # Store the incoming orders file
+    folders.store_incoming_orders(turn_str, email, subject_id, content)
 
-```
-stellar_dominion/
-├── pbem.py                          # Main CLI entry point
-├── db/
-│   ├── database.py                  # Two-DB schema, connections, migrations, helpers
-│   └── universe_admin.py            # Universe content management
-├── engine/
-│   ├── game_setup.py                # Game/player/GM creation, market generation
-│   ├── maps/
-│   │   ├── system_map.py            # 25×25 ASCII grid renderer
-│   │   └── surface_gen.py           # Planet surface terrain generator
-│   ├── orders/
-│   │   └── parser.py                # YAML & text order parser
-│   ├── resolution/
-│   │   └── resolver.py              # Turn resolution engine
-│   └── reports/
-│       ├── report_gen.py            # ASCII report generator
-│       └── pdf_export.py            # PDF export
-└── game_data/
-    ├── universe.db                  # World definition + component/module catalogues
-    ├── game_state.db                # Live game state
-    ├── turns/                       # Orders and reports
-    ├── gm_orders/                   # GM NPC order files (local submission)
-    └── gm_reports/                  # GM NPC turn reports (local output)
-```
+    # Write to database
+    game = conn.execute(
+        "SELECT current_year, current_week FROM games WHERE game_id = ?",
+        (game_id,)
+    ).fetchone()
+    player = conn.execute(
+        "SELECT player_id FROM players WHERE email = ? AND game_id = ?",
+        (email, game_id)
+    ).fetchone()
 
-## Database Architecture
+    # Clear previous orders for this subject/turn (resubmission replaces)
+    conn.execute("""
+        DELETE FROM turn_orders
+        WHERE game_id = ? AND turn_year = ? AND turn_week = ?
+          AND subject_type = ? AND subject_id = ?
+    """, (game_id, game['current_year'], game['current_week'], subject_type, subject_id))
 
-**universe.db** — World definition. Star systems, celestial bodies, hyperspace links, planet surfaces, factions, trade goods, planetary resources, the **ship component catalogue**, and the **base module catalogue**. GM-editable.
+    # Insert new orders
+    for seq, order in enumerate(orders, 1):
+        params = json.dumps(order.get('params', {})) if order.get('params') else None
+        conn.execute("""
+            INSERT INTO turn_orders
+                (game_id, turn_year, turn_week, player_id,
+                 subject_type, subject_id, order_sequence, command, parameters)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (game_id, game['current_year'], game['current_week'],
+              player['player_id'], subject_type, subject_id, seq,
+              order['command'], params))
 
-**game_state.db** — Live game state. Players, prefects, ships, installed ship components, installed base modules, cargo, officers, starbases, surface ports, outposts, orders, messages, moderator actions. Auto-backed up after each turn.
+    conn.commit()
 
-## CLI Command Summary
+    # Store receipt
+    folders.store_receipt(turn_str, email, subject_id, {
+        'status': 'accepted',
+        'order_count': len(orders),
+    })
 
-### Game & Universe
-`setup-game --demo` · `join-game` · `list-players` · `list-ships` · `show-map` · `list-universe` · `list-factions` · `list-components` · `list-modules` · `base-status`
+    # Get name for display
+    if subject_type == 'ship':
+        row = conn.execute("SELECT name FROM ships WHERE ship_id = ?", (subject_id,)).fetchone()
+    elif subject_type == 'starbase':
+        row = conn.execute("SELECT name FROM starbases WHERE base_id = ?", (subject_id,)).fetchone()
+    elif subject_type == 'port':
+        row = conn.execute("SELECT name FROM surface_ports WHERE port_id = ?", (subject_id,)).fetchone()
+    else:
+        row = conn.execute("SELECT name FROM outposts WHERE outpost_id = ?", (subject_id,)).fetchone()
+    subject_name = row['name'] if row else None
 
-### Turn Processing
-`submit-orders` · `turn-pipeline` · `hold-turn` / `release-turn` · `review-orders` · `edit-order` / `delete-order` / `inject-order` · `list-actions` / `respond-action` · `run-turn` · `advance-turn`
+    # Build order summary for display
+    orders_summary = []
+    for o in orders:
+        params_str = f" {o['params']}" if o.get('params') else ""
+        orders_summary.append(f"{o['command']}{params_str}")
 
-### Factions & Moderation
-`faction-requests` · `approve-faction` / `deny-faction` · `edit-credits` · `suspend-player` / `reinstate-player`
+    return {**base, 'status': 'accepted',
+            'ship_id': subject_id if subject_type == 'ship' else None,
+            'ship_name': subject_name if subject_type == 'ship' else None,
+            'subject_type': subject_type, 'subject_id': subject_id, 'subject_name': subject_name,
+            'order_count': len(orders), 'error': None,
+            'orders_summary': orders_summary}
 
-### GM NPC System
-`add-gm` · `add-gm-prefect` · `add-gm-ship`
 
-See the [GM Guide](GM_GUIDE.md) for detailed usage.
+# ======================================================================
+# Registration Processing
+# ======================================================================
 
-## Licence
+def process_single_registration(db_path, game_id, email, content):
+    """
+    Validate and process a registration form submission.
+    
+    Args:
+        db_path: Path to database (or None for default)
+        game_id: game ID string
+        email: sender's email address (from envelope/folder)
+        content: raw registration form text
+    
+    Returns dict with:
+        status: 'registered' | 'rejected'
+        type: 'registration'
+        player_name: str or None
+        prefect_name: str or None
+        ship_name: str or None
+        account_number: str or None
+        planet_name: str or None
+        error: str (if rejected)
+    """
+    from db.database import get_connection
 
-This project is not currently under an open-source licence. All rights reserved.
+    # Try YAML first, fall back to text
+    try:
+        raw = yaml.safe_load(content)
+        if isinstance(raw, dict):
+            data = {
+                'game': str(raw.get('game') or '').strip(),
+                'player_name': str(raw.get('player_name') or '').strip(),
+                'email': str(raw.get('email') or '').strip(),
+                'prefect_name': str(raw.get('prefect_name') or '').strip(),
+                'ship_name': str(raw.get('ship_name') or '').strip(),
+                'planet': str(raw.get('planet') or '').strip(),
+                'errors': [],
+            }
+        else:
+            data = parse_text_registration(content)
+    except yaml.YAMLError:
+        data = parse_text_registration(content)
+
+    _fail = {'type': 'registration', 'status': 'rejected',
+             'player_name': data.get('player_name'),
+             'prefect_name': None, 'ship_name': None,
+             'account_number': None, 'planet_name': None}
+
+    # Validate required fields
+    errors = validate_registration(data)
+    if errors:
+        return {**_fail, 'error': '; '.join(errors)}
+
+    # Check game matches
+    form_game = data.get('game', '')
+    if form_game and form_game != game_id:
+        return {**_fail, 'error': f"Form game '{form_game}' does not match --game '{game_id}'"}
+
+    # Check sender email matches form email (if sender known)
+    form_email = data['email'].lower().strip()
+    if email and email.lower().strip() != form_email:
+        return {**_fail, 'error': f"Sender email '{email}' does not match form email '{form_email}'"}
+
+    conn = get_connection(db_path)
+
+    # Verify game exists
+    game = conn.execute("SELECT * FROM games WHERE game_id = ?", (game_id,)).fetchone()
+    if not game:
+        conn.close()
+        return {**_fail, 'error': f"Game '{game_id}' not found"}
+
+    # Check email not already registered
+    existing = conn.execute(
+        "SELECT player_name FROM players WHERE email = ? AND game_id = ?",
+        (form_email, game_id)
+    ).fetchone()
+    if existing:
+        conn.close()
+        return {**_fail, 'error': f"Email '{form_email}' already registered to {existing['player_name']}"}
+
+    # Verify planet exists
+    try:
+        planet_id = int(data['planet'])
+    except (ValueError, TypeError):
+        conn.close()
+        return {**_fail, 'error': f"Planet must be a numeric body ID (got '{data.get('planet', '')}')"}
+
+    planet = conn.execute(
+        "SELECT cb.*, ss.name as system_name FROM celestial_bodies cb "
+        "JOIN star_systems ss ON cb.system_id = ss.system_id "
+        "WHERE cb.body_id = ?",
+        (planet_id,)
+    ).fetchone()
+    if not planet:
+        conn.close()
+        return {**_fail, 'error': f"Planet/body {planet_id} not found in game {game_id}"}
+
+    conn.close()
+
+    # Create the player
+    result = add_player(
+        db_path=db_path,
+        game_id=game_id,
+        player_name=data['player_name'],
+        email=form_email,
+        prefect_name=data['prefect_name'],
+        ship_name=data['ship_name'],
+        start_orbit_body=planet_id,
+    )
+
+    if result:
+        return {
+            'type': 'registration',
+            'status': 'registered',
+            'player_name': data['player_name'],
+            'prefect_name': data['prefect_name'],
+            'ship_name': data['ship_name'],
+            'account_number': result.get('account_number'),
+            'planet_name': planet['name'],
+            'error': None,
+        }
+    else:
+        return {**_fail, 'error': 'Player creation failed (check console output)'}
+
+
+# ======================================================================
+# Reply / Acknowledgement Formatting
+# ======================================================================
+
+def format_received_ack(game_id):
+    """
+    Format a simple 'received' acknowledgement for the fetch stage.
+    Sent immediately when mail is pulled from Gmail -- before validation.
+    """
+    return "\n".join([
+        "Stellar Dominion - Submission Received",
+        "=" * 38,
+        "",
+        f"Game: {game_id}",
+        f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        "",
+        "Your submission has been received and is queued for processing.",
+        "You will not receive a separate confirmation after processing;",
+        "if there is a problem with your submission the GM will contact",
+        "you directly.",
+        "",
+        "-- Stellar Dominion Game Engine",
+    ])
+
+
+def format_reply_text(result, game_id, turn_str):
+    """
+    Format a detailed reply for an order processing result.
+    """
+    lines = [
+        "Stellar Dominion - Order Confirmation",
+        "=" * 38,
+        "",
+        f"Game:   {game_id}",
+        f"Turn:   {turn_str}",
+        f"Time:   {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        "",
+    ]
+
+    if result['status'] == 'accepted':
+        ship_str = str(result['ship_id'])
+        if result.get('ship_name'):
+            ship_str = f"{result['ship_name']} ({result['ship_id']})"
+
+        lines.append("Status: ACCEPTED")
+        lines.append(f"Ship:   {ship_str}")
+        lines.append(f"Orders: {result['order_count']} received")
+        lines.append("")
+        lines.append("Order listing:")
+        for i, cmd in enumerate(result.get('orders_summary', []), 1):
+            lines.append(f"  {i:>2}. {cmd}")
+        lines.append("")
+        lines.append("Your orders have been filed for turn resolution.")
+        lines.append("Resubmitting orders for the same ship will replace these.")
+
+    elif result['status'] == 'rejected':
+        lines.append("Status: REJECTED")
+        if result.get('ship_id'):
+            lines.append(f"Ship:   {result['ship_id']}")
+        lines.append("")
+        lines.append(f"Reason: {result.get('error', 'Unknown error')}")
+        lines.append("")
+        lines.append("Please fix the issue and resubmit your orders.")
+
+    else:  # skipped
+        lines.append("Status: NOT PROCESSED")
+        lines.append("")
+        lines.append(f"Reason: {result.get('error', 'Unknown')}")
+        lines.append("")
+        lines.append("Your message did not contain recognizable orders.")
+        lines.append("Please check the format and resubmit.")
+
+    lines.append("")
+    lines.append("-- Stellar Dominion Game Engine")
+    return "\n".join(lines)
