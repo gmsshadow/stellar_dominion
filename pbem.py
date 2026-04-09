@@ -566,7 +566,7 @@ def cmd_run_turn(args):
         conn.commit()
 
     if changefaction_orders_found:
-        # Create faction_requests records for any that don't already exist for this prefect this turn
+        # Create faction_requests records for any that don't already exist
         for cf in changefaction_orders_found:
             prefect_row = conn.execute(
                 "SELECT faction_id FROM prefects WHERE prefect_id = ?",
@@ -574,19 +574,37 @@ def cmd_run_turn(args):
             ).fetchone()
             current_faction = prefect_row['faction_id'] if prefect_row else None
 
-            existing = conn.execute("""
+            # Skip if already in target faction (approve already applied, or never needed)
+            if current_faction == cf['target_faction_id']:
+                continue
+
+            # Skip if there's already a pending request for this prefect
+            existing_pending = conn.execute("""
                 SELECT request_id FROM faction_requests
                 WHERE game_id = ? AND prefect_id = ? AND status = 'pending'
             """, (args.game, cf['prefect_id'])).fetchone()
-            if not existing:
-                conn.execute("""
-                    INSERT INTO faction_requests
-                    (game_id, prefect_id, current_faction_id, target_faction_id,
-                     reason, status, requested_turn_year, requested_turn_week)
-                    VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)
-                """, (args.game, cf['prefect_id'], current_faction,
-                      cf['target_faction_id'], cf['reason'],
-                      game['current_year'], game['current_week']))
+            if existing_pending:
+                continue
+
+            # Skip if GM already actioned a request for this prefect+target this turn
+            already_actioned = conn.execute("""
+                SELECT request_id FROM faction_requests
+                WHERE game_id = ? AND prefect_id = ? AND target_faction_id = ?
+                AND status IN ('approved', 'denied')
+                AND requested_turn_year = ? AND requested_turn_week = ?
+            """, (args.game, cf['prefect_id'], cf['target_faction_id'],
+                  game['current_year'], game['current_week'])).fetchone()
+            if already_actioned:
+                continue
+
+            conn.execute("""
+                INSERT INTO faction_requests
+                (game_id, prefect_id, current_faction_id, target_faction_id,
+                 reason, status, requested_turn_year, requested_turn_week)
+                VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)
+            """, (args.game, cf['prefect_id'], current_faction,
+                  cf['target_faction_id'], cf['reason'],
+                  game['current_year'], game['current_week']))
         conn.commit()
 
     # Check for any still-pending moderator actions or faction requests this turn
@@ -3232,14 +3250,19 @@ def cmd_approve_faction(args):
         UPDATE faction_requests SET status = 'approved', gm_note = ?
         WHERE request_id = ?
     """, (note, args.request_id))
+    # Actually apply the faction change to the prefect
+    conn.execute(
+        "UPDATE prefects SET faction_id = ? WHERE prefect_id = ?",
+        (request['target_faction_id'], request['prefect_id'])
+    )
     conn.commit()
 
     prefect = conn.execute("SELECT name FROM prefects WHERE prefect_id = ?",
                             (request['prefect_id'],)).fetchone()
-    target = conn.execute("SELECT abbreviation, name FROM factions WHERE faction_id = ?",
+    target = conn.execute("SELECT abbreviation, name FROM universe.factions WHERE faction_id = ?",
                            (request['target_faction_id'],)).fetchone()
     print(f"Approved: {prefect['name']} -> {target['abbreviation']} ({target['name']})")
-    print(f"  Change will take effect at next turn processing.")
+    print(f"  Prefect faction updated immediately.")
     conn.close()
 
 
@@ -3268,7 +3291,7 @@ def cmd_deny_faction(args):
 
     prefect = conn.execute("SELECT name FROM prefects WHERE prefect_id = ?",
                             (request['prefect_id'],)).fetchone()
-    target = conn.execute("SELECT abbreviation FROM factions WHERE faction_id = ?",
+    target = conn.execute("SELECT abbreviation FROM universe.factions WHERE faction_id = ?",
                            (request['target_faction_id'],)).fetchone()
     print(f"Denied: {prefect['name']} -> {target['abbreviation']}")
     if note:
