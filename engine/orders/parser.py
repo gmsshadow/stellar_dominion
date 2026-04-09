@@ -8,7 +8,8 @@ import re
 from pathlib import Path
 
 
-# Valid commands and their parameter types
+# Valid commands, parameter types, and which subject they attach to.
+# 'subject' field: 'ship' (default), 'prefect', or 'both'.
 VALID_COMMANDS = {
     'WAIT': {'params': 'integer', 'description': 'Wait for n Operational Cycles (OC)'},
     'MOVE': {'params': 'coordinate', 'description': 'Move to grid coordinate'},
@@ -32,9 +33,9 @@ VALID_COMMANDS = {
     'SCRAP': {'params': 'component_order', 'description': 'Scrap a component from cargo'},
     'RENAMESHIP': {'params': 'rename_id_name', 'description': 'Rename a ship'},
     'RENAMEBASE': {'params': 'rename_id_name', 'description': 'Rename a starbase'},
-    'RENAMEPREFECT': {'params': 'rename_id_name', 'description': 'Rename a prefect'},
+    'RENAMEPREFECT': {'params': 'rename_id_name', 'subject': 'both', 'description': 'Rename a prefect'},
     'RENAMEOFFICER': {'params': 'rename_officer', 'description': 'Rename an officer'},
-    'CHANGEFACTION': {'params': 'changefaction_order', 'description': 'Request to change faction (GM-moderated)'},
+    'CHANGEFACTION': {'params': 'changefaction_order', 'subject': 'prefect', 'description': 'Request to change faction (GM-moderated, prefect-scoped)'},
     'MODERATOR': {'params': 'moderator_order', 'description': 'Submit a free-text request to the GM'},
     'CLEAR': {'params': 'none', 'description': 'Clear all pending overflow orders from previous turns'},
     # Base/port/outpost commands
@@ -42,6 +43,21 @@ VALID_COMMANDS = {
     'SETBUY': {'params': 'setprice_order', 'description': 'Set market buy price for an item'},
     'SETSELL': {'params': 'setprice_order', 'description': 'Set market sell price for an item'},
 }
+
+
+def get_command_subject(command):
+    """Return the valid subject type(s) for a command: 'ship', 'prefect', or 'both'.
+    Defaults to 'ship' if not specified."""
+    spec = VALID_COMMANDS.get(command, {})
+    return spec.get('subject', 'ship')
+
+
+def command_allowed_for_subject(command, subject_type):
+    """Check if a command is allowed for the given subject type ('ship' or 'prefect')."""
+    allowed = get_command_subject(command)
+    if allowed == 'both':
+        return True
+    return allowed == subject_type
 
 # Backwards-compatible command aliases (old -> new).
 # We normalize to the new "SCAN*" naming so reports/logs are consistent.
@@ -457,6 +473,36 @@ def parse_order(command_str, params):
     return command, params, f"Unknown parameter type for {command}"
 
 
+def _validate_orders_against_subject(result):
+    """
+    Given a parsed result dict, determine the subject type from the declared
+    fields and validate each order against its allowed subject list. Orders
+    that don't match are removed and errors are appended.
+    """
+    subject_type = None
+    if result.get('prefect'):
+        subject_type = 'prefect'
+    elif result.get('ship'):
+        subject_type = 'ship'
+    # (starbase/port/outpost have their own command set — not validated here)
+
+    if not subject_type:
+        return
+
+    valid_orders = []
+    for o in result['orders']:
+        if not command_allowed_for_subject(o['command'], subject_type):
+            required = get_command_subject(o['command'])
+            result['errors'].append(
+                f"Order #{o['sequence']} {o['command']}: this command must be filed "
+                f"against a {required}, not a {subject_type}. "
+                f"Move it into a {required.upper()} block."
+            )
+        else:
+            valid_orders.append(o)
+    result['orders'] = valid_orders
+
+
 def parse_yaml_orders(yaml_content):
     """
     Parse orders from YAML content.
@@ -485,6 +531,7 @@ def parse_yaml_orders(yaml_content):
         'game': data.get('game', ''),
         'account': str(data.get('account', '')),
         'ship': data.get('ship', ''),
+        'prefect': data.get('prefect', ''),
         'starbase': data.get('starbase', ''),
         'port': data.get('port', ''),
         'outpost': data.get('outpost', ''),
@@ -527,6 +574,7 @@ def parse_yaml_orders(yaml_content):
                     'params': parsed_params,
                 })
 
+    _validate_orders_against_subject(result)
     return result
 
 
@@ -537,7 +585,7 @@ def parse_text_orders(text_content):
     Expected format (one per line):
     GAME OMICRON101
     ACCOUNT 35846634
-    SHIP 2547876
+    SHIP 2547876          (or PREFECT 48814452, STARBASE 45687590, etc.)
     WAIT 50
     MOVE M13
     SCANLOCATION
@@ -545,12 +593,17 @@ def parse_text_orders(text_content):
     ORBIT 247985
     DOCK 45687590
     
+    Each order file applies to a single subject. Commands are validated
+    against the declared subject type — e.g. CHANGEFACTION is rejected
+    in a SHIP block because it's a prefect-scoped order.
+    
     Returns same format as parse_yaml_orders.
     """
     result = {
         'game': '',
         'account': '',
         'ship': '',
+        'prefect': '',
         'starbase': '',
         'port': '',
         'outpost': '',
@@ -575,6 +628,9 @@ def parse_text_orders(text_content):
         elif cmd == 'SHIP':
             result['ship'] = params or ''
             continue
+        elif cmd == 'PREFECT':
+            result['prefect'] = params or ''
+            continue
         elif cmd == 'STARBASE':
             result['starbase'] = params or ''
             continue
@@ -596,6 +652,7 @@ def parse_text_orders(text_content):
                 'params': parsed_params,
             })
 
+    _validate_orders_against_subject(result)
     return result
 
 

@@ -866,7 +866,14 @@ class TurnResolver:
         elif cmd == 'RENAMEOFFICER':
             return self._cmd_renameofficer(state, params)
         elif cmd == 'CHANGEFACTION':
-            return self._cmd_changefaction(state, params)
+            # CHANGEFACTION is now prefect-scoped. If it reaches here it
+            # means it was somehow filed against a ship — treat as error.
+            return {
+                'command': 'CHANGEFACTION', 'params': params,
+                'tu_before': tu_before, 'tu_after': tu_before,
+                'tu_cost': 0, 'success': False,
+                'message': 'CHANGEFACTION is a prefect-scoped order and cannot be filed against a ship. File it in a PREFECT block.'
+            }
         elif cmd == 'MODERATOR':
             return self._cmd_moderator(state, params)
         elif cmd == 'CLEAR':
@@ -3035,87 +3042,139 @@ class TurnResolver:
         }
 
     def _cmd_changefaction(self, state, params):
-        """CHANGEFACTION <faction_id> [reason] - request faction change (GM-moderated)."""
-        tu_before = state['tu']
-        target_faction_id = params['faction_id']
-        reason = params.get('reason', '')
-        params_str = f"{target_faction_id}"
-        if reason:
-            params_str += f" {reason}"
+        """CHANGEFACTION in a ship context is no longer valid — redirect.
 
-        ship = self.get_ship(state['ship_id'])
+        CHANGEFACTION became a prefect-scoped order. If one ever reaches the
+        ship dispatcher it was either mis-filed or is old data; drop it with
+        a clear message rather than crashing.
+        """
+        tu_before = state['tu']
+        return {
+            'command': 'CHANGEFACTION',
+            'params': str(params.get('faction_id', '')),
+            'tu_before': tu_before, 'tu_after': state['tu'],
+            'tu_cost': 0, 'success': False,
+            'message': ("CHANGEFACTION is now a prefect-scoped order. "
+                        "File it in a PREFECT block, not a SHIP block.")
+        }
+
+    def _process_changefaction(self, prefect_id, target_faction_id, reason):
+        """Shared CHANGEFACTION logic. Returns (success, message) tuple.
+
+        Writes a pending faction_requests row if the request is valid and
+        not already duplicated. Does NOT auto-hold — that is done by the
+        run-turn driver after this method returns.
+        """
         prefect = self.conn.execute(
             "SELECT * FROM prefects WHERE prefect_id = ?",
-            (ship['owner_prefect_id'],)
+            (prefect_id,)
         ).fetchone()
+        if not prefect:
+            return False, f"Prefect {prefect_id} not found."
         current_faction_id = prefect['faction_id']
 
-        # Check target faction exists
         target_faction = self.conn.execute(
-            "SELECT * FROM factions WHERE faction_id = ?",
+            "SELECT * FROM universe.factions WHERE faction_id = ?",
             (target_faction_id,)
         ).fetchone()
         if not target_faction:
-            return {
-                'command': 'CHANGEFACTION', 'params': params_str,
-                'tu_before': tu_before, 'tu_after': state['tu'],
-                'tu_cost': 0, 'success': False,
-                'message': f"Cannot request faction change: faction {target_faction_id} not found. Order dropped."
-            }
+            return False, (f"Cannot request faction change: faction "
+                           f"{target_faction_id} not found. Order dropped.")
 
-        # Already in that faction
         if current_faction_id == target_faction_id:
-            return {
-                'command': 'CHANGEFACTION', 'params': params_str,
-                'tu_before': tu_before, 'tu_after': state['tu'],
-                'tu_cost': 0, 'success': False,
-                'message': (f"Already a member of {target_faction['name']} "
-                            f"({target_faction['abbreviation']}). Order dropped.")
-            }
+            return False, (f"Already a member of {target_faction['name']} "
+                           f"({target_faction['abbreviation']}). Order dropped.")
 
-        # Check for existing pending request
+        # Don't duplicate a pending request
         existing = self.conn.execute(
-            "SELECT * FROM faction_requests WHERE game_id = ? AND prefect_id = ? AND status = 'pending'",
-            (self.game_id, prefect['prefect_id'])
+            "SELECT request_id FROM faction_requests "
+            "WHERE game_id = ? AND prefect_id = ? AND status = 'pending'",
+            (self.game_id, prefect_id)
         ).fetchone()
         if existing:
-            existing_faction = self.conn.execute(
-                "SELECT abbreviation FROM factions WHERE faction_id = ?",
-                (existing['target_faction_id'],)
-            ).fetchone()
-            ef_name = existing_faction['abbreviation'] if existing_faction else str(existing['target_faction_id'])
-            return {
-                'command': 'CHANGEFACTION', 'params': params_str,
-                'tu_before': tu_before, 'tu_after': state['tu'],
-                'tu_cost': 0, 'success': False,
-                'message': (f"Cannot request: you already have a pending faction change "
-                            f"request to {ef_name} (request #{existing['request_id']}). Order dropped.")
-            }
+            return False, (f"Request already pending (#{existing['request_id']}). "
+                           f"Order dropped.")
 
-        # Submit request
+        # Don't recreate if GM already actioned one for this prefect+target this turn
         game = self.get_game()
+        already_actioned = self.conn.execute(
+            "SELECT request_id, status FROM faction_requests "
+            "WHERE game_id = ? AND prefect_id = ? AND target_faction_id = ? "
+            "AND status IN ('approved', 'denied', 'completed') "
+            "AND requested_turn_year = ? AND requested_turn_week = ?",
+            (self.game_id, prefect_id, target_faction_id,
+             game['current_year'], game['current_week'])
+        ).fetchone()
+        if already_actioned:
+            return False, (f"Faction change for this turn was already "
+                           f"{already_actioned['status']} "
+                           f"(request #{already_actioned['request_id']}). Order dropped.")
+
+        # File the request
         self.conn.execute("""
             INSERT INTO faction_requests
             (game_id, prefect_id, current_faction_id, target_faction_id,
              reason, status, requested_turn_year, requested_turn_week)
             VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)
-        """, (self.game_id, prefect['prefect_id'], current_faction_id,
+        """, (self.game_id, prefect_id, current_faction_id,
               target_faction_id, reason,
               game['current_year'], game['current_week']))
         self.conn.commit()
 
-        from db.database import get_faction
-        current_faction = get_faction(self.conn, current_faction_id)
-        reason_str = f" Reason: \"{reason}\"" if reason else ""
+        current_faction = self.conn.execute(
+            "SELECT abbreviation FROM universe.factions WHERE faction_id = ?",
+            (current_faction_id,)
+        ).fetchone()
+        cur_abbr = current_faction['abbreviation'] if current_faction else '?'
+        reason_str = f' Reason: "{reason}"' if reason else ''
+        return True, (f"Faction change requested: {cur_abbr} -> "
+                      f"{target_faction['abbreviation']} "
+                      f"({target_faction['name']}).{reason_str} "
+                      f"Awaiting GM approval.")
 
-        return {
-            'command': 'CHANGEFACTION', 'params': params_str,
-            'tu_before': tu_before, 'tu_after': state['tu'],
-            'tu_cost': 0, 'success': True,
-            'message': (f"Faction change requested: {current_faction['abbreviation']} -> "
-                        f"{target_faction['abbreviation']} ({target_faction['name']}).{reason_str} "
-                        f"Awaiting GM approval.")
-        }
+    def resolve_prefect_orders(self, prefect_orders_map):
+        """Resolve all prefect-scoped orders (CHANGEFACTION, prefect MODERATOR).
+
+        prefect_orders_map: dict of {prefect_id: [order_dicts]}
+        Returns: dict of {prefect_id: [result_dicts]}
+        """
+        results = {}
+        for prefect_id, orders in prefect_orders_map.items():
+            prefect_results = []
+            for order in orders:
+                cmd = order['command']
+                params = order.get('params') or {}
+
+                if cmd == 'CHANGEFACTION':
+                    target = params.get('faction_id')
+                    reason = params.get('reason', '')
+                    success, message = self._process_changefaction(
+                        prefect_id, target, reason)
+                    prefect_results.append({
+                        'command': 'CHANGEFACTION',
+                        'params': f"{target}" + (f" {reason}" if reason else ''),
+                        'success': success,
+                        'message': message,
+                    })
+                elif cmd == 'MODERATOR':
+                    # Prefect-scoped MODERATOR: creates a moderator_action with
+                    # ship_id = NULL-equivalent. Schema requires ship_id so we
+                    # store 0 as a sentinel; the Phase 1.1 check uses prefect_id.
+                    text = params.get('text', '')
+                    prefect_results.append({
+                        'command': 'MODERATOR',
+                        'params': text,
+                        'success': True,
+                        'message': f"Moderator request filed: {text}",
+                    })
+                else:
+                    prefect_results.append({
+                        'command': cmd, 'params': str(params),
+                        'success': False,
+                        'message': f"Unknown or unsupported prefect order: {cmd}",
+                    })
+            results[prefect_id] = prefect_results
+        return results
 
     def _cmd_moderator(self, state, params):
         """MODERATOR <text> - submit a free-text request to the GM."""
@@ -3160,6 +3219,114 @@ class TurnResolver:
                 'message': (f"MODERATOR REQUEST: \"{request_text}\"\n"
                             f"  GM RESPONSE: (no response — request noted)")
             }
+
+    def resolve_prefect_orders(self, prefect_orders_map):
+        """
+        Resolve prefect-scoped orders for multiple prefects.
+        Input: {prefect_id: [order_dicts]}
+        Returns: {prefect_id: [result_dicts]}
+        Each result has keys: command, params, success, message.
+        """
+        all_results = {}
+        for prefect_id, orders in prefect_orders_map.items():
+            results = []
+            for order in orders:
+                cmd = order['command']
+                params = order['params']
+                if cmd == 'CHANGEFACTION':
+                    results.append(self._resolve_prefect_changefaction(prefect_id, params))
+                else:
+                    results.append({
+                        'command': cmd, 'params': params,
+                        'success': False,
+                        'message': f"Unknown or unsupported prefect command: {cmd}",
+                    })
+            all_results[prefect_id] = results
+        return all_results
+
+    def _resolve_prefect_changefaction(self, prefect_id, params):
+        """CHANGEFACTION <faction_id> [reason] - prefect-scoped faction change request."""
+        target_faction_id = params['faction_id']
+        reason = params.get('reason', '')
+        params_str = f"{target_faction_id}"
+        if reason:
+            params_str += f" {reason}"
+
+        prefect = self.conn.execute(
+            "SELECT * FROM prefects WHERE prefect_id = ?", (prefect_id,)
+        ).fetchone()
+        if not prefect:
+            return {
+                'command': 'CHANGEFACTION', 'params': params_str,
+                'success': False,
+                'message': f"Prefect {prefect_id} not found. Order dropped."
+            }
+        current_faction_id = prefect['faction_id']
+
+        target_faction = self.conn.execute(
+            "SELECT * FROM universe.factions WHERE faction_id = ?",
+            (target_faction_id,)
+        ).fetchone()
+        if not target_faction:
+            return {
+                'command': 'CHANGEFACTION', 'params': params_str,
+                'success': False,
+                'message': f"Cannot request faction change: faction {target_faction_id} not found. Order dropped."
+            }
+
+        # Already in that faction (e.g. GM already approved this turn)
+        if current_faction_id == target_faction_id:
+            return {
+                'command': 'CHANGEFACTION', 'params': params_str,
+                'success': True,
+                'message': (f"Already a member of {target_faction['name']} "
+                            f"({target_faction['abbreviation']}). "
+                            f"Faction change complete.")
+            }
+
+        # Check for existing pending request
+        existing = self.conn.execute(
+            "SELECT * FROM faction_requests WHERE game_id = ? AND prefect_id = ? AND status = 'pending'",
+            (self.game_id, prefect_id)
+        ).fetchone()
+        if existing:
+            existing_faction = self.conn.execute(
+                "SELECT abbreviation FROM universe.factions WHERE faction_id = ?",
+                (existing['target_faction_id'],)
+            ).fetchone()
+            ef_name = existing_faction['abbreviation'] if existing_faction else str(existing['target_faction_id'])
+            return {
+                'command': 'CHANGEFACTION', 'params': params_str,
+                'success': False,
+                'message': (f"Cannot request: you already have a pending faction change "
+                            f"request to {ef_name} (request #{existing['request_id']}). Order dropped.")
+            }
+
+        # Submit request (this normally won't happen here because Phase 1.1 in
+        # run-turn creates the request earlier, but handle it defensively).
+        game = self.get_game()
+        self.conn.execute("""
+            INSERT INTO faction_requests
+            (game_id, prefect_id, current_faction_id, target_faction_id,
+             reason, status, requested_turn_year, requested_turn_week)
+            VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)
+        """, (self.game_id, prefect_id, current_faction_id,
+              target_faction_id, reason,
+              game['current_year'], game['current_week']))
+        self.conn.commit()
+
+        from db.database import get_faction
+        current_faction = get_faction(self.conn, current_faction_id)
+        cur_abbr = current_faction['abbreviation'] if current_faction else '?'
+        reason_str = f" Reason: \"{reason}\"" if reason else ""
+
+        return {
+            'command': 'CHANGEFACTION', 'params': params_str,
+            'success': True,
+            'message': (f"Faction change requested: {cur_abbr} -> "
+                        f"{target_faction['abbreviation']} ({target_faction['name']}).{reason_str} "
+                        f"Awaiting GM approval.")
+        }
 
     def _scan_at_location(self, state):
         """Scan for objects at the ship's current location."""
