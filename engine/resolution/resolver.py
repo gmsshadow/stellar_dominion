@@ -3342,40 +3342,266 @@ class TurnResolver:
 
     def _detect_ships_at_location(self, state):
         """
-        Detect other ships at the same grid square (automatic, p=1).
-        Returns list of detected ship dicts and adds them to contacts.
-        Only checks ships -- planets/bases are found by scans.
+        Passive scan sweep. When the active ship enters or rests on a cell,
+        roll probabilistic detection against every ship and base within
+        PASSIVE_SCAN_RANGE. Reciprocal: stationary ships and bases also roll
+        to detect the active ship.
+
+        Returns a list of contact dicts detected by the active ship (those
+        it rolled and spotted), suitable for the encounters accumulator.
+        Contacts detected by OTHER observers (patrol ships / bases) are
+        written directly to known_contacts for their respective owners.
         """
-        ships = self.conn.execute(
-            """SELECT s.*, pp.faction_id FROM ships s
+        from engine.detection import (PASSIVE_SCAN_RANGE, grid_distance,
+                                        try_detect)
+
+        active_ship_id = state['ship_id']
+        active_system = state['system_id']
+        active_col = state['col']
+        active_row = state['row']
+
+        # Active ship's own stats
+        active_ship = self.conn.execute(
+            "SELECT * FROM ships WHERE ship_id = ?", (active_ship_id,)
+        ).fetchone()
+        if not active_ship:
+            return []
+        active_rating = active_ship['sensor_rating'] or 0
+        active_profile = active_ship['sensor_profile'] or (active_ship['ship_size'] / 100.0 if active_ship['ship_size'] else 0.5)
+        active_prefect_id = active_ship['owner_prefect_id']
+
+        # --- 1. Candidate ships within range (same system, different ship) ---
+        candidate_ships = self.conn.execute(
+            """SELECT s.*, pp.faction_id, pp.prefect_id as owner_prefect_id
+               FROM ships s
                JOIN prefects pp ON s.owner_prefect_id = pp.prefect_id
                JOIN players p ON pp.player_id = p.player_id
-               WHERE s.system_id = ? AND s.game_id = ? AND p.status = 'active'
-               AND s.grid_col = ? AND s.grid_row = ?
-               AND s.ship_id != ?""",
-            (state['system_id'], self.game_id,
-             state['col'], state['row'], state['ship_id'])
+               WHERE s.system_id = ? AND s.game_id = ?
+                 AND p.status = 'active'
+                 AND s.ship_id != ?""",
+            (active_system, self.game_id, active_ship_id)
         ).fetchall()
 
-        detected = []
+        # --- 2. Candidate bases within range (starbases only at system level;
+        # surface ports and outposts are only visible from orbit due to
+        # planetary/atmospheric interference) ---
+        candidate_bases = []
+        for kind, table, id_col in [
+            ('starbase', 'starbases', 'base_id'),
+        ]:
+            cols = [r[1] for r in self.conn.execute(f"PRAGMA table_info({table})").fetchall()]
+            if 'grid_col' not in cols or 'grid_row' not in cols:
+                continue
+            rows = self.conn.execute(
+                f"SELECT *, '{kind}' AS kind, {id_col} AS base_id FROM {table} WHERE system_id = ? AND game_id = ?",
+                (active_system, self.game_id)
+            ).fetchall()
+            for r in rows:
+                candidate_bases.append(r)
+
+        # --- 2b. Surface installations on the body this ship is orbiting
+        # or landed on (treated as range 0; atmospheric interference means
+        # they are ONLY detectable from close proximity to their body). ---
+        orbit_body = state.get('orbiting') or state.get('landed')
+        surface_installations = []
+        if orbit_body:
+            for kind, table, id_col in [
+                ('port', 'surface_ports', 'port_id'),
+                ('outpost', 'outposts', 'outpost_id'),
+            ]:
+                rows = self.conn.execute(
+                    f"SELECT *, '{kind}' AS kind, {id_col} AS base_id FROM {table} WHERE body_id = ? AND game_id = ?",
+                    (orbit_body, self.game_id)
+                ).fetchall()
+                for r in rows:
+                    surface_installations.append(r)
+
+        detected_by_active = []
+        game = self.get_game()
+
+        # --- 3. Active ship rolls to detect each candidate ---
+        for s in candidate_ships:
+            dist = grid_distance(active_col, active_row,
+                                  s['grid_col'], s['grid_row'])
+            if dist > PASSIVE_SCAN_RANGE:
+                continue
+            target_profile = s['sensor_profile'] or (s['ship_size'] / 100.0 if s['ship_size'] else 0.5)
+            spotted, _chance = try_detect(active_rating, target_profile, dist)
+            if spotted:
+                faction = self._get_faction(s['faction_id'])
+                display_name = f"{faction['abbreviation']} {s['name']}"
+                contact = {
+                    'type': 'ship', 'id': s['ship_id'],
+                    'name': display_name,
+                    'col': s['grid_col'], 'row': s['grid_row'],
+                    'symbol': '^',
+                    'ship_size': s['ship_size'],
+                    'hull_count': s['hull_count'],
+                    'hull_type': s['hull_type'],
+                    'faction_id': s['faction_id'],
+                    'range': dist,
+                }
+                detected_by_active.append(contact)
+                if not any(c['type'] == 'ship' and c['id'] == s['ship_id']
+                           for c in self.contacts):
+                    self.contacts.append(contact)
+
+        for b in candidate_bases:
+            dist = grid_distance(active_col, active_row,
+                                  b['grid_col'], b['grid_row'])
+            if dist > PASSIVE_SCAN_RANGE:
+                continue
+            target_profile = b['sensor_profile'] or 1.0
+            spotted, _chance = try_detect(active_rating, target_profile, dist)
+            if spotted:
+                base_name = b['name']
+                contact = {
+                    'type': b['kind'], 'id': b['base_id'],
+                    'name': base_name,
+                    'col': b['grid_col'], 'row': b['grid_row'],
+                    'symbol': '#',
+                    'ship_size': None,
+                    'hull_type': b['kind'].title(),
+                    'range': dist,
+                }
+                detected_by_active.append(contact)
+                if not any(c['type'] == b['kind'] and c['id'] == b['base_id']
+                           for c in self.contacts):
+                    self.contacts.append(contact)
+
+        # --- 3b. Active ship rolls to detect surface installations (range 0) ---
+        for si in surface_installations:
+            target_profile = si['sensor_profile'] or 1.0
+            spotted, _chance = try_detect(active_rating, target_profile, 0)
+            if spotted:
+                # Use the body's grid position for reporting
+                body_loc = self.conn.execute(
+                    "SELECT grid_col, grid_row FROM celestial_bodies WHERE body_id = ?",
+                    (orbit_body,)
+                ).fetchone()
+                loc_col = body_loc['grid_col'] if body_loc else active_col
+                loc_row = body_loc['grid_row'] if body_loc else active_row
+                contact = {
+                    'type': si['kind'], 'id': si['base_id'],
+                    'name': si['name'],
+                    'col': loc_col, 'row': loc_row,
+                    'symbol': '#',
+                    'ship_size': None,
+                    'hull_type': si['kind'].title(),
+                    'range': 0,
+                }
+                detected_by_active.append(contact)
+                if not any(c['type'] == si['kind'] and c['id'] == si['base_id']
+                           for c in self.contacts):
+                    self.contacts.append(contact)
+
+        # --- 4. Reciprocal: stationary ships and bases roll to detect the active ship ---
+        active_faction = None
+        active_pr = self.conn.execute(
+            "SELECT faction_id FROM prefects WHERE prefect_id = ?",
+            (active_prefect_id,)
+        ).fetchone()
+        if active_pr:
+            active_faction = active_pr['faction_id']
+        active_display = f"{self._get_faction(active_faction)['abbreviation']} {active_ship['name']}" if active_faction else active_ship['name']
+
+        def _record_reciprocal_contact(observer_prefect_id, scanner_ship_id, dist):
+            """Write a known_contacts row for an observer that spotted the active ship."""
+            if observer_prefect_id is None:
+                return
+            if observer_prefect_id == active_prefect_id:
+                return  # don't log self-detection for the same owner
+            # Avoid duplicate rows for this prefect/ship this turn
+            existing = self.conn.execute("""
+                SELECT contact_id FROM known_contacts
+                WHERE prefect_id = ? AND object_type = 'ship' AND object_id = ?
+                AND discovered_turn_year = ? AND discovered_turn_week = ?
+            """, (observer_prefect_id, active_ship_id,
+                  game['current_year'], game['current_week'])).fetchone()
+            if existing:
+                return
+            self.conn.execute("""
+                INSERT INTO known_contacts
+                (prefect_id, object_type, object_id, object_name,
+                 location_system, location_col, location_row,
+                 discovered_turn_year, discovered_turn_week,
+                 scanner_ship_id, target_faction_id, target_hull_type,
+                 target_ship_size, detection_range)
+                VALUES (?, 'ship', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (observer_prefect_id, active_ship_id, active_display,
+                  active_system, active_col, active_row,
+                  game['current_year'], game['current_week'],
+                  scanner_ship_id, active_faction,
+                  active_ship['hull_type'], active_ship['ship_size'], dist))
+            self.conn.commit()
+
+        # Stationary ships that aren't the active one roll too
+        for s in candidate_ships:
+            dist = grid_distance(active_col, active_row,
+                                  s['grid_col'], s['grid_row'])
+            if dist > PASSIVE_SCAN_RANGE:
+                continue
+            observer_rating = s['sensor_rating'] or 0
+            if observer_rating <= 0:
+                continue
+            spotted, _chance = try_detect(observer_rating, active_profile, dist)
+            if spotted:
+                _record_reciprocal_contact(s['owner_prefect_id'],
+                                            s['ship_id'], dist)
+
+        # Bases with sensor_rating > 0 scan too
+        for b in candidate_bases:
+            dist = grid_distance(active_col, active_row,
+                                  b['grid_col'], b['grid_row'])
+            if dist > PASSIVE_SCAN_RANGE:
+                continue
+            observer_rating = b['sensor_rating'] or 0
+            if observer_rating <= 0:
+                continue
+            spotted, _chance = try_detect(observer_rating, active_profile, dist)
+            if spotted:
+                _record_reciprocal_contact(b['owner_prefect_id'], None, dist)
+
+        # Surface installations (ports, outposts) with sensors also scan the
+        # active ship if it's orbiting or landed on their body (distance 0).
+        for si in surface_installations:
+            observer_rating = si['sensor_rating'] or 0
+            if observer_rating <= 0:
+                continue
+            spotted, _chance = try_detect(observer_rating, active_profile, 0)
+            if spotted:
+                _record_reciprocal_contact(si['owner_prefect_id'], None, 0)
+
+        return detected_by_active
+
+    def run_initial_passive_scan(self):
+        """
+        Run a one-shot passive scan sweep for every ship in the game.
+        This catches static positions — ships that aren't moving this turn,
+        and bases that haven't been triggered by reciprocal detection.
+
+        Called once at the start of turn resolution, before movement.
+        Writes detections directly to known_contacts.
+        """
+        ships = self.conn.execute(
+            "SELECT * FROM ships WHERE game_id = ?", (self.game_id,)
+        ).fetchall()
+
         for s in ships:
-            faction = self._get_faction(s['faction_id'])
-            display_name = f"{faction['abbreviation']} {s['name']}"
-            loc = f"{s['grid_col']}{s['grid_row']:02d}"
-            contact = {
-                'type': 'ship', 'id': s['ship_id'],
-                'name': display_name,
-                'col': s['grid_col'], 'row': s['grid_row'],
-                'symbol': '^',
-                'ship_size': s['ship_size'] if 'ship_size' in s.keys() else s['hull_count'], 'hull_count': s['hull_count'],
-                'hull_type': s['hull_type'],
+            state = {
+                'ship_id': s['ship_id'],
+                'system_id': s['system_id'],
+                'col': s['grid_col'],
+                'row': s['grid_row'],
+                'orbiting': s['orbiting_body_id'],
+                'landed': s['landed_body_id'],
             }
-            detected.append(contact)
-            # Add to contacts if not already known this turn
-            if not any(c['type'] == 'ship' and c['id'] == s['ship_id']
-                       for c in self.contacts):
-                self.contacts.append(contact)
-        return detected
+            prior_contacts = self.contacts
+            self.contacts = []
+            self._detect_ships_at_location(state)
+            if self.contacts:
+                self._update_contacts(s['owner_prefect_id'], s['system_id'])
+            self.contacts = prior_contacts
 
     def _commit_ship_state(self, state):
         """Write final ship state back to database."""
@@ -3406,24 +3632,40 @@ class TurnResolver:
             """, (prefect_id, contact['type'], contact['id'])).fetchone()
 
             if existing:
-                # Update location
                 self.conn.execute("""
-                    UPDATE known_contacts SET 
+                    UPDATE known_contacts SET
                         location_col = ?, location_row = ?,
-                        location_system = ?
+                        location_system = ?,
+                        discovered_turn_year = ?, discovered_turn_week = ?,
+                        target_faction_id = ?,
+                        target_hull_type = ?,
+                        target_ship_size = ?,
+                        detection_range = ?
                     WHERE contact_id = ?
-                """, (contact['col'], contact['row'], system_id, existing['contact_id']))
+                """, (contact['col'], contact['row'], system_id,
+                      game['current_year'], game['current_week'],
+                      contact.get('faction_id'),
+                      contact.get('hull_type'),
+                      contact.get('ship_size'),
+                      contact.get('range'),
+                      existing['contact_id']))
             else:
                 self.conn.execute("""
-                    INSERT INTO known_contacts 
+                    INSERT INTO known_contacts
                     (prefect_id, object_type, object_id, object_name,
                      location_system, location_col, location_row,
-                     discovered_turn_year, discovered_turn_week)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     discovered_turn_year, discovered_turn_week,
+                     target_faction_id, target_hull_type,
+                     target_ship_size, detection_range)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     prefect_id, contact['type'], contact['id'], contact['name'],
                     system_id, contact['col'], contact['row'],
-                    game['current_year'], game['current_week']
+                    game['current_year'], game['current_week'],
+                    contact.get('faction_id'),
+                    contact.get('hull_type'),
+                    contact.get('ship_size'),
+                    contact.get('range'),
                 ))
         self.conn.commit()
 

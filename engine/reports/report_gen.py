@@ -462,16 +462,61 @@ def generate_ship_report(turn_result, db_path=None, game_id="OMICRON101",
         lines.append(section_line())
 
     # ==========================================
+    # ==========================================
     # CONTACTS
     # ==========================================
     lines.append(section_header("Contacts"))
     lines.append(section_line())
     if contacts:
-        for c in contacts:
+        # Split contacts by whether they were seen this turn (passive sweep)
+        # or are lingering entries from earlier turns
+        current_year = turn_result.get('turn_year')
+        current_week = turn_result.get('turn_week')
+        current_contacts = [c for c in contacts
+                             if c['discovered_turn_year'] == current_year
+                             and c['discovered_turn_week'] == current_week]
+        earlier_contacts = [c for c in contacts if c not in current_contacts]
+
+        def _contact_line(c):
             loc = f"{c['location_col']}{c['location_row']:02d}"
-            lines.append(section_line(
-                f"- {c['object_type'].title()} {c['object_name']} ({c['object_id']}) at {loc}"
-            ))
+            ctype = (c['object_type'] or '').lower()
+            # Try to get the column even if it's missing in older rows
+            try:
+                hull_type = c['target_hull_type']
+            except (IndexError, KeyError):
+                hull_type = None
+            try:
+                ship_size = c['target_ship_size']
+            except (IndexError, KeyError):
+                ship_size = None
+            try:
+                drange = c['detection_range']
+            except (IndexError, KeyError):
+                drange = None
+
+            if ctype == 'ship':
+                size_str = f"Size {ship_size} " if ship_size else ""
+                hull_str = f"{hull_type} Hull" if hull_type else ""
+                parts = [f"{c['object_name']} ({c['object_id']})"]
+                if size_str or hull_str:
+                    parts.append(f"{size_str}{hull_str}".strip())
+                parts.append(f"at {loc}")
+                if drange is not None:
+                    parts.append(f"(range {drange})")
+                return "- " + " ".join(parts)
+            else:
+                kind = ctype.title() if ctype else "Object"
+                return f"- {kind} {c['object_name']} ({c['object_id']}) at {loc}"
+
+        if current_contacts:
+            lines.append(section_line("Passive contacts this turn:"))
+            for c in current_contacts:
+                lines.append(section_line(_contact_line(c)))
+            lines.append(section_line())
+        if earlier_contacts:
+            lines.append(section_line("Earlier contacts:"))
+            for c in earlier_contacts:
+                lines.append(section_line(_contact_line(c)))
     else:
         lines.append(section_line("No known contacts."))
     lines.append(section_line())
@@ -650,6 +695,8 @@ def generate_base_report(base_type, base_id, db_path=None, game_id="OMICRON101",
         lines.append(section_line(f"Defence Rating: {stats['defence_rating']}"))
     lines.append(section_line(f"Sensor Profile: {stats.get('sensor_profile', 1.0):.2f}".ljust(COL_LEFT) +
                                f"(detection signature)"))
+    lines.append(section_line(f"Sensor Rating:  {stats.get('sensor_rating', 0)}".ljust(COL_LEFT) +
+                               f"(scan strength)"))
     lines.append(section_line())
 
     # ==========================================

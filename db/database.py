@@ -147,6 +147,50 @@ def get_connection(state_db_path=None, universe_db_path=None):
         conn.execute("UPDATE universe.ship_components SET thrust = 10 WHERE component_id = 111 AND thrust = 40")
         conn.commit()
 
+        # Migrate: add sensor_rating column to base_modules if missing,
+        # and seed the Sensor Suite / Deep Scan Array entries.
+        bm_cols = [r[1] for r in conn.execute("PRAGMA universe.table_info(base_modules)").fetchall()]
+        if bm_cols and 'sensor_rating' not in bm_cols:
+            conn.execute("ALTER TABLE universe.base_modules ADD COLUMN sensor_rating INTEGER DEFAULT 0")
+            conn.commit()
+            bm_cols.append('sensor_rating')
+        if bm_cols:
+            # If prior seed runs inserted sensor modules with wrong column
+            # ordering (before this fix), clean them up so we can re-insert.
+            bad = conn.execute(
+                "SELECT module_id FROM universe.base_modules WHERE module_id IN (590, 591) "
+                "AND (category != 'sensor' OR sensor_rating NOT IN (15, 35) OR base_price NOT IN (4000, 9000))"
+            ).fetchall()
+            if bad:
+                conn.execute("DELETE FROM universe.base_modules WHERE module_id IN (590, 591)")
+                conn.commit()
+            # Seed new sensor modules using explicit column names so the
+            # row survives any past or future ALTER TABLE column additions.
+            sensor_modules = [
+                {'module_id': 590, 'name': 'Sensor Suite', 'category': 'sensor',
+                 'employees_required': 5, 'location_restriction': None,
+                 'docking_slots': 0, 'mining_capacity': 0, 'factory_capacity': 0,
+                 'repair_capacity': 0, 'market_income': 0, 'storage_capacity': 0,
+                 'habitat_capacity': 0, 'defence_rating': 0,
+                 'sensor_rating': 15, 'base_price': 4000,
+                 'description': 'Passive sensor array. Detects nearby ships and objects. Multiple suites stack with diminishing returns.'},
+                {'module_id': 591, 'name': 'Deep Scan Array', 'category': 'sensor',
+                 'employees_required': 10, 'location_restriction': None,
+                 'docking_slots': 0, 'mining_capacity': 0, 'factory_capacity': 0,
+                 'repair_capacity': 0, 'market_income': 0, 'storage_capacity': 0,
+                 'habitat_capacity': 0, 'defence_rating': 0,
+                 'sensor_rating': 35, 'base_price': 9000,
+                 'description': 'High-power sensor array with greater range and accuracy.'},
+            ]
+            for m in sensor_modules:
+                cols = ', '.join(m.keys())
+                placeholders = ', '.join(['?'] * len(m))
+                conn.execute(
+                    f"INSERT OR IGNORE INTO universe.base_modules ({cols}) VALUES ({placeholders})",
+                    tuple(m.values())
+                )
+            conn.commit()
+
         # Migrate universe.db: create base_modules table if missing
         has_base_modules = conn.execute(
             "SELECT name FROM universe.sqlite_master WHERE type='table' AND name='base_modules'"
@@ -388,6 +432,26 @@ def get_connection(state_db_path=None, universe_db_path=None):
         cols = [r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]
         if 'sensor_profile' not in cols:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN sensor_profile REAL DEFAULT 1.0")
+    conn.commit()
+
+    # Migrate: add sensor_rating column to bases if missing
+    for table in ('starbases', 'surface_ports', 'outposts'):
+        cols = [r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]
+        if 'sensor_rating' not in cols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN sensor_rating INTEGER DEFAULT 0")
+    conn.commit()
+
+    # Migrate: add detection detail columns to known_contacts
+    kc_cols = [r[1] for r in conn.execute("PRAGMA table_info(known_contacts)").fetchall()]
+    for col, ddl in [
+        ('scanner_ship_id',   'ALTER TABLE known_contacts ADD COLUMN scanner_ship_id INTEGER'),
+        ('target_faction_id', 'ALTER TABLE known_contacts ADD COLUMN target_faction_id INTEGER'),
+        ('target_hull_type',  'ALTER TABLE known_contacts ADD COLUMN target_hull_type TEXT'),
+        ('target_ship_size',  'ALTER TABLE known_contacts ADD COLUMN target_ship_size INTEGER'),
+        ('detection_range',   'ALTER TABLE known_contacts ADD COLUMN detection_range INTEGER'),
+    ]:
+        if col not in kc_cols:
+            conn.execute(ddl)
     conn.commit()
 
     # Migrate: add is_gm to players if missing
@@ -632,62 +696,69 @@ CREATE TABLE IF NOT EXISTS base_modules (
     storage_capacity INTEGER DEFAULT 0,
     habitat_capacity INTEGER DEFAULT 0,
     defence_rating INTEGER DEFAULT 0,
+    sensor_rating INTEGER DEFAULT 0,
     base_price INTEGER DEFAULT 0,
     description TEXT DEFAULT ''
 );
 
 -- Seed base modules
 INSERT OR IGNORE INTO base_modules VALUES
-    (500, 'Command Module', 'command', 10, NULL, 0, 0, 0, 0, 0, 0, 0, 0, 2000,
+    (500, 'Command Module', 'command', 10, NULL, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2000,
      '1 required per 100 modules for 100% command efficiency.');
 INSERT OR IGNORE INTO base_modules VALUES
-    (510, 'Docking Bay', 'dock', 20, 'starbase', 1, 0, 0, 0, 0, 0, 0, 0, 5000,
+    (510, 'Docking Bay', 'dock', 20, 'starbase', 1, 0, 0, 0, 0, 0, 0, 0, 0, 5000,
      'Allows one ship to dock. Starbase only.');
 INSERT OR IGNORE INTO base_modules VALUES
-    (511, 'Heavy Docking Bay', 'dock', 30, 'starbase', 1, 0, 0, 0, 0, 0, 0, 0, 8000,
+    (511, 'Heavy Docking Bay', 'dock', 30, 'starbase', 1, 0, 0, 0, 0, 0, 0, 0, 0, 8000,
      'Reinforced bay for larger vessels. Starbase only.');
 INSERT OR IGNORE INTO base_modules VALUES
-    (520, 'Mining Rig', 'mining', 15, 'surface', 0, 10, 0, 0, 0, 0, 0, 0, 3000,
+    (520, 'Mining Rig', 'mining', 15, 'surface', 0, 10, 0, 0, 0, 0, 0, 0, 0, 3000,
      'Extracts planetary resources. Surface port or outpost only.');
 INSERT OR IGNORE INTO base_modules VALUES
-    (521, 'Deep Core Drill', 'mining', 25, 'surface', 0, 25, 0, 0, 0, 0, 0, 0, 7000,
+    (521, 'Deep Core Drill', 'mining', 25, 'surface', 0, 25, 0, 0, 0, 0, 0, 0, 0, 7000,
      'Heavy mining for deep deposits. Surface port or outpost only.');
 INSERT OR IGNORE INTO base_modules VALUES
-    (530, 'Assembly Plant', 'factory', 25, NULL, 0, 0, 10, 0, 0, 0, 0, 0, 6000,
+    (530, 'Assembly Plant', 'factory', 25, NULL, 0, 0, 10, 0, 0, 0, 0, 0, 0, 6000,
      'Constructs items from raw materials.');
 INSERT OR IGNORE INTO base_modules VALUES
-    (531, 'Advanced Fabricator', 'factory', 40, NULL, 0, 0, 25, 0, 0, 0, 0, 0, 12000,
+    (531, 'Advanced Fabricator', 'factory', 40, NULL, 0, 0, 25, 0, 0, 0, 0, 0, 0, 12000,
      'High-tech manufacturing facility.');
 INSERT OR IGNORE INTO base_modules VALUES
-    (540, 'Repair Bay', 'maintenance', 15, 'starbase', 0, 0, 0, 5, 0, 0, 0, 0, 4000,
+    (540, 'Repair Bay', 'maintenance', 15, 'starbase', 0, 0, 0, 5, 0, 0, 0, 0, 0, 4000,
      'Repairs ship integrity. Starbase only.');
 INSERT OR IGNORE INTO base_modules VALUES
-    (541, 'Shipyard', 'maintenance', 30, 'starbase', 0, 0, 0, 15, 0, 0, 0, 0, 10000,
+    (541, 'Shipyard', 'maintenance', 30, 'starbase', 0, 0, 0, 15, 0, 0, 0, 0, 0, 10000,
      'Full shipyard for major repairs and refits. Starbase only.');
 INSERT OR IGNORE INTO base_modules VALUES
-    (550, 'Trade Market', 'market', 10, 'surface', 0, 0, 0, 0, 100, 0, 0, 0, 3000,
+    (550, 'Trade Market', 'market', 10, 'surface', 0, 0, 0, 0, 100, 0, 0, 0, 0, 3000,
      'Enables trade with planetary population. Surface port only. Generates background income.');
 INSERT OR IGNORE INTO base_modules VALUES
-    (551, 'Commerce Hub', 'market', 20, 'surface', 0, 0, 0, 0, 250, 0, 0, 0, 8000,
+    (551, 'Commerce Hub', 'market', 20, 'surface', 0, 0, 0, 0, 250, 0, 0, 0, 0, 8000,
      'Large-scale trading hub. Surface port only. Higher income.');
 INSERT OR IGNORE INTO base_modules VALUES
-    (560, 'Storage Warehouse', 'storage', 5, NULL, 0, 0, 0, 0, 0, 500, 0, 0, 1500,
+    (560, 'Storage Warehouse', 'storage', 5, NULL, 0, 0, 0, 0, 0, 500, 0, 0, 0, 1500,
      'Bulk storage for goods and materials. 500 ST capacity.');
 INSERT OR IGNORE INTO base_modules VALUES
-    (561, 'Secure Vault', 'storage', 8, NULL, 0, 0, 0, 0, 0, 200, 0, 0, 3000,
+    (561, 'Secure Vault', 'storage', 8, NULL, 0, 0, 0, 0, 0, 200, 0, 0, 0, 3000,
      'Armoured storage for valuables. 200 ST capacity.');
 INSERT OR IGNORE INTO base_modules VALUES
-    (570, 'Habitat Block', 'habitat', 2, NULL, 0, 0, 0, 0, 0, 0, 50, 0, 2000,
+    (570, 'Habitat Block', 'habitat', 2, NULL, 0, 0, 0, 0, 0, 0, 50, 0, 0, 2000,
      'Housing for 50 employees.');
 INSERT OR IGNORE INTO base_modules VALUES
-    (571, 'Life Dome', 'habitat', 3, 'surface', 0, 0, 0, 0, 0, 0, 100, 0, 4000,
+    (571, 'Life Dome', 'habitat', 3, 'surface', 0, 0, 0, 0, 0, 0, 100, 0, 0, 4000,
      'Pressurised dome housing 100 employees. Surface only.');
 INSERT OR IGNORE INTO base_modules VALUES
-    (580, 'Defence Turret', 'defence', 10, NULL, 0, 0, 0, 0, 0, 0, 0, 5, 3500,
+    (580, 'Defence Turret', 'defence', 10, NULL, 0, 0, 0, 0, 0, 0, 0, 5, 0, 3500,
      'Automated defensive weapon emplacement.');
 INSERT OR IGNORE INTO base_modules VALUES
-    (581, 'Shield Generator', 'defence', 15, NULL, 0, 0, 0, 0, 0, 0, 0, 10, 6000,
+    (581, 'Shield Generator', 'defence', 15, NULL, 0, 0, 0, 0, 0, 0, 0, 10, 0, 6000,
      'Energy shield protecting the installation.');
+INSERT OR IGNORE INTO base_modules VALUES
+    (590, 'Sensor Suite', 'sensor', 5, NULL, 0, 0, 0, 0, 0, 0, 0, 0, 15, 4000,
+     'Passive sensor array. Detects nearby ships and objects. Multiple suites stack with diminishing returns.');
+INSERT OR IGNORE INTO base_modules VALUES
+    (591, 'Deep Scan Array', 'sensor', 10, NULL, 0, 0, 0, 0, 0, 0, 0, 0, 35, 9000,
+     'High-power sensor array with greater range and accuracy.');
 
 -- Planet surface grid (31x31 terrain tiles per body, generated lazily)
 -- Intrinsic to the universe: terrain is world definition, not game state.
@@ -822,6 +893,7 @@ CREATE TABLE IF NOT EXISTS surface_ports (
     employees INTEGER DEFAULT 0,
     employee_capacity INTEGER DEFAULT 0,
     sensor_profile REAL DEFAULT 1.0,
+    sensor_rating INTEGER DEFAULT 0,
     FOREIGN KEY (game_id) REFERENCES games(game_id)
 );
 
@@ -845,6 +917,7 @@ CREATE TABLE IF NOT EXISTS starbases (
     employees INTEGER DEFAULT 0,
     employee_capacity INTEGER DEFAULT 0,
     sensor_profile REAL DEFAULT 1.0,
+    sensor_rating INTEGER DEFAULT 0,
     FOREIGN KEY (game_id) REFERENCES games(game_id),
     FOREIGN KEY (surface_port_id) REFERENCES surface_ports(port_id)
 );
@@ -863,6 +936,7 @@ CREATE TABLE IF NOT EXISTS outposts (
     employees INTEGER DEFAULT 0,
     employee_capacity INTEGER DEFAULT 0,
     sensor_profile REAL DEFAULT 1.0,
+    sensor_rating INTEGER DEFAULT 0,
     FOREIGN KEY (game_id) REFERENCES games(game_id)
 );
 
@@ -960,6 +1034,11 @@ CREATE TABLE IF NOT EXISTS known_contacts (
     location_row INTEGER,
     discovered_turn_year INTEGER,
     discovered_turn_week INTEGER,
+    scanner_ship_id INTEGER,
+    target_faction_id INTEGER,
+    target_hull_type TEXT,
+    target_ship_size INTEGER,
+    detection_range INTEGER,
     FOREIGN KEY (prefect_id) REFERENCES prefects(prefect_id)
 );
 
@@ -1200,21 +1279,23 @@ def recalculate_ship_stats(conn, ship_id):
     total_crew_cap = 0
     total_life_cap = 0
     total_thrust = 0
-    total_sensor = 0
     total_engine_eff = 0.0
     total_installed_st = 0
     engine_count = 0
     best_jump_range = 0
     best_jump_oc = 0
 
+    # Sensor arrays aggregate with diminishing returns: best × sqrt(count)
+    sensor_components = []  # list of (rating_per_unit, qty)
     for c in components:
         qty = c['quantity']
         total_cargo += c['cargo_capacity'] * qty
         total_crew_cap += c['crew_capacity'] * qty
         total_life_cap += c['life_capacity'] * qty
         total_thrust += c['thrust'] * qty
-        total_sensor += c['sensor_rating'] * qty
         total_installed_st += c['st_cost'] * qty
+        if c['sensor_rating'] and c['sensor_rating'] > 0:
+            sensor_components.append((c['sensor_rating'], qty))
         if c['category'] == 'engine':
             engine_count += qty
             total_engine_eff += c['engine_efficiency'] * qty
@@ -1223,6 +1304,17 @@ def recalculate_ship_stats(conn, ship_id):
                 if c['jump_range'] > best_jump_range:
                     best_jump_range = c['jump_range']
                     best_jump_oc = c['jump_oc_cost']
+
+    # Compute total sensor rating with sqrt diminishing returns.
+    # Formula: best_per_unit_rating × sqrt(total_unit_count)
+    # This means 5 identical rating-10 sensors give 10*sqrt(5) ≈ 22, not 50.
+    import math
+    if sensor_components:
+        best_per_unit = max(r for r, _q in sensor_components)
+        total_count = sum(q for _r, q in sensor_components)
+        total_sensor = int(round(best_per_unit * math.sqrt(total_count)))
+    else:
+        total_sensor = 0
 
     # Engine efficiency caps at 1 engine per 10 ship_size
     max_engines = max(1, ship_size // 10)
@@ -1304,7 +1396,8 @@ def get_installed_modules(conn, starbase_id=None, port_id=None, outpost_id=None)
                bm.name, bm.category, bm.employees_required,
                bm.location_restriction, bm.docking_slots, bm.mining_capacity,
                bm.factory_capacity, bm.repair_capacity, bm.market_income,
-               bm.storage_capacity, bm.habitat_capacity, bm.defence_rating
+               bm.storage_capacity, bm.habitat_capacity, bm.defence_rating,
+               bm.sensor_rating
         FROM installed_modules im
         JOIN base_modules bm ON im.module_id = bm.module_id
         WHERE {where}
@@ -1346,8 +1439,20 @@ def recalculate_base_stats(conn, starbase_id=None, port_id=None, outpost_id=None
     total_habitat = sum(m['habitat_capacity'] * m['quantity'] for m in modules)
     total_defence = sum(m['defence_rating'] * m['quantity'] for m in modules)
 
-    # Command efficiency: 1 command module per 100 total modules
+    # Sensor rating: sqrt-diminishing returns on sensor modules
+    # (parallels the ship sensor aggregation).
+    sensor_modules_present = [(m['sensor_rating'], m['quantity'])
+                               for m in modules
+                               if m['sensor_rating'] and m['sensor_rating'] > 0]
     import math
+    if sensor_modules_present:
+        best_per_unit = max(r for r, _q in sensor_modules_present)
+        total_count = sum(q for _r, q in sensor_modules_present)
+        total_sensor_rating = int(round(best_per_unit * math.sqrt(total_count)))
+    else:
+        total_sensor_rating = 0
+
+    # Command efficiency: 1 command module per 100 total modules
     command_count = sum(m['quantity'] for m in modules if m['category'] == 'command')
     command_required = math.ceil(total_modules / 100) if total_modules > 0 else 0
     command_pct = min(100, (command_count / command_required * 100)) if command_required > 0 else 100
@@ -1386,19 +1491,22 @@ def recalculate_base_stats(conn, starbase_id=None, port_id=None, outpost_id=None
     # Update the base record
     if starbase_id:
         conn.execute("""
-            UPDATE starbases SET docking_capacity = ?, employee_capacity = ?, sensor_profile = ?
+            UPDATE starbases SET docking_capacity = ?, employee_capacity = ?,
+                   sensor_profile = ?, sensor_rating = ?
             WHERE base_id = ?
-        """, (total_docking, total_habitat, sensor_profile, starbase_id))
+        """, (total_docking, total_habitat, sensor_profile, total_sensor_rating, starbase_id))
     elif port_id:
         conn.execute("""
-            UPDATE surface_ports SET employee_capacity = ?, sensor_profile = ?
+            UPDATE surface_ports SET employee_capacity = ?,
+                   sensor_profile = ?, sensor_rating = ?
             WHERE port_id = ?
-        """, (total_habitat, sensor_profile, port_id))
+        """, (total_habitat, sensor_profile, total_sensor_rating, port_id))
     elif outpost_id:
         conn.execute("""
-            UPDATE outposts SET employee_capacity = ?, sensor_profile = ?
+            UPDATE outposts SET employee_capacity = ?,
+                   sensor_profile = ?, sensor_rating = ?
             WHERE outpost_id = ?
-        """, (total_habitat, sensor_profile, outpost_id))
+        """, (total_habitat, sensor_profile, total_sensor_rating, outpost_id))
     conn.commit()
 
     return {
@@ -1412,6 +1520,7 @@ def recalculate_base_stats(conn, starbase_id=None, port_id=None, outpost_id=None
         'command_pct': round(command_pct, 1),
         'overall_efficiency': round(overall_efficiency, 1),
         'sensor_profile': sensor_profile,
+        'sensor_rating': total_sensor_rating,
         'docking_capacity': total_docking,
         'mining_capacity': total_mining,
         'factory_capacity': total_factory,

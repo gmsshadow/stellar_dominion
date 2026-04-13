@@ -924,6 +924,13 @@ def cmd_run_turn(args):
                 print(f"    [{status}] {display}: {res['command']} — {res['message']}")
         conn.commit()
 
+    # Phase 1.95: Initial passive scan sweep for all ships/bases.
+    # Catches static detections (patrol ships not moving, bases that
+    # never get a fly-by trigger). Reciprocal detection during movement
+    # handles dynamic events after this.
+    print(f"\n  Running initial passive sensor sweep...")
+    resolver.run_initial_passive_scan()
+
     # Phase 2: Interleaved resolution (cheapest OC actions first)
     if ship_orders_map:
         print(f"\n  Resolving {len(ship_orders_map)} ships interleaved by OC cost...")
