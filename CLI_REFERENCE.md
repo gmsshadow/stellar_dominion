@@ -258,6 +258,9 @@ Insert a GM order for a ship or a prefect. Exactly one of `--ship` or `--prefect
 # Ship order
 python pbem.py inject-order --ship 30158993 --command "SCANSYSTEM"
 
+# Active scan with duration (10 OC)
+python pbem.py inject-order --ship 30158993 --command "SCANLOCATION 10"
+
 # Prefect order (faction change)
 python pbem.py inject-order --prefect 48814452 --command "CHANGEFACTION 12 Tired of the academy"
 ```

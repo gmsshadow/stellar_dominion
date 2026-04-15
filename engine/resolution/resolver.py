@@ -18,7 +18,7 @@ from engine.maps.system_map import (
 TU_COSTS = {
     'WAIT': 0,         # cost is the parameter value itself
     'MOVE': 2,         # per square moved (incremental)
-    'SCANLOCATION': 20,
+    'SCANLOCATION': 1,  # per OC of scan duration; player specifies duration
     'SCANSYSTEM': 20,
     'ORBIT': 10,
     'DOCK': 30,
@@ -436,6 +436,15 @@ class TurnResolver:
             if isinstance(params, (int, float)):
                 return min(int(params), state['tu'])
             return state['tu']
+        elif cmd == 'SCANLOCATION':
+            # SCANLOCATION spends duration × per-OC cost; pull duration from params
+            per_oc = self._effective_tu_cost(TU_COSTS['SCANLOCATION'], eff)
+            duration = 1
+            if isinstance(params, dict):
+                duration = max(1, int(params.get('duration', 1)))
+            elif isinstance(params, (int, float)):
+                duration = max(1, int(params))
+            return per_oc * duration
         elif cmd in TU_COSTS:
             return self._effective_tu_cost(TU_COSTS[cmd], eff)
         return 0
@@ -822,7 +831,7 @@ class TurnResolver:
         elif cmd == 'MOVE':
             return self._cmd_move(state, params)
         elif cmd == 'SCANLOCATION':
-            return self._cmd_location_scan(state, rng)
+            return self._cmd_location_scan(state, params, rng)
         elif cmd == 'SCANSYSTEM':
             return self._cmd_system_scan(state)
         elif cmd == 'ORBIT':
@@ -1065,67 +1074,276 @@ class TurnResolver:
 
         return path
 
-    def _cmd_location_scan(self, state, rng):
-        """SCANLOCATION - scan nearby cells for objects."""
-        tu_before = state['tu']
-        cost = self._effective_tu_cost(TU_COSTS['SCANLOCATION'], state['efficiency'])
+    def _cmd_location_scan(self, state, params, rng):
+        """
+        SCANLOCATION [N] - active scan: spend N OCs staring at nearby cells.
+        Each OC of duration is an independent detection roll against every
+        target currently within scan range (2 cells). Uses the same quadratic
+        formula as passive detection. Must stay stationary during the scan.
 
-        if state['tu'] < cost:
+        The ship cannot SCANLOCATION while performing MOVE/ORBIT/DOCK etc —
+        those consume their own OCs and SCANLOCATION is a separate stationary
+        activity that blocks other actions for its duration.
+
+        When combat is added, an immediate hostile detection should interrupt
+        the remaining scan OCs and trigger combat. For now, all detections
+        are recorded with their tick number so future combat can replay them.
+        """
+        from engine.detection import (PASSIVE_SCAN_RANGE, grid_distance,
+                                       try_detect)
+
+        tu_before = state['tu']
+        duration = 1
+        if isinstance(params, dict) and 'duration' in params:
+            duration = max(1, int(params['duration']))
+
+        per_oc_cost = self._effective_tu_cost(TU_COSTS['SCANLOCATION'],
+                                                state['efficiency'])
+
+        # Active ship context (need this before OC deduction to verify sensors)
+        ship_id = state['ship_id']
+        system_id = state['system_id']
+        col = state['col']
+        row = state['row']
+        orbit_body = state.get('orbiting') or state.get('landed')
+
+        active_ship = self.conn.execute(
+            "SELECT * FROM ships WHERE ship_id = ?", (ship_id,)
+        ).fetchone()
+        if not active_ship:
             return {
-                'command': 'SCANLOCATION', 'params': None,
+                'command': 'SCANLOCATION', 'params': {'duration': duration},
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': False,
+                'message': 'Active scan failed: scanner ship not found.'
+            }
+        scanner_rating = active_ship['sensor_rating'] or 0
+        prefect_id = active_ship['owner_prefect_id']
+
+        if scanner_rating <= 0:
+            return {
+                'command': 'SCANLOCATION', 'params': {'duration': duration},
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': False,
+                'message': 'Active scan failed: no sensor components installed.'
+            }
+
+        # Determine how many OCs we can actually afford
+        affordable_ticks = min(duration, state['tu'] // per_oc_cost) if per_oc_cost > 0 else duration
+        if affordable_ticks <= 0:
+            return {
+                'command': 'SCANLOCATION', 'params': {'duration': duration},
                 'tu_before': tu_before, 'tu_after': state['tu'],
                 'tu_cost': 0,
                 'success': False, 'tu_exhausted': True,
-                'message': f"Insufficient OC for scan ({state['tu']} < {cost}). Order carries forward."
+                'message': f"Insufficient OC for scan ({state['tu']} < {per_oc_cost}). Order carries forward."
             }
 
-        state['tu'] -= cost
-        objects = self.get_system_objects(state['system_id'])
+        actual_cost = affordable_ticks * per_oc_cost
+        state['tu'] -= actual_cost
+        truncated = affordable_ticks < duration
 
-        # Filter to nearby objects (scan radius based on sensor rating)
-        scan_radius = 8  # Default for v1
-        detected = []
-        for obj in objects:
-            if obj['type'] == 'ship' and obj['id'] == state['ship_id']:
-                continue  # Don't detect self
-            dist = grid_distance(state['col'], state['row'], obj['col'], obj['row'])
-            if dist <= scan_radius:
-                detected.append(obj)
-                self.contacts.append(obj)
+        game = self.get_game()
+        turn_year = game['current_year']
+        turn_week = game['current_week']
 
-        if detected:
-            scan_lines = ["Scan complete. Detected:"]
-            for obj in detected:
-                loc = f"{obj['col']}{obj['row']:02d}"
-                scan_lines.append(f"    {obj['name']} ({obj['id']}) at {loc}")
+        # Per-target accumulator: first tick where we rolled a hit + target info
+        # Keyed by (type, id). A target only gets ONE recorded detection per
+        # scan session (the first successful roll); subsequent rolls against
+        # the same target in the same session are redundant for reporting.
+        first_hits = {}  # {(type, id): {'tick': N, 'detail': dict}}
+        rolls_by_target = {}  # {(type, id): int} — how many rolls we made
+        attempted_targets = set()  # unique targets we tried to detect at all
 
-                # For celestial bodies, also list surface ports and outposts
-                if obj['type'] in ('planet', 'moon', 'gas_giant'):
-                    body_id = obj['id']
-                    ports = self.conn.execute(
-                        "SELECT name, port_id, surface_x, surface_y FROM surface_ports WHERE body_id = ?",
-                        (body_id,)
-                    ).fetchall()
-                    for p in ports:
-                        scan_lines.append(
-                            f"        Surface Port: {p['name']} ({p['port_id']}) at ({p['surface_x']},{p['surface_y']})")
-                    outposts = self.conn.execute(
-                        "SELECT name, outpost_id, surface_x, surface_y, outpost_type FROM outposts WHERE body_id = ?",
-                        (body_id,)
-                    ).fetchall()
-                    for o in outposts:
-                        scan_lines.append(
-                            f"        Outpost: {o['name']} ({o['outpost_id']}) [{o['outpost_type']}] at ({o['surface_x']},{o['surface_y']})")
+        def _try_ship(target, tick):
+            if target['ship_id'] == ship_id:
+                return
+            dist = grid_distance(col, row, target['grid_col'], target['grid_row'])
+            if dist > PASSIVE_SCAN_RANGE:
+                return
+            key = ('ship', target['ship_id'])
+            attempted_targets.add(key)
+            rolls_by_target[key] = rolls_by_target.get(key, 0) + 1
+            if key in first_hits:
+                return  # already detected this session
+            target_profile = target['sensor_profile'] or (target['ship_size'] / 100.0 if target['ship_size'] else 0.5)
+            spotted, _chance = try_detect(scanner_rating, target_profile, dist)
+            if spotted:
+                faction = self._get_faction(target['faction_id']) if 'faction_id' in target.keys() and target['faction_id'] else {'abbreviation': 'IND', 'faction_id': None}
+                display_name = f"{faction['abbreviation']} {target['name']}"
+                first_hits[key] = {
+                    'tick': tick,
+                    'type': 'ship',
+                    'id': target['ship_id'],
+                    'name': display_name,
+                    'col': target['grid_col'], 'row': target['grid_row'],
+                    'range': dist,
+                    'ship_size': target['ship_size'],
+                    'hull_type': target['hull_type'],
+                    'faction_id': target['faction_id'] if 'faction_id' in target.keys() else None,
+                }
+
+        def _try_base(target, kind, tick, forced_dist=None):
+            if forced_dist is not None:
+                dist = forced_dist
+            else:
+                dist = grid_distance(col, row, target['grid_col'], target['grid_row'])
+                if dist > PASSIVE_SCAN_RANGE:
+                    return
+            key = (kind, target['base_id'])
+            attempted_targets.add(key)
+            rolls_by_target[key] = rolls_by_target.get(key, 0) + 1
+            if key in first_hits:
+                return
+            target_profile = target['sensor_profile'] or 1.0
+            spotted, _chance = try_detect(scanner_rating, target_profile, dist)
+            if spotted:
+                # Display location: for orbital-detected surface installations
+                # we want the body's grid position
+                if forced_dist == 0 and kind in ('port', 'outpost') and orbit_body:
+                    body_loc = self.conn.execute(
+                        "SELECT grid_col, grid_row FROM celestial_bodies WHERE body_id = ?",
+                        (orbit_body,)
+                    ).fetchone()
+                    loc_col = body_loc['grid_col'] if body_loc else col
+                    loc_row = body_loc['grid_row'] if body_loc else row
+                else:
+                    loc_col = target['grid_col']
+                    loc_row = target['grid_row']
+                first_hits[key] = {
+                    'tick': tick,
+                    'type': kind,
+                    'id': target['base_id'],
+                    'name': target['name'],
+                    'col': loc_col, 'row': loc_row,
+                    'range': dist,
+                    'hull_type': kind.title(),
+                    'ship_size': None,
+                }
+
+        # --- Run N independent ticks ---
+        for tick in range(1, affordable_ticks + 1):
+            # Fetch current world state for this tick (reflects any updates
+            # the interleaver has made to other ships between ticks)
+            candidate_ships = self.conn.execute(
+                """SELECT s.*, pp.faction_id
+                   FROM ships s
+                   JOIN prefects pp ON s.owner_prefect_id = pp.prefect_id
+                   JOIN players p ON pp.player_id = p.player_id
+                   WHERE s.system_id = ? AND s.game_id = ?
+                     AND p.status = 'active'
+                     AND s.ship_id != ?""",
+                (system_id, self.game_id, ship_id)
+            ).fetchall()
+
+            candidate_starbases = self.conn.execute(
+                "SELECT *, 'starbase' AS kind, base_id FROM starbases WHERE system_id = ? AND game_id = ?",
+                (system_id, self.game_id)
+            ).fetchall()
+
+            for sh in candidate_ships:
+                _try_ship(sh, tick)
+            for sb in candidate_starbases:
+                _try_base(sb, 'starbase', tick)
+
+            # Surface installations only if orbiting/landed
+            if orbit_body:
+                ports = self.conn.execute(
+                    "SELECT *, 'port' AS kind, port_id AS base_id FROM surface_ports WHERE body_id = ? AND game_id = ?",
+                    (orbit_body, self.game_id)
+                ).fetchall()
+                outposts = self.conn.execute(
+                    "SELECT *, 'outpost' AS kind, outpost_id AS base_id FROM outposts WHERE body_id = ? AND game_id = ?",
+                    (orbit_body, self.game_id)
+                ).fetchall()
+                for p in ports:
+                    _try_base(p, 'port', tick, forced_dist=0)
+                for o in outposts:
+                    _try_base(o, 'outpost', tick, forced_dist=0)
+
+        # --- Persist detections to known_contacts ---
+        for key, det in first_hits.items():
+            existing = self.conn.execute("""
+                SELECT contact_id FROM known_contacts
+                WHERE prefect_id = ? AND object_type = ? AND object_id = ?
+            """, (prefect_id, det['type'], det['id'])).fetchone()
+            if existing:
+                self.conn.execute("""
+                    UPDATE known_contacts SET
+                        location_col = ?, location_row = ?,
+                        location_system = ?,
+                        discovered_turn_year = ?, discovered_turn_week = ?,
+                        target_faction_id = ?,
+                        target_hull_type = ?,
+                        target_ship_size = ?,
+                        detection_range = ?,
+                        detected_on_tick = ?,
+                        detection_source = 'active'
+                    WHERE contact_id = ?
+                """, (det['col'], det['row'], system_id, turn_year, turn_week,
+                      det.get('faction_id'), det.get('hull_type'),
+                      det.get('ship_size'), det.get('range'),
+                      det['tick'], existing['contact_id']))
+            else:
+                self.conn.execute("""
+                    INSERT INTO known_contacts
+                    (prefect_id, object_type, object_id, object_name,
+                     location_system, location_col, location_row,
+                     discovered_turn_year, discovered_turn_week,
+                     target_faction_id, target_hull_type,
+                     target_ship_size, detection_range,
+                     detected_on_tick, detection_source, scanner_ship_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)
+                """, (prefect_id, det['type'], det['id'], det['name'],
+                      system_id, det['col'], det['row'],
+                      turn_year, turn_week,
+                      det.get('faction_id'), det.get('hull_type'),
+                      det.get('ship_size'), det.get('range'),
+                      det['tick'], ship_id))
+        self.conn.commit()
+
+        # --- Build result message ---
+        loc_str = f"{col}{row:02d}"
+        scan_note = f"SCANLOCATION ({affordable_ticks} OC at {loc_str} system {system_id})"
+        if truncated:
+            scan_note += f" [requested {duration}, truncated to available OC]"
+
+        if first_hits:
+            detections_sorted = sorted(first_hits.values(), key=lambda d: d['tick'])
+            lines = [scan_note, "  Contacts detected:"]
+            for det in detections_sorted:
+                if det['type'] == 'ship':
+                    size = f"Size {det['ship_size']} " if det['ship_size'] else ""
+                    hull = f"{det['hull_type']} Hull " if det['hull_type'] else ""
+                    loc = f"{det['col']}{det['row']:02d}"
+                    lines.append(
+                        f"    - {det['name']} ({det['id']}) {size}{hull}"
+                        f"at {loc} (range {det['range']}, first hit on OC {det['tick']})"
+                    )
+                else:
+                    loc = f"{det['col']}{det['row']:02d}"
+                    kind_str = det['type'].title()
+                    lines.append(
+                        f"    - {kind_str} {det['name']} ({det['id']}) "
+                        f"at {loc} (range {det['range']}, first hit on OC {det['tick']})"
+                    )
+            missed = len(attempted_targets) - len(first_hits)
+            if missed > 0:
+                lines.append(f"  ({missed} other target(s) rolled and missed)")
+            message = "\n".join(lines)
         else:
-            scan_lines = ["Scan complete. No contacts detected."]
+            if attempted_targets:
+                message = f"{scan_note}\n  No contacts detected ({len(attempted_targets)} target(s) rolled and missed)."
+            else:
+                message = f"{scan_note}\n  No targets within scan range."
 
         return {
-            'command': 'SCANLOCATION', 'params': None,
+            'command': 'SCANLOCATION', 'params': {'duration': affordable_ticks},
             'tu_before': tu_before, 'tu_after': state['tu'],
-            'tu_cost': cost,
+            'tu_cost': actual_cost,
             'success': True,
-            'message': "\n".join(scan_lines),
-            'detected': detected
+            'message': message,
+            'detected': list(first_hits.values()),
         }
 
     def _cmd_system_scan(self, state):

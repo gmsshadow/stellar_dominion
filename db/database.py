@@ -449,6 +449,8 @@ def get_connection(state_db_path=None, universe_db_path=None):
         ('target_hull_type',  'ALTER TABLE known_contacts ADD COLUMN target_hull_type TEXT'),
         ('target_ship_size',  'ALTER TABLE known_contacts ADD COLUMN target_ship_size INTEGER'),
         ('detection_range',   'ALTER TABLE known_contacts ADD COLUMN detection_range INTEGER'),
+        ('detected_on_tick',  'ALTER TABLE known_contacts ADD COLUMN detected_on_tick INTEGER'),
+        ('detection_source',  "ALTER TABLE known_contacts ADD COLUMN detection_source TEXT DEFAULT 'passive'"),
     ]:
         if col not in kc_cols:
             conn.execute(ddl)
@@ -1039,6 +1041,8 @@ CREATE TABLE IF NOT EXISTS known_contacts (
     target_hull_type TEXT,
     target_ship_size INTEGER,
     detection_range INTEGER,
+    detected_on_tick INTEGER,
+    detection_source TEXT DEFAULT 'passive',
     FOREIGN KEY (prefect_id) REFERENCES prefects(prefect_id)
 );
 

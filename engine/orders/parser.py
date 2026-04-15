@@ -13,7 +13,7 @@ from pathlib import Path
 VALID_COMMANDS = {
     'WAIT': {'params': 'integer', 'description': 'Wait for n Operational Cycles (OC)'},
     'MOVE': {'params': 'coordinate', 'description': 'Move to grid coordinate'},
-    'SCANLOCATION': {'params': 'none', 'description': 'Scan nearby cells'},
+    'SCANLOCATION': {'params': 'optional_integer', 'description': 'Active scan: spend N OCs staring at nearby cells (default 1)'},
     'SCANSYSTEM': {'params': 'none', 'description': 'Produce system map'},
     'ORBIT': {'params': 'body_id', 'description': 'Orbit a celestial body'},
     'DOCK': {'params': 'base_id', 'description': 'Dock at a starbase'},
@@ -109,6 +109,18 @@ def parse_order(command_str, params):
             return command, value, None
         except (ValueError, TypeError):
             return command, params, f"{command}: expected integer, got '{params}'"
+
+    elif spec['params'] == 'optional_integer':
+        # Allow bare form (defaults to 1) or integer form
+        if params is None or params == '' or params == {}:
+            return command, {'duration': 1}, None
+        try:
+            value = int(params)
+            if value < 1:
+                return command, params, f"{command}: duration must be >= 1"
+            return command, {'duration': value}, None
+        except (ValueError, TypeError):
+            return command, params, f"{command}: expected integer duration, got '{params}'"
 
     elif spec['params'] == 'coordinate':
         if isinstance(params, str):

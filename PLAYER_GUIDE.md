@@ -131,7 +131,7 @@ Every action costs OC. Your ship starts each turn with 300 OC.
 | Command | Base OC Cost | Description |
 |---------|-------------|-------------|
 | **MOVE** | 2 per step | Move one grid square (engine/crew penalties may increase) |
-| **SCANLOCATION** | 20 | Scan nearby area |
+| **SCANLOCATION** | 1 per OC of duration | Active scan: stay put and roll for contacts each OC |
 | **SCANSYSTEM** | 20 | Full system map |
 | **ORBIT** | 10 × body_grav / ship_grav | Enter orbit around a body |
 | **LEAVEORBIT** | 0 | Leave orbit, return to grid square |
@@ -164,9 +164,33 @@ Note: old command names LOCATIONSCAN, SYSTEMSCAN, and SURFACESCAN still work as 
 
 **JUMP** `<system_id>` — Jump to another star system. Requires a Jump Drive. The drive determines the maximum range per activation and the OC cost per activation. Jump Drive Mk1 covers up to 5 system hops per activation at 50 OC; Mk2 covers up to 10 hops at 40 OC. Destinations beyond the drive's range require multiple activations (e.g. a system 8 hops away with Mk1 = 2 activations = 100 OC). Must be at least 10 squares from the primary star (waived in starless nexus systems).
 
-### Scanning
+### Scanning & Sensors
 
-**SCANLOCATION** — Shows objects near your position. **SCANSYSTEM** — Full 25×25 system map. **SCANSURFACE** — Planet terrain (must be landed or orbiting).
+Ships and bases with sensor components automatically perform **passive scans** as they move or act. Passive detection is probabilistic and range-limited: the better your sensor rating and the larger the target, the more likely you are to spot it. Every ship and every base with sensors rolls independently, so stationary patrols can still notice intruders passing their grid square.
+
+**Passive detection formula:**
+
+```
+chance = (your sensor_rating × target's sensor_profile) / (distance + 1)²
+```
+
+The chance is capped at 100%. Distance uses Chebyshev grid distance (0 = same cell, up to 2 cells for a basic scanner). Bigger ships have higher profiles and are easier to spot. Larger distances drop detection chance quadratically — a scout one cell away is four times harder to see than one in the same cell.
+
+**SCANLOCATION** `[duration]` — **Active scan**. Stay stationary and roll for contacts every OC of duration. Each OC is an independent roll against every target within range, so the longer you scan, the better your cumulative chance of catching anything that sits nearby. Cost: 1 OC per tick of duration. Default: 1 OC if no duration specified.
+
+```
+SCANLOCATION           # one-shot scan, 1 OC
+SCANLOCATION 10        # patrol sweep, 10 OC
+SCANLOCATION 30        # stakeout, 30 OC
+```
+
+Active scanning **cannot be combined with movement** — you are sitting still, staring at sensors. If you want to scan while moving, the passive sweep running during MOVE is your scan.
+
+**Orbital detection of surface installations**: surface ports and outposts are hidden by atmospheric interference and planetary curvature, so they **cannot be detected from system-space** even at the exact grid square above them. To spot or scan a surface installation, you must be in orbit or landed on the body it's on. Once you're in orbit, both passive and active scans will include that body's surface installations at range 0.
+
+**SCANSYSTEM** — Produces a full 25×25 system map showing all celestial bodies. Non-probabilistic: if your ship has at least one sensor component, it sees everything. Celestial bodies are too large to hide from a working scanner at system ranges. Does not reveal ships or bases.
+
+**SCANSURFACE** — Scans the terrain of a planet you are landed on or orbiting.
 
 ### Orbital & Docking
 
