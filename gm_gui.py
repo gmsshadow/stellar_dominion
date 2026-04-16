@@ -115,6 +115,7 @@ class StellarDominionGUI:
         self._build_universe_tab()
         self._build_bases_tab()
         self._build_moderator_tab()
+        self._build_combat_tab()
         self._build_previews_tab()
         self._build_dbbrowser_tab()
         self._build_ship_editor_tab()
@@ -1137,6 +1138,216 @@ class StellarDominionGUI:
     # Tab: Previews
     # ========================================================================
 
+    def _build_combat_tab(self):
+        tab = ttk.Frame(self.notebook)
+        self.notebook.add(tab, text="Combat")
+        inner = self._scrollable_frame(tab)
+
+        # ----- Engagement viewer -----
+        self._section_header(inner, "Active Engagements")
+
+        viewer_frame = ttk.Frame(inner, padding=5)
+        viewer_frame.pack(fill=tk.X, padx=2, pady=1)
+
+        btn_row = ttk.Frame(viewer_frame)
+        btn_row.pack(fill=tk.X, pady=(0, 4))
+        ttk.Button(btn_row, text="Refresh", width=10,
+                   command=self._combat_refresh_engagements).pack(side=tk.LEFT, padx=2)
+        self.combat_show_all_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(btn_row, text="Show resolved/fled too",
+                        variable=self.combat_show_all_var,
+                        command=self._combat_refresh_engagements).pack(side=tk.LEFT, padx=6)
+
+        tv_wrap = ttk.Frame(viewer_frame)
+        tv_wrap.pack(fill=tk.X)
+        self.combat_eng_tree = ttk.Treeview(
+            tv_wrap, show='headings',
+            columns=('id', 'loc', 'sys', 'status', 'started', 'parts'), height=7)
+        for col, hd, w in [('id', 'Eng#', 55), ('loc', 'Loc', 55),
+                            ('sys', 'Sys', 55), ('status', 'Status', 80),
+                            ('started', 'Started', 80),
+                            ('parts', 'Participants', 320)]:
+            self.combat_eng_tree.heading(col, text=hd)
+            self.combat_eng_tree.column(col, width=w, anchor=tk.W)
+        eng_sb = ttk.Scrollbar(tv_wrap, orient=tk.VERTICAL,
+                                command=self.combat_eng_tree.yview)
+        self.combat_eng_tree.configure(yscrollcommand=eng_sb.set)
+        self.combat_eng_tree.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        eng_sb.pack(side=tk.LEFT, fill=tk.Y)
+
+        # End-engagement (uses selected row)
+        end_row = ttk.Frame(viewer_frame)
+        end_row.pack(fill=tk.X, pady=(6, 2))
+        ttk.Button(end_row, text="End Selected Engagement", width=26,
+                   command=self._combat_end_selected).pack(side=tk.LEFT, padx=2)
+        ttk.Label(end_row, text="Note:").pack(side=tk.LEFT, padx=(8, 2))
+        self.combat_end_note = ttk.Entry(end_row, width=40)
+        self.combat_end_note.pack(side=tk.LEFT)
+
+        # ----- Combat GM commands -----
+        self._section_header(inner, "GM Commands")
+
+        self._action_row(inner, "List Engagements (active only)",
+                         ['list-engagements'], [self._game_field()])
+
+        self._action_row(inner, "List All Engagements",
+                         ['list-engagements', '--all'], [self._game_field()])
+
+        self._action_row(inner, "End Engagement",
+                         ['end-engagement'],
+                         [('engagement-id', 'Engagement ID:', '', 10),
+                          ('note', 'Note:', '', 24)])
+
+        self._action_row(inner, "Inject Attack (force combat)",
+                         ['inject-attack'],
+                         [('attacker', 'Attacker Ship:', '', 12),
+                          ('target', 'Target Ship:', '', 12)],
+                         validators={'attacker': 'ship', 'target': 'ship'})
+
+        # Set Doctrine — custom row with choice dropdown
+        dr_row = ttk.Frame(inner, padding=(5, 2))
+        dr_row.pack(fill=tk.X, padx=2, pady=1)
+        dr_btn = ttk.Button(dr_row, text="Set Doctrine", width=22)
+        dr_btn.pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Label(dr_row, text="Ship:").pack(side=tk.LEFT, padx=(4, 2))
+        dr_ship_entry = ttk.Entry(dr_row, width=12)
+        dr_ship_entry.pack(side=tk.LEFT)
+        ttk.Label(dr_row, text="Doctrine:").pack(side=tk.LEFT, padx=(6, 2))
+        dr_doctrine_var = tk.StringVar(value='defensive')
+        dr_combo = ttk.Combobox(dr_row, textvariable=dr_doctrine_var,
+                                 state='readonly', width=12,
+                                 values=['aggressive', 'defensive', 'evasive'])
+        dr_combo.pack(side=tk.LEFT)
+
+        def run_set_doctrine():
+            sid = dr_ship_entry.get().strip()
+            doc = dr_doctrine_var.get()
+            if not sid:
+                messagebox.showerror("Input error", "Ship ID required.")
+                return
+            ok, err = self._validate_id('ship', sid)
+            if not ok:
+                self._append("\n>>> Set Doctrine\n", "cmd")
+                self._append(f"[validation failed] {err}\n", "err")
+                messagebox.showerror("Validation failed", err)
+                return
+            self._run_pbem(['set-doctrine', '--ship', sid, '--doctrine', doc],
+                            "Set Doctrine")
+        dr_btn.config(command=run_set_doctrine)
+
+        # Show Lists — ship or base
+        sl_row = ttk.Frame(inner, padding=(5, 2))
+        sl_row.pack(fill=tk.X, padx=2, pady=1)
+        sl_btn = ttk.Button(sl_row, text="Show Lists", width=22)
+        sl_btn.pack(side=tk.LEFT, padx=(0, 8))
+        sl_kind_var = tk.StringVar(value='ship')
+        ttk.Radiobutton(sl_row, text="Ship", variable=sl_kind_var,
+                        value='ship').pack(side=tk.LEFT, padx=(4, 2))
+        ttk.Radiobutton(sl_row, text="Base", variable=sl_kind_var,
+                        value='base').pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Label(sl_row, text="ID:").pack(side=tk.LEFT, padx=(4, 2))
+        sl_id_entry = ttk.Entry(sl_row, width=12)
+        sl_id_entry.pack(side=tk.LEFT)
+
+        def run_show_lists():
+            kind = sl_kind_var.get()
+            sid = sl_id_entry.get().strip()
+            if not sid:
+                messagebox.showerror("Input error", "ID required.")
+                return
+            self._run_pbem(['show-lists', f'--{kind}', sid], "Show Lists")
+        sl_btn.config(command=run_show_lists)
+
+        # Initial load
+        self._combat_refresh_engagements()
+
+    # ----- Combat tab helpers -----
+
+    def _combat_refresh_engagements(self):
+        """Populate the engagements treeview from DB."""
+        try:
+            from db.database import get_connection
+        except Exception as e:
+            self._append(f"[error opening DB] {e}\n", "err")
+            return
+        # Clear existing
+        for row_id in self.combat_eng_tree.get_children():
+            self.combat_eng_tree.delete(row_id)
+        show_all = self.combat_show_all_var.get()
+        try:
+            conn = get_connection()
+            if show_all:
+                engs = conn.execute(
+                    "SELECT * FROM combat_engagements "
+                    "WHERE game_id = ? ORDER BY engagement_id DESC",
+                    (self.config_data['game_id'],)
+                ).fetchall()
+            else:
+                engs = conn.execute(
+                    "SELECT * FROM combat_engagements "
+                    "WHERE game_id = ? AND status = 'active' "
+                    "ORDER BY engagement_id DESC",
+                    (self.config_data['game_id'],)
+                ).fetchall()
+            for e in engs:
+                loc = f"{e['grid_col']}{e['grid_row']:02d}" if e['grid_col'] else '?'
+                started = f"{e['started_turn_year']}.{e['started_turn_week']}"
+                # Build participants summary
+                parts = conn.execute(
+                    "SELECT * FROM combat_participants WHERE engagement_id = ?",
+                    (e['engagement_id'],)
+                ).fetchall()
+                part_bits = []
+                for p in parts:
+                    if p['participant_kind'] == 'ship':
+                        nrow = conn.execute(
+                            "SELECT name FROM ships WHERE ship_id = ?",
+                            (p['participant_id_value'],)
+                        ).fetchone()
+                        nm = nrow['name'] if nrow else f"#{p['participant_id_value']}"
+                    else:
+                        tbl_map = {'starbase': ('starbases', 'base_id'),
+                                    'port': ('surface_ports', 'port_id'),
+                                    'outpost': ('outposts', 'outpost_id')}
+                        tbl, idcol = tbl_map.get(p['participant_kind'], (None, None))
+                        nrow = conn.execute(
+                            f"SELECT name FROM {tbl} WHERE {idcol} = ?",
+                            (p['participant_id_value'],)
+                        ).fetchone() if tbl else None
+                        nm = nrow['name'] if nrow else f"{p['participant_kind']}#{p['participant_id_value']}"
+                    stat = p['status'][:1].upper() if p['status'] else '?'
+                    part_bits.append(f"{nm}[{stat}]")
+                self.combat_eng_tree.insert(
+                    '', tk.END,
+                    values=(e['engagement_id'], loc, e['system_id'],
+                             (e['status'] or '').upper(),
+                             started, ', '.join(part_bits))
+                )
+            conn.close()
+        except Exception as e:
+            self._append(f"[error loading engagements] {e}\n", "err")
+
+    def _combat_end_selected(self):
+        sel = self.combat_eng_tree.selection()
+        if not sel:
+            messagebox.showerror("No selection", "Pick an engagement first.")
+            return
+        values = self.combat_eng_tree.item(sel[0])['values']
+        eng_id = str(values[0])
+        status = str(values[3]).lower()
+        if status != 'active':
+            messagebox.showinfo("Not active",
+                                  f"Engagement #{eng_id} is already {status}.")
+            return
+        note = self.combat_end_note.get().strip() or "GM ended via GUI"
+        if not messagebox.askyesno("Confirm",
+                                      f"Force-end engagement #{eng_id}?"):
+            return
+        self._run_pbem(['end-engagement', '--engagement-id', eng_id,
+                         '--note', note],
+                        "End Engagement")
+        self.root.after(600, self._combat_refresh_engagements)
+
     def _build_previews_tab(self):
         tab = ttk.Frame(self.notebook)
         self.notebook.add(tab, text="Previews & Maps")
@@ -1525,6 +1736,64 @@ class StellarDominionGUI:
         ttk.Button(cgr, text="Remove Selected", width=16,
                    command=self._ship_ed_remove_cargo).pack(side=tk.LEFT, padx=2)
 
+        # ----- Combat -----
+        combat_frame = ttk.LabelFrame(inner, text="Combat", padding=6)
+        combat_frame.pack(fill=tk.X, padx=5, pady=4)
+
+        # Doctrine selector
+        doct_row = ttk.Frame(combat_frame)
+        doct_row.pack(fill=tk.X, pady=(0, 4))
+        ttk.Label(doct_row, text="Doctrine:", width=12).pack(side=tk.LEFT)
+        self.ship_ed_doctrine = ttk.Combobox(
+            doct_row, state='readonly', width=14,
+            values=['aggressive', 'defensive', 'evasive'])
+        self.ship_ed_doctrine.set('defensive')
+        self.ship_ed_doctrine.pack(side=tk.LEFT, padx=(2, 6))
+        ttk.Button(doct_row, text="Save Doctrine", width=14,
+                   command=self._ship_ed_save_doctrine).pack(side=tk.LEFT, padx=2)
+
+        # Three lists side by side
+        lists_row = ttk.Frame(combat_frame)
+        lists_row.pack(fill=tk.X, pady=(4, 0))
+
+        self.ship_ed_list_trees = {}
+        for list_type in ('target', 'defend', 'avoid'):
+            col = ttk.LabelFrame(lists_row, text=list_type.upper(), padding=4)
+            col.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=2)
+            tv = ttk.Treeview(col, show='headings',
+                                columns=('type', 'id'), height=5)
+            tv.heading('type', text='Type')
+            tv.heading('id', text='ID')
+            tv.column('type', width=70, anchor=tk.W)
+            tv.column('id', width=80, anchor=tk.W)
+            tv.pack(fill=tk.X)
+            self.ship_ed_list_trees[list_type] = tv
+
+        # Add/remove controls
+        ctrl_row = ttk.Frame(combat_frame)
+        ctrl_row.pack(fill=tk.X, pady=(6, 2))
+        ttk.Label(ctrl_row, text="List:").pack(side=tk.LEFT)
+        self.ship_ed_list_list = ttk.Combobox(
+            ctrl_row, state='readonly', width=10,
+            values=['target', 'defend', 'avoid'])
+        self.ship_ed_list_list.set('target')
+        self.ship_ed_list_list.pack(side=tk.LEFT, padx=(2, 6))
+        ttk.Label(ctrl_row, text="Type:").pack(side=tk.LEFT)
+        self.ship_ed_list_entrytype = ttk.Combobox(
+            ctrl_row, state='readonly', width=9,
+            values=['ship', 'base', 'faction'])
+        self.ship_ed_list_entrytype.set('ship')
+        self.ship_ed_list_entrytype.pack(side=tk.LEFT, padx=(2, 6))
+        ttk.Label(ctrl_row, text="ID:").pack(side=tk.LEFT)
+        self.ship_ed_list_entryid = ttk.Entry(ctrl_row, width=12)
+        self.ship_ed_list_entryid.pack(side=tk.LEFT, padx=(2, 6))
+        ttk.Button(ctrl_row, text="Add", width=8,
+                   command=self._ship_ed_list_add).pack(side=tk.LEFT, padx=2)
+        ttk.Button(ctrl_row, text="Remove Selected", width=18,
+                   command=self._ship_ed_list_remove).pack(side=tk.LEFT, padx=2)
+        ttk.Button(ctrl_row, text="Clear List", width=12,
+                   command=self._ship_ed_list_clear).pack(side=tk.LEFT, padx=2)
+
         self.ship_ed_status = ttk.Label(inner, text="No ship loaded.",
                                          foreground="#666", font=("", 9, "italic"))
         self.ship_ed_status.pack(anchor=tk.W, padx=5, pady=(4, 0))
@@ -1621,6 +1890,7 @@ class StellarDominionGUI:
                 self.ship_ed_fields[key].insert(0, str(v))
             self._ship_ed_refresh_components()
             self._ship_ed_refresh_cargo()
+            self._ship_ed_refresh_combat()
             self._ship_ed_msg(f"Loaded: {ship['name']} ({ship_id})")
         except Exception as ex:
             self._ship_ed_msg(f"Load failed: {ex}", ok=False)
@@ -1947,6 +2217,106 @@ class StellarDominionGUI:
         except Exception as ex:
             self._ship_ed_msg(f"Remove cargo failed: {ex}", ok=False)
 
+    # ----- Ship editor: combat -----
+
+    def _ship_ed_refresh_combat(self):
+        """Load doctrine and combat lists for the currently loaded ship."""
+        for lt in ('target', 'defend', 'avoid'):
+            tv = self.ship_ed_list_trees[lt]
+            for row_id in tv.get_children():
+                tv.delete(row_id)
+        if self.ship_ed_current_id is None:
+            return
+        try:
+            conn = self._ship_ed_rw_conn()
+            row = conn.execute(
+                "SELECT combat_doctrine FROM ships WHERE ship_id = ?",
+                (self.ship_ed_current_id,)
+            ).fetchone()
+            doctrine = (row['combat_doctrine'] if row else 'defensive') or 'defensive'
+            self.ship_ed_doctrine.set(doctrine)
+            lists = conn.execute(
+                "SELECT list_type, entry_type, entry_id FROM ship_combat_lists "
+                "WHERE game_id = ? AND ship_id = ? "
+                "ORDER BY list_type, entry_type, entry_id",
+                (self.config_data['game_id'], self.ship_ed_current_id)
+            ).fetchall()
+            conn.close()
+            for r in lists:
+                tv = self.ship_ed_list_trees.get(r['list_type'])
+                if tv is not None:
+                    tv.insert('', tk.END,
+                               values=(r['entry_type'], r['entry_id']))
+        except Exception as ex:
+            self._ship_ed_msg(f"Refresh combat failed: {ex}", ok=False)
+
+    def _ship_ed_save_doctrine(self):
+        if self.ship_ed_current_id is None:
+            self._ship_ed_msg("Load a ship first.", ok=False)
+            return
+        doc = self.ship_ed_doctrine.get()
+        self._run_pbem(
+            ['set-doctrine', '--ship', str(self.ship_ed_current_id),
+             '--doctrine', doc],
+            "Save Doctrine"
+        )
+        self.root.after(500, self._ship_ed_refresh_combat)
+
+    def _ship_ed_list_add(self):
+        if self.ship_ed_current_id is None:
+            self._ship_ed_msg("Load a ship first.", ok=False)
+            return
+        lt = self.ship_ed_list_list.get()
+        et = self.ship_ed_list_entrytype.get()
+        eid = self.ship_ed_list_entryid.get().strip()
+        if not eid.isdigit():
+            messagebox.showerror("Input error", "Entry ID must be a positive integer.")
+            return
+        cmd_text = f"{lt.upper()} ADD {et} {eid}"
+        self._run_pbem(
+            ['inject-order', '--ship', str(self.ship_ed_current_id),
+             '--command', cmd_text],
+            f"{lt.upper()} ADD"
+        )
+        self.root.after(500, self._ship_ed_refresh_combat)
+
+    def _ship_ed_list_remove(self):
+        if self.ship_ed_current_id is None:
+            self._ship_ed_msg("Load a ship first.", ok=False)
+            return
+        lt = self.ship_ed_list_list.get()
+        tv = self.ship_ed_list_trees[lt]
+        sel = tv.selection()
+        if not sel:
+            messagebox.showerror("No selection",
+                                  f"Select a row in the {lt.upper()} list first.")
+            return
+        vals = tv.item(sel[0])['values']
+        et, eid = str(vals[0]), str(vals[1])
+        cmd_text = f"{lt.upper()} REMOVE {et} {eid}"
+        self._run_pbem(
+            ['inject-order', '--ship', str(self.ship_ed_current_id),
+             '--command', cmd_text],
+            f"{lt.upper()} REMOVE"
+        )
+        self.root.after(500, self._ship_ed_refresh_combat)
+
+    def _ship_ed_list_clear(self):
+        if self.ship_ed_current_id is None:
+            self._ship_ed_msg("Load a ship first.", ok=False)
+            return
+        lt = self.ship_ed_list_list.get()
+        if not messagebox.askyesno("Confirm",
+                                      f"Clear the entire {lt.upper()} list?"):
+            return
+        cmd_text = f"{lt.upper()} CLEAR"
+        self._run_pbem(
+            ['inject-order', '--ship', str(self.ship_ed_current_id),
+             '--command', cmd_text],
+            f"{lt.upper()} CLEAR"
+        )
+        self.root.after(500, self._ship_ed_refresh_combat)
+
     # ========================================================================
     # Tab: Base Editor
     # ========================================================================
@@ -2078,6 +2448,50 @@ class StellarDominionGUI:
         ttk.Button(icr, text="Remove Selected", width=16,
                    command=self._base_ed_remove_inv).pack(side=tk.LEFT, padx=2)
 
+        # ----- Combat -----
+        b_combat = ttk.LabelFrame(inner, text="Combat (Bases: target + defend, no avoid)",
+                                    padding=6)
+        b_combat.pack(fill=tk.X, padx=5, pady=4)
+
+        b_lists_row = ttk.Frame(b_combat)
+        b_lists_row.pack(fill=tk.X)
+        self.base_ed_list_trees = {}
+        for list_type in ('target', 'defend'):
+            col_f = ttk.LabelFrame(b_lists_row, text=list_type.upper(), padding=4)
+            col_f.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=2)
+            tv = ttk.Treeview(col_f, show='headings',
+                                columns=('type', 'id'), height=5)
+            tv.heading('type', text='Type')
+            tv.heading('id', text='ID')
+            tv.column('type', width=70, anchor=tk.W)
+            tv.column('id', width=100, anchor=tk.W)
+            tv.pack(fill=tk.X)
+            self.base_ed_list_trees[list_type] = tv
+
+        b_ctrl = ttk.Frame(b_combat)
+        b_ctrl.pack(fill=tk.X, pady=(6, 2))
+        ttk.Label(b_ctrl, text="List:").pack(side=tk.LEFT)
+        self.base_ed_list_list = ttk.Combobox(
+            b_ctrl, state='readonly', width=10,
+            values=['target', 'defend'])
+        self.base_ed_list_list.set('target')
+        self.base_ed_list_list.pack(side=tk.LEFT, padx=(2, 6))
+        ttk.Label(b_ctrl, text="Type:").pack(side=tk.LEFT)
+        self.base_ed_list_entrytype = ttk.Combobox(
+            b_ctrl, state='readonly', width=9,
+            values=['ship', 'base', 'faction'])
+        self.base_ed_list_entrytype.set('ship')
+        self.base_ed_list_entrytype.pack(side=tk.LEFT, padx=(2, 6))
+        ttk.Label(b_ctrl, text="ID:").pack(side=tk.LEFT)
+        self.base_ed_list_entryid = ttk.Entry(b_ctrl, width=12)
+        self.base_ed_list_entryid.pack(side=tk.LEFT, padx=(2, 6))
+        ttk.Button(b_ctrl, text="Add", width=8,
+                   command=self._base_ed_list_add).pack(side=tk.LEFT, padx=2)
+        ttk.Button(b_ctrl, text="Remove Selected", width=18,
+                   command=self._base_ed_list_remove).pack(side=tk.LEFT, padx=2)
+        ttk.Button(b_ctrl, text="Clear List", width=12,
+                   command=self._base_ed_list_clear).pack(side=tk.LEFT, padx=2)
+
         self.base_ed_status = ttk.Label(inner, text="No base loaded.",
                                          foreground="#666", font=("", 9, "italic"))
         self.base_ed_status.pack(anchor=tk.W, padx=5, pady=(4, 0))
@@ -2202,6 +2616,7 @@ class StellarDominionGUI:
 
             self._base_ed_refresh_modules()
             self._base_ed_refresh_inventory()
+            self._base_ed_refresh_combat()
             self._base_ed_msg(f"Loaded {kind}: {base['name']} ({bid})")
         except Exception as ex:
             self._base_ed_msg(f"Load failed: {ex}", ok=False)
@@ -2536,6 +2951,156 @@ class StellarDominionGUI:
             self._base_ed_msg(f"Removed inv item {item_id}")
         except Exception as ex:
             self._base_ed_msg(f"Remove inv failed: {ex}", ok=False)
+
+    # ----- Base editor: combat -----
+
+    def _base_ed_refresh_combat(self):
+        """Load combat lists for the currently loaded base."""
+        for lt in ('target', 'defend'):
+            tv = self.base_ed_list_trees[lt]
+            for row_id in tv.get_children():
+                tv.delete(row_id)
+        if not self.base_ed_current:
+            return
+        kind, bid = self.base_ed_current
+        # Translate kind to canonical base_kind used by base_combat_lists
+        try:
+            conn = self._base_ed_rw_conn()
+            lists = conn.execute(
+                "SELECT list_type, entry_type, entry_id FROM base_combat_lists "
+                "WHERE game_id = ? AND base_kind = ? AND base_id = ? "
+                "ORDER BY list_type, entry_type, entry_id",
+                (self.config_data['game_id'], kind, bid)
+            ).fetchall()
+            conn.close()
+            for r in lists:
+                tv = self.base_ed_list_trees.get(r['list_type'])
+                if tv is not None:
+                    tv.insert('', tk.END,
+                               values=(r['entry_type'], r['entry_id']))
+        except Exception as ex:
+            self._base_ed_msg(f"Refresh combat failed: {ex}", ok=False)
+
+    def _base_ed_list_add(self):
+        if not self.base_ed_current:
+            self._base_ed_msg("Load a base first.", ok=False)
+            return
+        kind, bid = self.base_ed_current
+        lt = self.base_ed_list_list.get()
+        et = self.base_ed_list_entrytype.get()
+        eid_str = self.base_ed_list_entryid.get().strip()
+        if not eid_str.isdigit():
+            messagebox.showerror("Input error", "Entry ID must be a positive integer.")
+            return
+        eid = int(eid_str)
+        # Validate referenced entity exists
+        try:
+            conn = self._base_ed_rw_conn()
+            found_name = None
+            if et == 'ship':
+                r = conn.execute("SELECT name FROM ships WHERE ship_id = ?",
+                                   (eid,)).fetchone()
+                if r:
+                    found_name = r['name']
+            elif et == 'faction':
+                r = conn.execute(
+                    "SELECT name FROM universe.factions WHERE faction_id = ?",
+                    (eid,)
+                ).fetchone()
+                if r:
+                    found_name = r['name']
+            elif et == 'base':
+                for tbl, idcol in (('starbases', 'base_id'),
+                                     ('surface_ports', 'port_id'),
+                                     ('outposts', 'outpost_id')):
+                    r = conn.execute(
+                        f"SELECT name FROM {tbl} WHERE {idcol} = ?", (eid,)
+                    ).fetchone()
+                    if r:
+                        found_name = r['name']
+                        break
+            if not found_name:
+                conn.close()
+                messagebox.showerror("Not found",
+                                      f"{et} {eid} does not exist.")
+                return
+            # Check duplicate
+            dup = conn.execute(
+                "SELECT 1 FROM base_combat_lists "
+                "WHERE game_id = ? AND base_kind = ? AND base_id = ? "
+                "AND list_type = ? AND entry_type = ? AND entry_id = ?",
+                (self.config_data['game_id'], kind, bid, lt, et, eid)
+            ).fetchone()
+            if dup:
+                conn.close()
+                self._base_ed_msg(f"Already on {lt.upper()}: {et} {found_name} ({eid})",
+                                    ok=False)
+                return
+            conn.execute(
+                "INSERT INTO base_combat_lists "
+                "(game_id, base_kind, base_id, list_type, entry_type, entry_id) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (self.config_data['game_id'], kind, bid, lt, et, eid)
+            )
+            conn.commit()
+            conn.close()
+            self._base_ed_refresh_combat()
+            self._base_ed_msg(f"Added to {lt.upper()}: {et} {found_name} ({eid})")
+        except Exception as ex:
+            self._base_ed_msg(f"Add failed: {ex}", ok=False)
+
+    def _base_ed_list_remove(self):
+        if not self.base_ed_current:
+            self._base_ed_msg("Load a base first.", ok=False)
+            return
+        kind, bid = self.base_ed_current
+        lt = self.base_ed_list_list.get()
+        tv = self.base_ed_list_trees[lt]
+        sel = tv.selection()
+        if not sel:
+            messagebox.showerror("No selection",
+                                  f"Select a row in the {lt.upper()} list first.")
+            return
+        vals = tv.item(sel[0])['values']
+        et, eid = str(vals[0]), int(vals[1])
+        try:
+            conn = self._base_ed_rw_conn()
+            conn.execute(
+                "DELETE FROM base_combat_lists "
+                "WHERE game_id = ? AND base_kind = ? AND base_id = ? "
+                "AND list_type = ? AND entry_type = ? AND entry_id = ?",
+                (self.config_data['game_id'], kind, bid, lt, et, eid)
+            )
+            conn.commit()
+            conn.close()
+            self._base_ed_refresh_combat()
+            self._base_ed_msg(f"Removed from {lt.upper()}: {et} {eid}")
+        except Exception as ex:
+            self._base_ed_msg(f"Remove failed: {ex}", ok=False)
+
+    def _base_ed_list_clear(self):
+        if not self.base_ed_current:
+            self._base_ed_msg("Load a base first.", ok=False)
+            return
+        kind, bid = self.base_ed_current
+        lt = self.base_ed_list_list.get()
+        if not messagebox.askyesno("Confirm",
+                                      f"Clear the entire {lt.upper()} list?"):
+            return
+        try:
+            conn = self._base_ed_rw_conn()
+            conn.execute(
+                "DELETE FROM base_combat_lists "
+                "WHERE game_id = ? AND base_kind = ? AND base_id = ? "
+                "AND list_type = ?",
+                (self.config_data['game_id'], kind, bid, lt)
+            )
+            conn.commit()
+            conn.close()
+            self._base_ed_refresh_combat()
+            self._base_ed_msg(f"{lt.upper()} list cleared.")
+        except Exception as ex:
+            self._base_ed_msg(f"Clear failed: {ex}", ok=False)
 
     # ========================================================================
     # Tab: Settings
