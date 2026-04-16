@@ -447,6 +447,31 @@ def get_connection(state_db_path=None, universe_db_path=None):
         conn.execute("ALTER TABLE ships ADD COLUMN combat_doctrine TEXT DEFAULT 'defensive'")
         conn.commit()
 
+    # Migrate: add max_integrity to ships (scales with ship_size).
+    # Integrity is no longer 0-100; it's an absolute HP pool equal to ship_size.
+    # For existing ships, set max_integrity = ship_size and scale current
+    # integrity proportionally so a ship at 100% health stays at 100% health,
+    # but with the new absolute value.
+    ship_cols = [r[1] for r in conn.execute("PRAGMA table_info(ships)").fetchall()]
+    if 'max_integrity' not in ship_cols:
+        conn.execute("ALTER TABLE ships ADD COLUMN max_integrity REAL DEFAULT 50.0")
+        # For each existing ship, set max_integrity = ship_size and scale
+        # current integrity from the old 0-100 scale to 0-ship_size scale.
+        for r in conn.execute(
+            "SELECT ship_id, ship_size, integrity FROM ships"
+        ).fetchall():
+            size = r['ship_size'] or 50
+            old_integrity = r['integrity'] if r['integrity'] is not None else 100.0
+            # If old integrity was 0-100, convert to absolute. A fresh ship
+            # at integrity=100 becomes integrity=ship_size; a damaged ship
+            # at integrity=60 becomes integrity=ship_size*0.6.
+            new_integrity = size * (old_integrity / 100.0)
+            conn.execute(
+                "UPDATE ships SET max_integrity = ?, integrity = ? WHERE ship_id = ?",
+                (float(size), float(new_integrity), r['ship_id'])
+            )
+        conn.commit()
+
     # Migrate: add weapon columns to ship_components (in universe.db)
     sc_cols = [r[1] for r in conn.execute("PRAGMA universe.table_info(ship_components)").fetchall()]
     weapon_col_defs = [
@@ -1009,7 +1034,8 @@ CREATE TABLE IF NOT EXISTS ships (
     crew_required INTEGER DEFAULT 10,
     life_support_capacity INTEGER DEFAULT 20,
     efficiency REAL DEFAULT 100.0,
-    integrity REAL DEFAULT 100.0,
+    integrity REAL DEFAULT 50.0,
+    max_integrity REAL DEFAULT 50.0,
     combat_doctrine TEXT DEFAULT 'defensive',
     FOREIGN KEY (game_id) REFERENCES games(game_id),
     FOREIGN KEY (owner_prefect_id) REFERENCES prefects(prefect_id)
@@ -1572,6 +1598,11 @@ def recalculate_ship_stats(conn, ship_id):
     # Sensor profile = ship_size / 100 (detection signature strength)
     sensor_profile = ship_size / 100.0 if ship_size > 0 else 0.5
 
+    # Max integrity scales with ship_size. If ship_size shrinks (e.g. via
+    # refit), clamp current integrity down. Current integrity is never raised
+    # here — repair is a separate action.
+    max_integrity = float(ship_size)
+
     conn.execute("""
         UPDATE ships SET
             cargo_capacity = ?,
@@ -1579,10 +1610,13 @@ def recalculate_ship_stats(conn, ship_id):
             sensor_rating = ?,
             sensor_profile = ?,
             gravity_rating = ?,
-            crew_required = ?
+            crew_required = ?,
+            max_integrity = ?,
+            integrity = MIN(integrity, ?)
         WHERE ship_id = ?
     """, (total_cargo, total_life_cap, total_sensor, round(sensor_profile, 2),
-          round(gravity_rating, 2), crew_required, ship_id))
+          round(gravity_rating, 2), crew_required,
+          max_integrity, max_integrity, ship_id))
     conn.commit()
 
     return {

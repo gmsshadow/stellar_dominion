@@ -301,11 +301,13 @@ DOCTRINE aggressive
 
 ### Combat Mechanics
 
+- **Hull points = ship size.** Every ship has a maximum integrity equal to its hull size. A size-50 Commercial has 50 HP; a size-300 Military has 300 HP; a size-1500 dreadnought has 1500 HP. Larger ships are significantly more durable in absolute terms.
 - **Detection triggers combat.** The passive sensor sweep at start of turn (and during ship movement) checks for target-list matches. A successful detection roll opens an engagement.
 - **6 combat rounds per turn.** Combat runs in its own block, separate from the OC pool. Each round, every combatant chooses one action: move, fire, or evade.
 - **Movement:** 1 cell per round. Ships with gravity_rating ≥ 3.0 move 2 cells per round.
-- **Weapons fire at full damage** if the target is within range. Weapon range and damage come from the installed weapon component.
+- **Weapons fire at full damage** if the target is within range. Weapon range and damage come from the installed weapon component. Damage is subtracted directly from target integrity.
 - **Damage = perfect detection.** Taking damage automatically reveals the attacker as a known contact (regardless of sensor odds).
+- **Retreat is percentage-based.** Doctrine retreat thresholds (25/50/75%) compare current integrity to the ship's maximum, so a size-300 ship retreats at HP 75 on aggressive doctrine, HP 150 on defensive, HP 225 on evasive — the same relative percentages regardless of ship size.
 - **Combat persists across turns.** If both sides are still in contact at end-of-turn, the engagement continues with fresh combat rounds next turn.
 - **Combat overrides normal orders.** A ship in combat does not execute its queued MOVE/TRADE/etc. orders that turn — those orders survive as overflow to the next turn.
 - **Combat ends when:**

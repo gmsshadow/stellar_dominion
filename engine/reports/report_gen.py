@@ -343,8 +343,13 @@ def generate_ship_report(turn_result, db_path=None, game_id="OMICRON101",
         engine_pct = int(min(100, round((engine_count / optimal_engines) * 100)))
     hull_info = f"Size: {ship_size} ({ship['hull_type']})"
     lines.append(section_line(f"Design: {ship['design']}"))
+    integ_val = ship['integrity'] or 0
+    max_integ = ship['max_integrity'] if 'max_integrity' in ship.keys() and ship['max_integrity'] else ship_size
+    if not max_integ:
+        max_integ = 1
+    integ_pct = (integ_val / max_integ) * 100
     lines.append(section_line(f"{hull_info}".ljust(COL_LEFT) +
-                               f"Integrity: {ship['integrity']:.0f}%"))
+                               f"Integrity: {integ_val:.0f}/{max_integ:.0f} ({integ_pct:.0f}%)"))
     lines.append(section_line(f"Internal: {st_used}/{st_capacity} ST".ljust(COL_LEFT) +
                                f"Gravity Rating: {ship['gravity_rating']:.1f}"))
     lines.append(section_line(f"Engines: {engine_count}/{optimal_engines} -> {engine_pct}%".ljust(COL_LEFT) +
@@ -551,10 +556,15 @@ def generate_ship_report(turn_result, db_path=None, game_id="OMICRON101",
             lines.append(section_line(f"  Participants:"))
             for p in parts:
                 if p['participant_kind'] == 'ship':
-                    nrow = conn.execute("SELECT name, integrity FROM ships WHERE ship_id = ?",
-                                          (p['participant_id_value'],)).fetchone()
+                    nrow = conn.execute(
+                        "SELECT name, integrity, max_integrity FROM ships WHERE ship_id = ?",
+                        (p['participant_id_value'],)
+                    ).fetchone()
                     pname = nrow['name'] if nrow else f"Ship {p['participant_id_value']}"
                     cur_integ = nrow['integrity'] if nrow else 0
+                    max_integ = nrow['max_integrity'] if nrow and nrow['max_integrity'] else 100
+                    integ_pct = (cur_integ / max_integ) * 100 if max_integ else 0
+                    integ_str = f"integrity {cur_integ:.0f}/{max_integ:.0f} ({integ_pct:.0f}%)"
                 else:
                     tbl_map = {'starbase': ('starbases', 'base_id'),
                                'port': ('surface_ports', 'port_id'),
@@ -565,13 +575,13 @@ def generate_ship_report(turn_result, db_path=None, game_id="OMICRON101",
                         (p['participant_id_value'],)
                     ).fetchone() if tbl else None
                     pname = nrow['name'] if nrow else f"{p['participant_kind'].title()} {p['participant_id_value']}"
-                    cur_integ = '-'
+                    integ_str = "integrity -"
                 marker = ' (you)' if (p['participant_kind'] == 'ship'
                                         and p['participant_id_value'] == ship_id) else ''
                 p_status = p['status'].upper() if p['status'] else 'ACTIVE'
                 lines.append(section_line(
                     f"    {pname} ({p['participant_id_value']}){marker}"
-                    f" - integrity {cur_integ}, status: {p_status}"
+                    f" - {integ_str}, status: {p_status}"
                 ))
             # Show this ship's combat events round by round
             lines.append(section_line(f"  Combat log this turn:"))

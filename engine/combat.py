@@ -255,12 +255,16 @@ def get_participant_state(conn, game_id, kind, entity_id):
             return None
         weapons = get_ship_weapons(conn, entity_id)
         integ = row['integrity'] if row['integrity'] is not None else 100.0
+        # max_integrity scales with ship_size. Fall back to ship_size if the
+        # column is somehow null (e.g. pre-migration rows).
+        max_integ = row['max_integrity'] if 'max_integrity' in row.keys() and row['max_integrity'] else (row['ship_size'] or 50)
         return {
             'kind': 'ship', 'id': entity_id,
             'name': row['name'], 'faction_id': row['faction_id'],
             'col': row['grid_col'], 'row': row['grid_row'],
             'system_id': row['system_id'],
             'integrity': integ,
+            'max_integrity': float(max_integ),
             'doctrine': row['combat_doctrine'] or 'defensive',
             'gravity_rating': row['gravity_rating'] or 1.0,
             'sensor_rating': row['sensor_rating'] or 0,
@@ -302,6 +306,7 @@ def get_participant_state(conn, game_id, kind, entity_id):
             'row': row['grid_row'] if 'grid_row' in row.keys() else None,
             'system_id': row['system_id'] if 'system_id' in row.keys() else None,
             'integrity': 100.0,  # bases don't track integrity in v1
+            'max_integrity': 100.0,
             'doctrine': None,
             'gravity_rating': 0,
             'sensor_rating': row['sensor_rating'] or 0,
@@ -403,11 +408,15 @@ def decide_action(conn, game_id, actor, target, all_participants_state):
         return ('hold', None)
 
     integrity = actor.get('integrity', 100)
+    max_integrity = actor.get('max_integrity') or 100
+    if max_integrity <= 0:
+        max_integrity = 100
+    integrity_pct = (integrity / max_integrity) * 100.0
     doctrine = actor.get('doctrine', 'defensive') or 'defensive'
     retreat_threshold = doctrine_retreat_threshold(doctrine)
 
-    # If integrity below retreat threshold, try to flee
-    if integrity <= retreat_threshold and actor['kind'] == 'ship':
+    # If integrity percentage below retreat threshold, try to flee
+    if integrity_pct <= retreat_threshold and actor['kind'] == 'ship':
         # Move directly away from target
         dest = _step_away(actor, target)
         if dest:
@@ -888,7 +897,7 @@ def resolve_engagement_round(conn, game_id, engagement, round_number):
                                   round_number, actor['kind'], actor['id'], 'fire',
                                   target_kind=tgt['kind'], target_id=tgt['id'],
                                   damage=total_dmg, integrity_after=new_integ,
-                                  detail=f"fired {weapon_summary} ({int(total_dmg)} dmg) at {tgt['name']}")
+                                  detail=f"fired {weapon_summary} ({int(total_dmg)} dmg) at {tgt['name']} -> {int(new_integ)}/{int(tgt.get('max_integrity', 0) or 0)} hp")
                 # Check for destruction
                 if new_integ <= 0:
                     log_combat_event(conn, engagement_id, turn_year, turn_week,

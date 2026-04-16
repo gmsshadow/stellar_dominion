@@ -1301,10 +1301,14 @@ class StellarDominionGUI:
                 for p in parts:
                     if p['participant_kind'] == 'ship':
                         nrow = conn.execute(
-                            "SELECT name FROM ships WHERE ship_id = ?",
+                            "SELECT name, integrity, max_integrity FROM ships WHERE ship_id = ?",
                             (p['participant_id_value'],)
                         ).fetchone()
                         nm = nrow['name'] if nrow else f"#{p['participant_id_value']}"
+                        hp_str = ''
+                        if nrow and nrow['max_integrity']:
+                            pct = nrow['integrity'] / nrow['max_integrity'] * 100
+                            hp_str = f" {nrow['integrity']:.0f}/{nrow['max_integrity']:.0f}"
                     else:
                         tbl_map = {'starbase': ('starbases', 'base_id'),
                                     'port': ('surface_ports', 'port_id'),
@@ -1315,8 +1319,9 @@ class StellarDominionGUI:
                             (p['participant_id_value'],)
                         ).fetchone() if tbl else None
                         nm = nrow['name'] if nrow else f"{p['participant_kind']}#{p['participant_id_value']}"
+                        hp_str = ''
                     stat = p['status'][:1].upper() if p['status'] else '?'
-                    part_bits.append(f"{nm}[{stat}]")
+                    part_bits.append(f"{nm}[{stat}]{hp_str}")
                 self.combat_eng_tree.insert(
                     '', tk.END,
                     values=(e['engagement_id'], loc, e['system_id'],
