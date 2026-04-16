@@ -927,9 +927,48 @@ def cmd_run_turn(args):
     # Phase 1.95: Initial passive scan sweep for all ships/bases.
     # Catches static detections (patrol ships not moving, bases that
     # never get a fly-by trigger). Reciprocal detection during movement
-    # handles dynamic events after this.
+    # handles dynamic events after this. This may also create new
+    # combat engagements (when scans find target-list matches).
     print(f"\n  Running initial passive sensor sweep...")
     resolver.run_initial_passive_scan()
+
+    # Phase 1.97: Resolve any active combat engagements (carried over
+    # from previous turn or freshly triggered by Phase 1.95). Each
+    # engagement gets up to 6 rounds per turn. Combat-locked ships
+    # are then excluded from normal interleaved resolution.
+    from engine.combat import resolve_active_engagements, is_ship_in_combat
+    combat_summaries = resolve_active_engagements(
+        conn, args.game, game['current_year'], game['current_week']
+    )
+    if combat_summaries:
+        print(f"\n  Resolved {len(combat_summaries)} combat engagement(s):")
+        for s in combat_summaries:
+            print(f"    Engagement #{s['engagement_id']} at "
+                  f"{s['grid_col']}{s['grid_row']:02d} sys {s['system_id']} "
+                  f"— {s['rounds_run']} round(s)")
+
+    # Filter ship_orders_map: any ship still in active combat after the
+    # combat phase has its queued orders carried forward (overflow) and
+    # is removed from this turn's normal resolution.
+    combat_locked_ships = []
+    for sid in list(ship_orders_map.keys()):
+        if is_ship_in_combat(conn, args.game, sid):
+            combat_locked_ships.append(sid)
+            # Push remaining orders to pending_orders as overflow
+            queued = ship_orders_map.pop(sid)
+            for seq, q in enumerate(queued, 1):
+                params_json = json.dumps(q['params']) if q.get('params') else None
+                conn.execute(
+                    """INSERT INTO pending_orders
+                       (game_id, subject_type, subject_id, order_sequence,
+                        command, parameters, reason)
+                       VALUES (?, 'ship', ?, ?, ?, ?, 'in combat')""",
+                    (args.game, sid, seq, q['command'], params_json)
+                )
+            conn.commit()
+    if combat_locked_ships:
+        print(f"  {len(combat_locked_ships)} ship(s) locked in combat — "
+              f"normal orders deferred to next turn")
 
     # Phase 2: Interleaved resolution (cheapest OC actions first)
     if ship_orders_map:
@@ -937,6 +976,82 @@ def cmd_run_turn(args):
         results = resolver.resolve_turn_interleaved(ship_orders_map)
     else:
         results = {}
+
+    # Generate stub results for ships involved in combat this turn so
+    # they get full reports (combat sections, etc.) even though their
+    # normal orders were deferred. Also covers ships with no orders that
+    # were attacked into combat — they still want a report this turn.
+    combat_ship_ids = [r['participant_id_value'] for r in conn.execute(
+        """SELECT DISTINCT cp.participant_id_value
+           FROM combat_participants cp
+           JOIN combat_engagements ce ON cp.engagement_id = ce.engagement_id
+           WHERE ce.game_id = ? AND cp.participant_kind = 'ship'
+             AND ce.last_active_turn_year = ?
+             AND ce.last_active_turn_week = ?""",
+        (args.game, game['current_year'], game['current_week'])
+    ).fetchall()]
+    if combat_ship_ids:
+        print(f"  Adding combat report stubs for {len(combat_ship_ids)} ship(s)")
+    for sid in combat_ship_ids:
+        if sid in results:
+            continue
+        sh = conn.execute(
+            "SELECT * FROM ships WHERE ship_id = ?", (sid,)
+        ).fetchone()
+        if not sh:
+            continue
+        results[sid] = {
+            'ship_id': sid,
+            'ship_name': sh['name'],
+            'turn_year': game['current_year'],
+            'turn_week': game['current_week'],
+            'system_id': sh['system_id'],
+            'final_system_id': sh['system_id'],
+            'start_col': sh['grid_col'],
+            'start_row': sh['grid_row'],
+            'start_tu': sh['tu_per_turn'] or 300,
+            'start_orbiting': sh['orbiting_body_id'],
+            'start_docked': sh['docked_at_base_id'],
+            'start_landed': sh['landed_body_id'],
+            'start_landed_x': sh['landed_x'] or 1,
+            'start_landed_y': sh['landed_y'] or 1,
+            'final_col': sh['grid_col'],
+            'final_row': sh['grid_row'],
+            'final_tu': sh['tu_remaining'] or 0,
+            'col': sh['grid_col'],
+            'row': sh['grid_row'],
+            'tu': sh['tu_remaining'] or 0,
+            'docked_at': sh['docked_at_base_id'],
+            'orbiting': sh['orbiting_body_id'],
+            'landed': sh['landed_body_id'],
+            'landed_x': sh['landed_x'] or 1,
+            'landed_y': sh['landed_y'] or 1,
+            'log': [],
+            'logs': [],
+            'overflow': [],
+            'contacts': [],
+            'rng_seed': None,
+            'efficiency': sh['efficiency'] or 100,
+        }
+        # Ensure ship_meta has an entry
+        if sid not in ship_meta:
+            pr = conn.execute(
+                "SELECT pl.account_number, pp.faction_id "
+                "FROM prefects pp JOIN players pl ON pp.player_id = pl.player_id "
+                "WHERE pp.prefect_id = ?", (sh['owner_prefect_id'],)
+            ).fetchone()
+            faction_abbr = 'IND'
+            if pr and pr['faction_id']:
+                f = conn.execute(
+                    "SELECT abbreviation FROM universe.factions WHERE faction_id = ?",
+                    (pr['faction_id'],)
+                ).fetchone()
+                if f:
+                    faction_abbr = f['abbreviation']
+            ship_meta[sid] = {
+                'display_name': f"{faction_abbr} {sh['name']}",
+                'account_number': pr['account_number'] if pr else None,
+            }
 
     # Phase 3: Generate reports and mark orders resolved
     # Also collect trade summaries per prefect for financial report
@@ -3889,6 +4004,253 @@ def cmd_respond_action(args):
     conn.close()
 
 
+    if remaining['cnt'] == 0:
+        print(f"\n  All moderator actions responded. Use 'release-turn' then 'run-turn' to continue.")
+    else:
+        print(f"\n  {remaining['cnt']} action(s) still pending.")
+    conn.close()
+
+
+# ======================================================================
+# COMBAT GM COMMANDS
+# ======================================================================
+
+def cmd_list_engagements(args):
+    """List combat engagements (active by default; use --all for all)."""
+    db_path = Path(args.db) if args.db else None
+    conn = get_connection(db_path)
+    show_all = getattr(args, 'all', False)
+
+    if show_all:
+        engagements = conn.execute(
+            "SELECT * FROM combat_engagements WHERE game_id = ? ORDER BY engagement_id",
+            (args.game,)
+        ).fetchall()
+    else:
+        engagements = conn.execute(
+            "SELECT * FROM combat_engagements WHERE game_id = ? AND status = 'active' "
+            "ORDER BY engagement_id", (args.game,)
+        ).fetchall()
+
+    if not engagements:
+        which = "engagements" if show_all else "active engagements"
+        print(f"No {which}.")
+        conn.close()
+        return
+
+    label = "All engagements" if show_all else "Active engagements"
+    print(f"\n{label} for game {args.game}:")
+    for e in engagements:
+        loc = f"{e['grid_col']}{e['grid_row']:02d}" if e['grid_col'] else '?'
+        started = f"{e['started_turn_year']}.{e['started_turn_week']}"
+        last = (f"{e['last_active_turn_year']}.{e['last_active_turn_week']}"
+                if e['last_active_turn_year'] else '?')
+        print(f"\n  Engagement #{e['engagement_id']} — {e['status'].upper()}")
+        print(f"    Location: {loc} system {e['system_id']}")
+        print(f"    Started:  {started} round {e['started_on_round']}")
+        print(f"    Last active: {last}")
+        if e['resolution']:
+            print(f"    Resolution: {e['resolution']}")
+        # Show participants
+        parts = conn.execute(
+            "SELECT * FROM combat_participants WHERE engagement_id = ?",
+            (e['engagement_id'],)
+        ).fetchall()
+        for p in parts:
+            if p['participant_kind'] == 'ship':
+                nrow = conn.execute(
+                    "SELECT name, integrity FROM ships WHERE ship_id = ?",
+                    (p['participant_id_value'],)
+                ).fetchone()
+                pname = nrow['name'] if nrow else f"Ship {p['participant_id_value']}"
+                cur_int = nrow['integrity'] if nrow else '?'
+            else:
+                tbl_map = {'starbase': ('starbases', 'base_id'),
+                           'port': ('surface_ports', 'port_id'),
+                           'outpost': ('outposts', 'outpost_id')}
+                tbl, idcol = tbl_map.get(p['participant_kind'], (None, None))
+                nrow = conn.execute(
+                    f"SELECT name FROM {tbl} WHERE {idcol} = ?",
+                    (p['participant_id_value'],)
+                ).fetchone() if tbl else None
+                pname = nrow['name'] if nrow else f"{p['participant_kind']} {p['participant_id_value']}"
+                cur_int = '-'
+            joined = (f"{p['joined_turn_year']}.{p['joined_turn_week']} R{p['joined_on_round']}"
+                       if p['joined_turn_year'] else '?')
+            print(f"      {p['participant_kind']:8s} {pname} ({p['participant_id_value']})"
+                   f" - status: {p['status'].upper()}, integrity: {cur_int}, joined: {joined}")
+    conn.close()
+
+
+def cmd_end_engagement(args):
+    """Force-end an active engagement (GM only)."""
+    db_path = Path(args.db) if args.db else None
+    conn = get_connection(db_path)
+    engagement_id = args.engagement_id
+    note = args.note or "Force-ended by GM"
+
+    eng = conn.execute(
+        "SELECT * FROM combat_engagements WHERE engagement_id = ? AND game_id = ?",
+        (engagement_id, args.game)
+    ).fetchone()
+    if not eng:
+        print(f"Error: engagement #{engagement_id} not found in game {args.game}.")
+        conn.close()
+        return
+    if eng['status'] != 'active':
+        print(f"Engagement #{engagement_id} is already {eng['status']}. Nothing to do.")
+        conn.close()
+        return
+
+    from engine.combat import end_engagement
+    end_engagement(conn, engagement_id, f"GM force-ended: {note}", status='resolved')
+    print(f"Engagement #{engagement_id} force-ended. Resolution: {note}")
+    conn.close()
+
+
+def cmd_inject_attack(args):
+    """
+    Force two ships into combat for testing or GM events.
+    Creates an engagement with both ships as participants. Combat will
+    resolve in the next run-turn.
+    """
+    db_path = Path(args.db) if args.db else None
+    conn = get_connection(db_path)
+
+    attacker_id = args.attacker
+    target_id = args.target
+
+    # Verify both ships
+    a = conn.execute(
+        "SELECT * FROM ships WHERE ship_id = ? AND game_id = ?",
+        (attacker_id, args.game)
+    ).fetchone()
+    if not a:
+        print(f"Error: attacker ship {attacker_id} not found.")
+        conn.close()
+        return
+    t = conn.execute(
+        "SELECT * FROM ships WHERE ship_id = ? AND game_id = ?",
+        (target_id, args.game)
+    ).fetchone()
+    if not t:
+        print(f"Error: target ship {target_id} not found.")
+        conn.close()
+        return
+
+    if a['system_id'] != t['system_id']:
+        print(f"Warning: ships in different systems "
+               f"({a['system_id']} vs {t['system_id']}). Engagement created at attacker's location.")
+
+    game = conn.execute("SELECT * FROM games WHERE game_id = ?", (args.game,)).fetchone()
+
+    from engine.combat import (find_or_create_engagement, add_participant,
+                                 log_combat_event)
+    eng_id = find_or_create_engagement(
+        conn, args.game, a['system_id'], a['grid_col'], a['grid_row'],
+        game['current_year'], game['current_week'], started_on_round=0
+    )
+    add_participant(conn, eng_id, 'ship', a['ship_id'], a['owner_prefect_id'],
+                     game['current_year'], game['current_week'], 0,
+                     a['integrity'] or 100.0)
+    add_participant(conn, eng_id, 'ship', t['ship_id'], t['owner_prefect_id'],
+                     game['current_year'], game['current_week'], 0,
+                     t['integrity'] or 100.0)
+    log_combat_event(conn, eng_id, game['current_year'], game['current_week'], 0,
+                      'system', None, 'engage',
+                      detail=f"GM-injected combat: {a['name']} vs {t['name']}")
+    print(f"Engagement #{eng_id} created at {a['grid_col']}{a['grid_row']:02d} "
+           f"system {a['system_id']}.")
+    print(f"  Attacker: {a['name']} ({a['ship_id']})")
+    print(f"  Target:   {t['name']} ({t['ship_id']})")
+    print(f"  Combat will resolve at next run-turn (each side rolls based on its lists/doctrine).")
+    conn.close()
+
+
+def cmd_set_doctrine(args):
+    """Set a ship's combat doctrine (GM-only)."""
+    db_path = Path(args.db) if args.db else None
+    conn = get_connection(db_path)
+    valid = ('aggressive', 'defensive', 'evasive')
+    doc = (args.doctrine or '').lower()
+    if doc not in valid:
+        print(f"Error: doctrine must be one of {', '.join(valid)}.")
+        conn.close()
+        return
+    sh = conn.execute(
+        "SELECT * FROM ships WHERE ship_id = ? AND game_id = ?",
+        (args.ship, args.game)
+    ).fetchone()
+    if not sh:
+        print(f"Error: ship {args.ship} not found.")
+        conn.close()
+        return
+    old = sh['combat_doctrine'] or 'defensive'
+    conn.execute("UPDATE ships SET combat_doctrine = ? WHERE ship_id = ?",
+                  (doc, args.ship))
+    conn.commit()
+    print(f"{sh['name']} ({args.ship}) doctrine: {old.upper()} -> {doc.upper()}.")
+    conn.close()
+
+
+def cmd_show_lists(args):
+    """Show combat lists for a ship or base."""
+    db_path = Path(args.db) if args.db else None
+    conn = get_connection(db_path)
+    if args.ship:
+        sh = conn.execute(
+            "SELECT * FROM ships WHERE ship_id = ?", (args.ship,)
+        ).fetchone()
+        if not sh:
+            print(f"Error: ship {args.ship} not found.")
+            conn.close()
+            return
+        print(f"\nCombat lists for {sh['name']} ({args.ship}):")
+        print(f"  Doctrine: {(sh['combat_doctrine'] or 'defensive').upper()}")
+        rows = conn.execute(
+            "SELECT * FROM ship_combat_lists WHERE game_id = ? AND ship_id = ? "
+            "ORDER BY list_type, entry_type, entry_id",
+            (args.game, args.ship)
+        ).fetchall()
+        for lt in ('target', 'defend', 'avoid'):
+            entries = [r for r in rows if r['list_type'] == lt]
+            print(f"\n  {lt.upper()} list ({len(entries)} entr{'y' if len(entries)==1 else 'ies'}):")
+            for e in entries:
+                print(f"    [{e['entry_type']}] {e['entry_id']}")
+    elif args.base:
+        # Determine kind by trying each table
+        b = None
+        for kind, tbl, idcol in [('starbase', 'starbases', 'base_id'),
+                                   ('port', 'surface_ports', 'port_id'),
+                                   ('outpost', 'outposts', 'outpost_id')]:
+            row = conn.execute(
+                f"SELECT * FROM {tbl} WHERE {idcol} = ? AND game_id = ?",
+                (args.base, args.game)
+            ).fetchone()
+            if row:
+                b, base_kind = row, kind
+                break
+        if not b:
+            print(f"Error: base {args.base} not found.")
+            conn.close()
+            return
+        print(f"\nCombat lists for {b['name']} ({args.base}, {base_kind}):")
+        rows = conn.execute(
+            "SELECT * FROM base_combat_lists "
+            "WHERE game_id = ? AND base_kind = ? AND base_id = ? "
+            "ORDER BY list_type, entry_type, entry_id",
+            (args.game, base_kind, args.base)
+        ).fetchall()
+        for lt in ('target', 'defend'):
+            entries = [r for r in rows if r['list_type'] == lt]
+            print(f"\n  {lt.upper()} list ({len(entries)} entr{'y' if len(entries)==1 else 'ies'}):")
+            for e in entries:
+                print(f"    [{e['entry_type']}] {e['entry_id']}")
+    else:
+        print("Error: provide either --ship or --base.")
+    conn.close()
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Stellar Dominion - PBEM Strategy Game Engine",
@@ -4284,6 +4646,36 @@ Gmail integration (two-stage workflow):
     sp.add_argument('--action-id', type=int, required=True, help='Action ID to respond to')
     sp.add_argument('--response', required=True, help='GM response text')
 
+    # Combat GM commands
+    sp = subparsers.add_parser('list-engagements', help='List combat engagements')
+    sp.add_argument('--game', default='OMICRON101', help='Game ID')
+    sp.add_argument('--db', help='Path to game_state.db')
+    sp.add_argument('--all', action='store_true', help='Show all engagements (not just active)')
+
+    sp = subparsers.add_parser('end-engagement', help='Force-end an active combat engagement')
+    sp.add_argument('--game', default='OMICRON101', help='Game ID')
+    sp.add_argument('--db', help='Path to game_state.db')
+    sp.add_argument('--engagement-id', type=int, required=True, dest='engagement_id', help='Engagement ID')
+    sp.add_argument('--note', help='Optional resolution note')
+
+    sp = subparsers.add_parser('inject-attack', help='GM-inject combat between two ships (testing)')
+    sp.add_argument('--game', default='OMICRON101', help='Game ID')
+    sp.add_argument('--db', help='Path to game_state.db')
+    sp.add_argument('--attacker', type=int, required=True, help='Attacker ship ID')
+    sp.add_argument('--target', type=int, required=True, help='Target ship ID')
+
+    sp = subparsers.add_parser('set-doctrine', help="Set a ship's combat doctrine")
+    sp.add_argument('--game', default='OMICRON101', help='Game ID')
+    sp.add_argument('--db', help='Path to game_state.db')
+    sp.add_argument('--ship', type=int, required=True, help='Ship ID')
+    sp.add_argument('--doctrine', required=True, choices=['aggressive', 'defensive', 'evasive'])
+
+    sp = subparsers.add_parser('show-lists', help="Show combat lists for a ship or base")
+    sp.add_argument('--game', default='OMICRON101', help='Game ID')
+    sp.add_argument('--db', help='Path to game_state.db')
+    sp.add_argument('--ship', type=int, help='Ship ID')
+    sp.add_argument('--base', type=int, help='Base ID (starbase / port / outpost)')
+
     args = parser.parse_args()
 
     if not args.command:
@@ -4344,6 +4736,11 @@ Gmail integration (two-stage workflow):
         'inject-order': cmd_inject_order,
         'list-actions': cmd_list_actions,
         'respond-action': cmd_respond_action,
+        'list-engagements': cmd_list_engagements,
+        'end-engagement': cmd_end_engagement,
+        'inject-attack': cmd_inject_attack,
+        'set-doctrine': cmd_set_doctrine,
+        'show-lists': cmd_show_lists,
     }
 
     if args.command in commands:

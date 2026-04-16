@@ -38,6 +38,11 @@ VALID_COMMANDS = {
     'CHANGEFACTION': {'params': 'changefaction_order', 'subject': 'prefect', 'description': 'Request to change faction (GM-moderated, prefect-scoped)'},
     'MODERATOR': {'params': 'moderator_order', 'description': 'Submit a free-text request to the GM'},
     'CLEAR': {'params': 'none', 'description': 'Clear all pending overflow orders from previous turns'},
+    # Combat list management (per-ship; ships and bases have their own lists)
+    'TARGET': {'params': 'list_op', 'description': 'Manage target list: TARGET <add|remove|clear> [type] <id>'},
+    'DEFEND': {'params': 'list_op', 'description': 'Manage defend list: DEFEND <add|remove|clear> [type] <id>'},
+    'AVOID':  {'params': 'list_op', 'description': 'Manage avoid list (ships only): AVOID <add|remove|clear> [type] <id>'},
+    'DOCTRINE': {'params': 'doctrine_choice', 'description': 'Set combat doctrine: DOCTRINE <aggressive|defensive|evasive>'},
     # Base/port/outpost commands
     'BUILD': {'params': 'build_order', 'description': 'Build/install a module on a base'},
     'SETBUY': {'params': 'setprice_order', 'description': 'Set market buy price for an item'},
@@ -121,6 +126,70 @@ def parse_order(command_str, params):
             return command, {'duration': value}, None
         except (ValueError, TypeError):
             return command, params, f"{command}: expected integer duration, got '{params}'"
+
+    elif spec['params'] == 'list_op':
+        # TARGET/DEFEND/AVOID — supports forms:
+        #   "ADD <id>"                  -> default type 'ship'
+        #   "ADD ship <id>"
+        #   "ADD faction <id>"
+        #   "ADD base <id>"
+        #   "REMOVE <type?> <id>"
+        #   "CLEAR"                     -> wipe entire list
+        #
+        # YAML form: {op: 'add', type: 'ship', id: 12345}
+        # Text form: ADD ship 12345 / REMOVE 12345 / CLEAR
+        VALID_OPS = ('add', 'remove', 'clear')
+        VALID_TYPES = ('ship', 'base', 'faction')
+
+        if isinstance(params, dict):
+            op = str(params.get('op', '')).strip().lower()
+            entry_type = str(params.get('type', 'ship')).strip().lower() if params.get('type') else 'ship'
+            entry_id_raw = params.get('id')
+        elif isinstance(params, str):
+            tokens = params.strip().split()
+            if not tokens:
+                return command, params, f"{command}: missing operation. Use ADD/REMOVE/CLEAR."
+            op = tokens[0].lower()
+            if op == 'clear':
+                return command, {'op': 'clear', 'type': None, 'id': None}, None
+            # ADD/REMOVE: optional type word, then id
+            if len(tokens) == 2:
+                entry_type = 'ship'
+                entry_id_raw = tokens[1]
+            elif len(tokens) >= 3:
+                entry_type = tokens[1].lower()
+                entry_id_raw = tokens[2]
+            else:
+                return command, params, f"{command}: missing target ID. Use {op.upper()} [ship|base|faction] <id>."
+        else:
+            return command, params, f"{command}: expected operation string"
+
+        if op not in VALID_OPS:
+            return command, params, f"{command}: unknown operation '{op}'. Use ADD, REMOVE, or CLEAR."
+        if op == 'clear':
+            return command, {'op': 'clear', 'type': None, 'id': None}, None
+        if entry_type not in VALID_TYPES:
+            return command, params, f"{command}: unknown entry type '{entry_type}'. Use ship, base, or faction."
+        try:
+            entry_id = int(entry_id_raw)
+        except (ValueError, TypeError):
+            return command, params, f"{command}: expected numeric ID, got '{entry_id_raw}'"
+        if entry_id <= 0:
+            return command, params, f"{command}: ID must be positive"
+        return command, {'op': op, 'type': entry_type, 'id': entry_id}, None
+
+    elif spec['params'] == 'doctrine_choice':
+        # DOCTRINE aggressive | defensive | evasive
+        VALID_DOCTRINES = ('aggressive', 'defensive', 'evasive')
+        if isinstance(params, dict):
+            value = str(params.get('doctrine', '')).strip().lower()
+        elif isinstance(params, str):
+            value = params.strip().lower()
+        else:
+            return command, params, f"{command}: expected one of {VALID_DOCTRINES}"
+        if value not in VALID_DOCTRINES:
+            return command, params, f"{command}: must be one of {', '.join(VALID_DOCTRINES)}"
+        return command, {'doctrine': value}, None
 
     elif spec['params'] == 'coordinate':
         if isinstance(params, str):

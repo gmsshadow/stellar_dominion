@@ -288,6 +288,64 @@ Respond to a player's moderator request. Response is embedded in their ship repo
 
 ---
 
+## Combat
+
+### list-engagements
+List combat engagements (active by default).
+
+| Parameter | Required | Default | Description |
+|-----------|:--------:|---------|-------------|
+| `--game` | No | `OMICRON101` | Game ID |
+| `--all` | No | — | Include resolved/fled engagements |
+
+```bash
+python pbem.py list-engagements                # Active only
+python pbem.py list-engagements --all          # All engagements
+```
+
+### end-engagement
+Force-end an active combat engagement (GM tool — useful if combat got stuck or for narrative reasons).
+
+| Parameter | Required | Default | Description |
+|-----------|:--------:|---------|-------------|
+| `--game` | No | `OMICRON101` | Game ID |
+| `--engagement-id` | **Yes** | — | Engagement ID to end |
+| `--note` | No | — | Optional resolution text |
+
+### inject-attack
+Force two ships into combat. Useful for testing or GM-narrated events. Combat resolves on the next `run-turn`.
+
+| Parameter | Required | Default | Description |
+|-----------|:--------:|---------|-------------|
+| `--game` | No | `OMICRON101` | Game ID |
+| `--attacker` | **Yes** | — | Attacker ship ID |
+| `--target` | **Yes** | — | Target ship ID |
+
+### set-doctrine
+Set a ship's combat doctrine.
+
+| Parameter | Required | Default | Description |
+|-----------|:--------:|---------|-------------|
+| `--game` | No | `OMICRON101` | Game ID |
+| `--ship` | **Yes** | — | Ship ID |
+| `--doctrine` | **Yes** | — | One of: `aggressive`, `defensive`, `evasive` |
+
+### show-lists
+Show combat lists for a ship or base.
+
+| Parameter | Required | Default | Description |
+|-----------|:--------:|---------|-------------|
+| `--game` | No | `OMICRON101` | Game ID |
+| `--ship` | One of | — | Ship ID |
+| `--base` | One of | — | Base ID (starbase / port / outpost) |
+
+```bash
+python pbem.py show-lists --ship 30158993
+python pbem.py show-lists --base 45687590
+```
+
+---
+
 ## Faction Management
 
 ### list-factions

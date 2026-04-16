@@ -42,6 +42,10 @@ TU_COSTS = {
     'RENAMEOFFICER': 0,
     'CHANGEFACTION': 0,
     'MODERATOR': 0,
+    'TARGET': 0,
+    'DEFEND': 0,
+    'AVOID': 0,
+    'DOCTRINE': 0,
 }
 
 # Backwards-compatible command aliases (old -> new)
@@ -894,6 +898,10 @@ class TurnResolver:
                 'tu_cost': 0, 'success': True,
                 'message': "Overflow orders from previous turn cleared."
             }
+        elif cmd in ('TARGET', 'DEFEND', 'AVOID'):
+            return self._cmd_combat_list(state, cmd, params)
+        elif cmd == 'DOCTRINE':
+            return self._cmd_doctrine(state, params)
         else:
             return {
                 'command': cmd, 'params': params,
@@ -3438,6 +3446,175 @@ class TurnResolver:
                             f"  GM RESPONSE: (no response — request noted)")
             }
 
+    def _cmd_combat_list(self, state, list_type, params):
+        """
+        TARGET/DEFEND/AVOID — manage combat lists (free, no OC cost).
+        list_type is the command name (TARGET/DEFEND/AVOID), lowercased to
+        match the table column.
+        params: {'op': 'add'|'remove'|'clear', 'type': 'ship'|'base'|'faction', 'id': int}
+        """
+        tu_before = state['tu']
+        ship_id = state['ship_id']
+        list_kind = list_type.lower()  # 'target' | 'defend' | 'avoid'
+
+        op = params.get('op')
+        entry_type = params.get('type')
+        entry_id = params.get('id')
+        game = self.get_game()
+
+        params_str = f"{op.upper()}"
+        if entry_type and entry_id:
+            params_str += f" {entry_type} {entry_id}"
+
+        if op == 'clear':
+            n = self.conn.execute(
+                "SELECT COUNT(*) AS n FROM ship_combat_lists "
+                "WHERE game_id = ? AND ship_id = ? AND list_type = ?",
+                (self.game_id, ship_id, list_kind)
+            ).fetchone()['n']
+            self.conn.execute(
+                "DELETE FROM ship_combat_lists "
+                "WHERE game_id = ? AND ship_id = ? AND list_type = ?",
+                (self.game_id, ship_id, list_kind)
+            )
+            self.conn.commit()
+            return {
+                'command': list_type, 'params': params_str,
+                'tu_before': tu_before, 'tu_after': tu_before,
+                'tu_cost': 0, 'success': True,
+                'message': f"{list_type} list cleared ({n} entr{'y' if n == 1 else 'ies'} removed)."
+            }
+
+        # Validate entry exists where appropriate
+        if entry_type == 'ship':
+            row = self.conn.execute(
+                "SELECT name FROM ships WHERE ship_id = ? AND game_id = ?",
+                (entry_id, self.game_id)
+            ).fetchone()
+            if not row:
+                return {
+                    'command': list_type, 'params': params_str,
+                    'tu_before': tu_before, 'tu_after': tu_before,
+                    'tu_cost': 0, 'success': False,
+                    'message': f"{list_type} {op}: ship {entry_id} not found."
+                }
+            entity_name = row['name']
+        elif entry_type == 'faction':
+            row = self.conn.execute(
+                "SELECT name, abbreviation FROM universe.factions WHERE faction_id = ?",
+                (entry_id,)
+            ).fetchone()
+            if not row:
+                return {
+                    'command': list_type, 'params': params_str,
+                    'tu_before': tu_before, 'tu_after': tu_before,
+                    'tu_cost': 0, 'success': False,
+                    'message': f"{list_type} {op}: faction {entry_id} not found."
+                }
+            entity_name = f"{row['abbreviation']} ({row['name']})"
+        elif entry_type == 'base':
+            # Bases can be starbases, ports, or outposts; check all three
+            base_row = None
+            for tbl, idcol in (('starbases', 'base_id'), ('surface_ports', 'port_id'), ('outposts', 'outpost_id')):
+                r = self.conn.execute(
+                    f"SELECT name FROM {tbl} WHERE {idcol} = ? AND game_id = ?",
+                    (entry_id, self.game_id)
+                ).fetchone()
+                if r:
+                    base_row = r
+                    break
+            if not base_row:
+                return {
+                    'command': list_type, 'params': params_str,
+                    'tu_before': tu_before, 'tu_after': tu_before,
+                    'tu_cost': 0, 'success': False,
+                    'message': f"{list_type} {op}: base {entry_id} not found."
+                }
+            entity_name = base_row['name']
+        else:
+            return {
+                'command': list_type, 'params': params_str,
+                'tu_before': tu_before, 'tu_after': tu_before,
+                'tu_cost': 0, 'success': False,
+                'message': f"{list_type} {op}: unknown entry type '{entry_type}'."
+            }
+
+        if op == 'remove':
+            cur = self.conn.execute(
+                "DELETE FROM ship_combat_lists "
+                "WHERE game_id = ? AND ship_id = ? AND list_type = ? "
+                "AND entry_type = ? AND entry_id = ?",
+                (self.game_id, ship_id, list_kind, entry_type, entry_id)
+            )
+            self.conn.commit()
+            if cur.rowcount > 0:
+                return {
+                    'command': list_type, 'params': params_str,
+                    'tu_before': tu_before, 'tu_after': tu_before,
+                    'tu_cost': 0, 'success': True,
+                    'message': f"{list_type}: removed {entry_type} {entity_name} ({entry_id}) from {list_kind} list."
+                }
+            else:
+                return {
+                    'command': list_type, 'params': params_str,
+                    'tu_before': tu_before, 'tu_after': tu_before,
+                    'tu_cost': 0, 'success': True,
+                    'message': f"{list_type}: {entry_type} {entry_id} was not on the {list_kind} list (no change)."
+                }
+
+        # ADD
+        # Check for existing entry (UNIQUE constraint catches it but explicit is friendlier)
+        existing = self.conn.execute(
+            "SELECT 1 FROM ship_combat_lists WHERE game_id = ? AND ship_id = ? "
+            "AND list_type = ? AND entry_type = ? AND entry_id = ?",
+            (self.game_id, ship_id, list_kind, entry_type, entry_id)
+        ).fetchone()
+        if existing:
+            return {
+                'command': list_type, 'params': params_str,
+                'tu_before': tu_before, 'tu_after': tu_before,
+                'tu_cost': 0, 'success': True,
+                'message': f"{list_type}: {entry_type} {entity_name} ({entry_id}) is already on the {list_kind} list."
+            }
+        self.conn.execute(
+            "INSERT INTO ship_combat_lists "
+            "(game_id, ship_id, list_type, entry_type, entry_id, "
+            " added_turn_year, added_turn_week) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (self.game_id, ship_id, list_kind, entry_type, entry_id,
+             game['current_year'], game['current_week'])
+        )
+        self.conn.commit()
+        return {
+            'command': list_type, 'params': params_str,
+            'tu_before': tu_before, 'tu_after': tu_before,
+            'tu_cost': 0, 'success': True,
+            'message': f"{list_type}: added {entry_type} {entity_name} ({entry_id}) to {list_kind} list."
+        }
+
+    def _cmd_doctrine(self, state, params):
+        """DOCTRINE <aggressive|defensive|evasive> — set this ship's combat doctrine."""
+        tu_before = state['tu']
+        ship_id = state['ship_id']
+        doctrine = params.get('doctrine') if isinstance(params, dict) else str(params).lower()
+
+        old_row = self.conn.execute(
+            "SELECT combat_doctrine FROM ships WHERE ship_id = ?", (ship_id,)
+        ).fetchone()
+        old = old_row['combat_doctrine'] if old_row else 'defensive'
+
+        self.conn.execute(
+            "UPDATE ships SET combat_doctrine = ? WHERE ship_id = ?",
+            (doctrine, ship_id)
+        )
+        self.conn.commit()
+        return {
+            'command': 'DOCTRINE', 'params': doctrine,
+            'tu_before': tu_before, 'tu_after': tu_before,
+            'tu_cost': 0, 'success': True,
+            'message': f"Combat doctrine set to {doctrine.upper()} (was {old.upper() if old else 'DEFENSIVE'})."
+        }
+
     def resolve_prefect_orders(self, prefect_orders_map):
         """
         Resolve prefect-scoped orders for multiple prefects.
@@ -3790,7 +3967,100 @@ class TurnResolver:
             if spotted:
                 _record_reciprocal_contact(si['owner_prefect_id'], None, 0)
 
+        # --- 5. Detection-triggered combat: check lists for any new hits ---
+        self._check_combat_trigger_for_active_ship(
+            active_ship, detected_by_active
+        )
+
         return detected_by_active
+
+    def _check_combat_trigger_for_active_ship(self, active_ship, detected_contacts):
+        """
+        After a passive sweep, check if any detected contacts match this
+        ship's TARGET list (or AVOID — which suppresses targeting).
+        If so, create or extend a combat engagement.
+
+        For now this only checks the active ship's target list. Defend-list
+        propagation is handled by the engagement runner each round.
+        """
+        from engine.combat import (get_ship_combat_lists, entity_matches_list,
+                                     find_or_create_engagement, add_participant,
+                                     log_combat_event)
+
+        if not active_ship or not detected_contacts:
+            return
+
+        ship_id = active_ship['ship_id']
+        lists = get_ship_combat_lists(self.conn, self.game_id, ship_id)
+        target_list = lists['target']
+        avoid_list = lists['avoid']
+        if not target_list:
+            return
+
+        game = self.get_game()
+        turn_year = game['current_year']
+        turn_week = game['current_week']
+
+        for c in detected_contacts:
+            ckind = c.get('type')
+            cid = c.get('id')
+            cfaction = c.get('faction_id')
+
+            # Avoid wins over target — skip
+            if entity_matches_list(ckind, cid, cfaction, avoid_list):
+                continue
+            if not entity_matches_list(ckind, cid, cfaction, target_list):
+                continue
+            if ckind not in ('ship', 'starbase', 'port', 'outpost'):
+                continue
+
+            # Active ship initiates combat at its current location
+            engagement_id = find_or_create_engagement(
+                self.conn, self.game_id,
+                active_ship['system_id'], active_ship['grid_col'],
+                active_ship['grid_row'],
+                turn_year, turn_week, started_on_round=0
+            )
+            # Add active ship as participant
+            add_participant(
+                self.conn, engagement_id, 'ship', ship_id,
+                active_ship['owner_prefect_id'], turn_year, turn_week, 0,
+                active_ship['integrity'] or 100.0
+            )
+            # Add the target as participant
+            target_kind_for_db = ckind  # 'ship' | 'starbase' | 'port' | 'outpost'
+            target_owner = None
+            target_integrity = 100.0
+            if ckind == 'ship':
+                trow = self.conn.execute(
+                    "SELECT owner_prefect_id, integrity FROM ships WHERE ship_id = ?",
+                    (cid,)
+                ).fetchone()
+                if trow:
+                    target_owner = trow['owner_prefect_id']
+                    target_integrity = trow['integrity'] or 100.0
+            else:
+                tbl_map = {'starbase': ('starbases', 'base_id'),
+                            'port': ('surface_ports', 'port_id'),
+                            'outpost': ('outposts', 'outpost_id')}
+                tbl, idcol = tbl_map.get(ckind, (None, None))
+                if tbl:
+                    trow = self.conn.execute(
+                        f"SELECT owner_prefect_id FROM {tbl} WHERE {idcol} = ?",
+                        (cid,)
+                    ).fetchone()
+                    if trow:
+                        target_owner = trow['owner_prefect_id']
+                    target_integrity = 100.0  # bases don't track integrity in v1
+            add_participant(
+                self.conn, engagement_id, target_kind_for_db, cid,
+                target_owner, turn_year, turn_week, 0, target_integrity
+            )
+            log_combat_event(
+                self.conn, engagement_id, turn_year, turn_week, 0,
+                'system', None, 'engage',
+                detail=f"{c.get('name', cid)} matched target list of ship {ship_id} — engagement opened"
+            )
 
     def run_initial_passive_scan(self):
         """

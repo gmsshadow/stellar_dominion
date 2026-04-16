@@ -428,13 +428,6 @@ def generate_ship_report(turn_result, db_path=None, game_id="OMICRON101",
     lines.append(section_line())
 
     # ==========================================
-    # COMBAT REPORT (placeholder)
-    # ==========================================
-    lines.append(section_header("Space Combat Report"))
-    lines.append(section_line())
-    lines.append(section_line("No combat this turn."))
-    lines.append(section_line())
-
     # ==========================================
     # INSTALLED COMPONENTS
     # ==========================================
@@ -521,6 +514,84 @@ def generate_ship_report(turn_result, db_path=None, game_id="OMICRON101",
         lines.append(section_line("No known contacts."))
     lines.append(section_line())
 
+    # ==========================================
+    # COMBAT
+    # ==========================================
+    current_year = turn_result.get('turn_year')
+    current_week = turn_result.get('turn_week')
+    # Find any engagements this ship participated in this turn
+    combat_rows = conn.execute(
+        """SELECT DISTINCT cl.engagement_id, ce.system_id, ce.grid_col, ce.grid_row,
+                  ce.status, ce.resolution
+           FROM combat_log cl
+           JOIN combat_engagements ce ON cl.engagement_id = ce.engagement_id
+           JOIN combat_participants cp ON cp.engagement_id = ce.engagement_id
+           WHERE cp.participant_kind = 'ship' AND cp.participant_id_value = ?
+             AND cl.turn_year = ? AND cl.turn_week = ?""",
+        (ship_id, current_year, current_week)
+    ).fetchall()
+    if combat_rows:
+        lines.append(section_header("Combat"))
+        lines.append(section_line())
+        for cr in combat_rows:
+            eng_id = cr['engagement_id']
+            status_label = cr['status'].upper() if cr['status'] else 'ACTIVE'
+            lines.append(section_line(
+                f"Engagement #{eng_id} at {cr['grid_col']}{cr['grid_row']:02d} "
+                f"system {cr['system_id']} — status: {status_label}"
+            ))
+            if cr['resolution']:
+                lines.append(section_line(f"  Resolution: {cr['resolution']}"))
+            # Show participants and their final integrity
+            parts = conn.execute(
+                """SELECT participant_kind, participant_id_value, status, integrity_at_join, integrity_at_end
+                   FROM combat_participants WHERE engagement_id = ?""",
+                (eng_id,)
+            ).fetchall()
+            lines.append(section_line(f"  Participants:"))
+            for p in parts:
+                if p['participant_kind'] == 'ship':
+                    nrow = conn.execute("SELECT name, integrity FROM ships WHERE ship_id = ?",
+                                          (p['participant_id_value'],)).fetchone()
+                    pname = nrow['name'] if nrow else f"Ship {p['participant_id_value']}"
+                    cur_integ = nrow['integrity'] if nrow else 0
+                else:
+                    tbl_map = {'starbase': ('starbases', 'base_id'),
+                               'port': ('surface_ports', 'port_id'),
+                               'outpost': ('outposts', 'outpost_id')}
+                    tbl, idcol = tbl_map.get(p['participant_kind'], (None, None))
+                    nrow = conn.execute(
+                        f"SELECT name FROM {tbl} WHERE {idcol} = ?",
+                        (p['participant_id_value'],)
+                    ).fetchone() if tbl else None
+                    pname = nrow['name'] if nrow else f"{p['participant_kind'].title()} {p['participant_id_value']}"
+                    cur_integ = '-'
+                marker = ' (you)' if (p['participant_kind'] == 'ship'
+                                        and p['participant_id_value'] == ship_id) else ''
+                p_status = p['status'].upper() if p['status'] else 'ACTIVE'
+                lines.append(section_line(
+                    f"    {pname} ({p['participant_id_value']}){marker}"
+                    f" - integrity {cur_integ}, status: {p_status}"
+                ))
+            # Show this ship's combat events round by round
+            lines.append(section_line(f"  Combat log this turn:"))
+            log_entries = conn.execute(
+                """SELECT round_number, action, target_kind, target_id, damage,
+                          integrity_after, detail
+                   FROM combat_log
+                   WHERE engagement_id = ?
+                     AND turn_year = ? AND turn_week = ?
+                     AND ((actor_kind = 'ship' AND actor_id = ?)
+                          OR action IN ('engage', 'destroyed'))
+                   ORDER BY log_id""",
+                (eng_id, current_year, current_week, ship_id)
+            ).fetchall()
+            for le in log_entries:
+                rn = le['round_number']
+                act = le['action']
+                detail = le['detail'] or ''
+                lines.append(section_line(f"    R{rn}: {detail}"))
+            lines.append(section_line())
     # ==========================================
     # OVERFLOW ORDERS (carry forward to next turn)
     # ==========================================

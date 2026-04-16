@@ -152,6 +152,8 @@ Every action costs OC. Your ship starts each turn with 300 OC.
 | **WAIT** | variable | Wait a number of OC |
 | **RENAMESHIP/BASE/PREFECT/OFFICER** | 0 | Rename things |
 | **CHANGEFACTION** | 0 | Request faction change |
+| **TARGET / DEFEND / AVOID** | 0 | Manage combat lists |
+| **DOCTRINE** | 0 | Set combat doctrine |
 | **CLEAR** | 0 | Cancel overflow orders |
 
 Note: old command names LOCATIONSCAN, SYSTEMSCAN, and SURFACESCAN still work as aliases.
@@ -259,7 +261,77 @@ BUY 45687590 120 4 INSTALL   # Buy + install 4 more engines (240 ST, 4800 cr)
 
 Starbases have markets with rotating prices on a 4-week cycle. Each base specialises in one good (cheap), trades another at average, and demands a third (expensive). Human Crew is fixed-price at all bases (buy 5 cr, sell 3 cr).
 
-## Factions
+## Combat
+
+Combat is **list-driven and reactive** — when one of your ships detects something on its TARGET list, it engages automatically. You don't issue an "attack" order during the turn; you set up your ship's standing orders ahead of time using lists and a doctrine, and the AI handles the fight.
+
+### Combat Lists
+
+Each ship and base has three lists:
+
+- **TARGET list** — entities this ship will engage on detection
+- **DEFEND list** — allies this ship will respond to defend (within 5 cells)
+- **AVOID list** — entities this ship will refuse to detect, refuse to engage, and flee from if attacked (overrides TARGET)
+
+List entries can refer to specific ships (`ship`), bases (`base`), or entire factions (`faction`). The `faction` keyword catches any ship belonging to that faction.
+
+```
+TARGET ADD ship 42661086        # Specific ship
+TARGET ADD faction 13           # All Imperial Navy ships
+TARGET ADD base 45687590        # A specific starbase
+TARGET REMOVE ship 42661086     # Drop a single entry
+TARGET CLEAR                    # Wipe the entire target list
+DEFEND ADD ship 12048563        # Protect this ally
+AVOID ADD faction 15            # Refuse to engage Syndicate ships
+```
+
+Bases have TARGET and DEFEND lists but no AVOID list (they can't run away).
+
+### Doctrine
+
+Each ship has a combat doctrine that controls how the AI fights. Set with `DOCTRINE <choice>`:
+
+- **AGGRESSIVE** — close to optimal range, fire at will, retreat at integrity ≤ 25%
+- **DEFENSIVE** — hold at maximum range, fire at will, retreat at integrity ≤ 50% *(default)*
+- **EVASIVE** — keep distance, only opportunistic fire, retreat at integrity ≤ 75%
+
+```
+DOCTRINE aggressive
+```
+
+### Combat Mechanics
+
+- **Detection triggers combat.** The passive sensor sweep at start of turn (and during ship movement) checks for target-list matches. A successful detection roll opens an engagement.
+- **6 combat rounds per turn.** Combat runs in its own block, separate from the OC pool. Each round, every combatant chooses one action: move, fire, or evade.
+- **Movement:** 1 cell per round. Ships with gravity_rating ≥ 3.0 move 2 cells per round.
+- **Weapons fire at full damage** if the target is within range. Weapon range and damage come from the installed weapon component.
+- **Damage = perfect detection.** Taking damage automatically reveals the attacker as a known contact (regardless of sensor odds).
+- **Combat persists across turns.** If both sides are still in contact at end-of-turn, the engagement continues with fresh combat rounds next turn.
+- **Combat overrides normal orders.** A ship in combat does not execute its queued MOVE/TRADE/etc. orders that turn — those orders survive as overflow to the next turn.
+- **Combat ends when:**
+  - All hostiles destroyed
+  - All hostiles out of detection range (≥ 3 cells away)
+  - All sides have broken contact and stayed broken
+  - GM force-ends the engagement
+
+### Defenders
+
+If your ship has a DEFEND entry and an ally on that list is attacked within 5 cells of your ship, you'll automatically join the engagement. Defenders close to engage even on `defensive` doctrine — the priority is reaching the fight to help.
+
+### Weapons
+
+The current ship-installable weapon is:
+
+- **Beam Cannon Mk1** (id 200) — damage 10, range 2 cells, 1 shot per round, no ammo, 15 ST cost, 2,500 cr
+
+Bases use Defence Turret modules; each turret contributes its `defence_rating` as damage per round at range 2.
+
+### Combat Reports
+
+When your ship participates in combat, your ship report includes a Combat section showing:
+- Engagement ID, location, status, resolution
+- All participants and their final integrity
+- Per-round combat log (your perspective marked with "(you)")
 
 | ID | Abbrev | Name |
 |----|--------|------|

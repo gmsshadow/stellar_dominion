@@ -441,6 +441,131 @@ def get_connection(state_db_path=None, universe_db_path=None):
             conn.execute(f"ALTER TABLE {table} ADD COLUMN sensor_rating INTEGER DEFAULT 0")
     conn.commit()
 
+    # Migrate: add combat_doctrine to ships
+    ship_cols = [r[1] for r in conn.execute("PRAGMA table_info(ships)").fetchall()]
+    if 'combat_doctrine' not in ship_cols:
+        conn.execute("ALTER TABLE ships ADD COLUMN combat_doctrine TEXT DEFAULT 'defensive'")
+        conn.commit()
+
+    # Migrate: add weapon columns to ship_components (in universe.db)
+    sc_cols = [r[1] for r in conn.execute("PRAGMA universe.table_info(ship_components)").fetchall()]
+    weapon_col_defs = [
+        ('weapon_damage',           'INTEGER DEFAULT 0'),
+        ('weapon_range',            'INTEGER DEFAULT 0'),
+        ('weapon_shots_per_round',  'INTEGER DEFAULT 0'),
+        ('weapon_subcategory',      'TEXT DEFAULT NULL'),
+        ('weapon_requires_ammo',    'INTEGER DEFAULT 0'),
+    ]
+    for col, typ in weapon_col_defs:
+        if col not in sc_cols:
+            conn.execute(f"ALTER TABLE universe.ship_components ADD COLUMN {col} {typ}")
+    conn.commit()
+
+    # Seed Beam Cannon Mk1 weapon (idempotent via INSERT OR IGNORE) — use named cols
+    # so this survives any future ALTER TABLE column ordering.
+    if sc_cols:
+        beam_cannon = {
+            'component_id': 200, 'name': 'Beam Cannon Mk1', 'category': 'weapon',
+            'st_cost': 15, 'cargo_capacity': 0, 'crew_capacity': 0, 'life_capacity': 0,
+            'thrust': 0, 'engine_efficiency': 0, 'sensor_rating': 0,
+            'jump_range': 0, 'jump_oc_cost': 0, 'hull_restriction': None,
+            'base_price': 2500,
+            'weapon_damage': 10, 'weapon_range': 2, 'weapon_shots_per_round': 1,
+            'weapon_subcategory': 'beam', 'weapon_requires_ammo': 0,
+            'description': 'Standard energy beam weapon. Damage 10, range 2, 1 shot per combat round. No ammunition required.',
+        }
+        cols = ', '.join(beam_cannon.keys())
+        placeholders = ', '.join(['?'] * len(beam_cannon))
+        conn.execute(
+            f"INSERT OR IGNORE INTO universe.ship_components ({cols}) VALUES ({placeholders})",
+            tuple(beam_cannon.values())
+        )
+        conn.commit()
+
+    # Migrate: create combat tables if missing (idempotent)
+    combat_tables_ddl = [
+        """CREATE TABLE IF NOT EXISTS ship_combat_lists (
+            list_entry_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            game_id TEXT NOT NULL,
+            ship_id INTEGER NOT NULL,
+            list_type TEXT NOT NULL,
+            entry_type TEXT NOT NULL,
+            entry_id INTEGER NOT NULL,
+            added_turn_year INTEGER,
+            added_turn_week INTEGER,
+            UNIQUE(game_id, ship_id, list_type, entry_type, entry_id)
+        )""",
+        """CREATE TABLE IF NOT EXISTS base_combat_lists (
+            list_entry_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            game_id TEXT NOT NULL,
+            base_kind TEXT NOT NULL,
+            base_id INTEGER NOT NULL,
+            list_type TEXT NOT NULL,
+            entry_type TEXT NOT NULL,
+            entry_id INTEGER NOT NULL,
+            added_turn_year INTEGER,
+            added_turn_week INTEGER,
+            UNIQUE(game_id, base_kind, base_id, list_type, entry_type, entry_id)
+        )""",
+        """CREATE TABLE IF NOT EXISTS combat_engagements (
+            engagement_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            game_id TEXT NOT NULL,
+            started_turn_year INTEGER NOT NULL,
+            started_turn_week INTEGER NOT NULL,
+            started_on_round INTEGER NOT NULL,
+            last_active_turn_year INTEGER,
+            last_active_turn_week INTEGER,
+            system_id INTEGER NOT NULL,
+            grid_col TEXT,
+            grid_row INTEGER,
+            status TEXT DEFAULT 'active',
+            resolution TEXT
+        )""",
+        """CREATE TABLE IF NOT EXISTS combat_participants (
+            participant_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            engagement_id INTEGER NOT NULL,
+            participant_kind TEXT NOT NULL,
+            participant_id_value INTEGER NOT NULL,
+            owner_prefect_id INTEGER,
+            joined_turn_year INTEGER,
+            joined_turn_week INTEGER,
+            joined_on_round INTEGER,
+            left_turn_year INTEGER,
+            left_turn_week INTEGER,
+            left_on_round INTEGER,
+            integrity_at_join REAL,
+            integrity_at_end REAL,
+            status TEXT DEFAULT 'active',
+            UNIQUE(engagement_id, participant_kind, participant_id_value)
+        )""",
+        """CREATE TABLE IF NOT EXISTS combat_log (
+            log_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            engagement_id INTEGER NOT NULL,
+            turn_year INTEGER NOT NULL,
+            turn_week INTEGER NOT NULL,
+            round_number INTEGER NOT NULL,
+            actor_kind TEXT NOT NULL,
+            actor_id INTEGER,
+            action TEXT NOT NULL,
+            target_kind TEXT,
+            target_id INTEGER,
+            damage REAL,
+            integrity_after REAL,
+            detail TEXT
+        )""",
+    ]
+    for ddl in combat_tables_ddl:
+        conn.execute(ddl)
+    for idx in [
+        "CREATE INDEX IF NOT EXISTS idx_combat_lists_ship ON ship_combat_lists(game_id, ship_id)",
+        "CREATE INDEX IF NOT EXISTS idx_combat_lists_base ON base_combat_lists(game_id, base_kind, base_id)",
+        "CREATE INDEX IF NOT EXISTS idx_engagement_active ON combat_engagements(game_id, status)",
+        "CREATE INDEX IF NOT EXISTS idx_participants_engagement ON combat_participants(engagement_id)",
+        "CREATE INDEX IF NOT EXISTS idx_combat_log_engagement ON combat_log(engagement_id, turn_year, turn_week, round_number)",
+    ]:
+        conn.execute(idx)
+    conn.commit()
+
     # Migrate: add detection detail columns to known_contacts
     kc_cols = [r[1] for r in conn.execute("PRAGMA table_info(known_contacts)").fetchall()]
     for col, ddl in [
@@ -644,40 +769,49 @@ CREATE TABLE IF NOT EXISTS ship_components (
     jump_oc_cost INTEGER DEFAULT 0,
     hull_restriction TEXT DEFAULT NULL,
     base_price INTEGER DEFAULT 0,
+    weapon_damage INTEGER DEFAULT 0,
+    weapon_range INTEGER DEFAULT 0,
+    weapon_shots_per_round INTEGER DEFAULT 0,
+    weapon_subcategory TEXT DEFAULT NULL,
+    weapon_requires_ammo INTEGER DEFAULT 0,
     description TEXT DEFAULT ''
 );
 
 -- Seed ship components
 INSERT OR IGNORE INTO ship_components VALUES
-    (100, 'Standard Bridge', 'bridge', 50, 0, 0, 0, 0, 0, 0, 0, 0, NULL, 500, 'Basic command centre. Required for ship operation.');
+    (100, 'Standard Bridge', 'bridge', 50, 0, 0, 0, 0, 0, 0, 0, 0, NULL, 500, 0, 0, 0, NULL, 0, 'Basic command centre. Required for ship operation.');
 INSERT OR IGNORE INTO ship_components VALUES
-    (110, 'Thruster Array', 'thruster', 20, 0, 0, 0, 5, 0, 0, 0, 0, NULL, 800, 'Standard thruster pack. Provides thrust for gravity rating.');
+    (110, 'Thruster Array', 'thruster', 20, 0, 0, 0, 5, 0, 0, 0, 0, NULL, 800, 0, 0, 0, NULL, 0, 'Standard thruster pack. Provides thrust for gravity rating.');
 INSERT OR IGNORE INTO ship_components VALUES
-    (111, 'Heavy Thruster Pack', 'thruster', 30, 0, 0, 0, 10, 0, 0, 0, 0, NULL, 1500, 'High-output thrusters for larger vessels or heavy landing.');
+    (111, 'Heavy Thruster Pack', 'thruster', 30, 0, 0, 0, 10, 0, 0, 0, 0, NULL, 1500, 0, 0, 0, NULL, 0, 'High-output thrusters for larger vessels or heavy landing.');
 INSERT OR IGNORE INTO ship_components VALUES
-    (120, 'Commercial Sublight Engine', 'engine', 10, 0, 0, 0, 0, 1.0, 0, 0, 0, NULL, 1200, 'Standard propulsion. 1.0 efficiency.');
+    (120, 'Commercial Sublight Engine', 'engine', 10, 0, 0, 0, 0, 1.0, 0, 0, 0, NULL, 1200, 0, 0, 0, NULL, 0, 'Standard propulsion. 1.0 efficiency.');
 INSERT OR IGNORE INTO ship_components VALUES
-    (121, 'Military Sublight Engine', 'engine', 10, 0, 0, 0, 0, 1.5, 0, 0, 0, 'military', 2500, 'High-performance drive. 1.5 efficiency. Military hulls only.');
+    (121, 'Military Sublight Engine', 'engine', 10, 0, 0, 0, 0, 1.5, 0, 0, 0, 'military', 2500, 0, 0, 0, NULL, 0, 'High-performance drive. 1.5 efficiency. Military hulls only.');
 INSERT OR IGNORE INTO ship_components VALUES
-    (130, 'Cargo Bay', 'cargo', 25, 20, 0, 0, 0, 0, 0, 0, 0, NULL, 600, 'Standard modular cargo bay. 20 ST capacity.');
+    (130, 'Cargo Bay', 'cargo', 25, 20, 0, 0, 0, 0, 0, 0, 0, NULL, 600, 0, 0, 0, NULL, 0, 'Standard modular cargo bay. 20 ST capacity.');
 INSERT OR IGNORE INTO ship_components VALUES
-    (131, 'Reinforced Cargo Bay', 'cargo', 30, 20, 0, 0, 0, 0, 0, 0, 0, NULL, 900, 'Armoured cargo storage. 20 ST capacity.');
+    (131, 'Reinforced Cargo Bay', 'cargo', 30, 20, 0, 0, 0, 0, 0, 0, 0, NULL, 900, 0, 0, 0, NULL, 0, 'Armoured cargo storage. 20 ST capacity.');
 INSERT OR IGNORE INTO ship_components VALUES
-    (140, 'Crew Quarters', 'quarters', 30, 0, 20, 20, 0, 0, 0, 0, 0, NULL, 400, 'Standard crew accommodation with life support.');
+    (140, 'Crew Quarters', 'quarters', 30, 0, 20, 20, 0, 0, 0, 0, 0, NULL, 400, 0, 0, 0, NULL, 0, 'Standard crew accommodation with life support.');
 INSERT OR IGNORE INTO ship_components VALUES
-    (141, 'Military Bunks', 'quarters', 30, 0, 40, 25, 0, 0, 0, 0, 0, 'military', 500, 'Compact military berths. High crew capacity.');
+    (141, 'Military Bunks', 'quarters', 30, 0, 40, 25, 0, 0, 0, 0, 0, 'military', 500, 0, 0, 0, NULL, 0, 'Compact military berths. High crew capacity.');
 INSERT OR IGNORE INTO ship_components VALUES
-    (142, 'Luxury Cabins', 'quarters', 30, 0, 10, 15, 0, 0, 0, 0, 0, NULL, 700, 'Comfortable passenger cabins. Low density.');
+    (142, 'Luxury Cabins', 'quarters', 30, 0, 10, 15, 0, 0, 0, 0, 0, NULL, 700, 0, 0, 0, NULL, 0, 'Comfortable passenger cabins. Low density.');
 INSERT OR IGNORE INTO ship_components VALUES
-    (150, 'Basic Sensor Array', 'sensor', 10, 0, 0, 0, 0, 0, 5, 0, 0, NULL, 300, 'Standard detection and scanning suite.');
+    (150, 'Basic Sensor Array', 'sensor', 10, 0, 0, 0, 0, 0, 5, 0, 0, NULL, 300, 0, 0, 0, NULL, 0, 'Standard detection and scanning suite.');
 INSERT OR IGNORE INTO ship_components VALUES
-    (151, 'Military Sensor Suite', 'sensor', 15, 0, 0, 0, 0, 0, 10, 0, 0, 'military', 1000, 'Advanced military-grade sensors.');
+    (151, 'Military Sensor Suite', 'sensor', 15, 0, 0, 0, 0, 0, 10, 0, 0, 'military', 1000, 0, 0, 0, NULL, 0, 'Advanced military-grade sensors.');
 INSERT OR IGNORE INTO ship_components VALUES
-    (152, 'Deep Space Scanner', 'sensor', 20, 0, 0, 0, 0, 0, 15, 0, 0, NULL, 1800, 'Long-range deep space detection system.');
+    (152, 'Deep Space Scanner', 'sensor', 20, 0, 0, 0, 0, 0, 15, 0, 0, NULL, 1800, 0, 0, 0, NULL, 0, 'Long-range deep space detection system.');
 INSERT OR IGNORE INTO ship_components VALUES
-    (160, 'Jump Drive Mk1', 'jump_drive', 50, 0, 0, 0, 0, 0, 0, 5, 50, NULL, 5000, 'Basic hyperspace jump drive. Range 5 systems, 50 OC per activation.');
+    (160, 'Jump Drive Mk1', 'jump_drive', 50, 0, 0, 0, 0, 0, 0, 5, 50, NULL, 5000, 0, 0, 0, NULL, 0, 'Basic hyperspace jump drive. Range 5 systems, 50 OC per activation.');
 INSERT OR IGNORE INTO ship_components VALUES
-    (161, 'Jump Drive Mk2', 'jump_drive', 60, 0, 0, 0, 0, 0, 0, 6, 40, NULL, 12000, 'Advanced jump drive. Range 6 systems, 40 OC per activation.');
+    (161, 'Jump Drive Mk2', 'jump_drive', 60, 0, 0, 0, 0, 0, 0, 6, 40, NULL, 12000, 0, 0, 0, NULL, 0, 'Advanced jump drive. Range 6 systems, 40 OC per activation.');
+INSERT OR IGNORE INTO ship_components VALUES
+    (200, 'Beam Cannon Mk1', 'weapon', 15, 0, 0, 0, 0, 0, 0, 0, 0, NULL, 2500,
+     10, 2, 1, 'beam', 0,
+     'Standard energy beam weapon. Damage 10, range 2, 1 shot per combat round. No ammunition required.');
 
 -- Base module catalogue (what modules can be installed on starbases/ports/outposts)
 -- 3-digit IDs in 500-599 range. Category groups:
@@ -876,6 +1010,7 @@ CREATE TABLE IF NOT EXISTS ships (
     life_support_capacity INTEGER DEFAULT 20,
     efficiency REAL DEFAULT 100.0,
     integrity REAL DEFAULT 100.0,
+    combat_doctrine TEXT DEFAULT 'defensive',
     FOREIGN KEY (game_id) REFERENCES games(game_id),
     FOREIGN KEY (owner_prefect_id) REFERENCES prefects(prefect_id)
 );
@@ -1045,6 +1180,105 @@ CREATE TABLE IF NOT EXISTS known_contacts (
     detection_source TEXT DEFAULT 'passive',
     FOREIGN KEY (prefect_id) REFERENCES prefects(prefect_id)
 );
+
+-- ============================================================
+-- COMBAT
+-- ============================================================
+
+-- Per-ship combat target/defend/avoid lists.
+-- Entries can refer to specific ships, bases, or factions (entry_type
+-- determines which). NULL list_type means the row is invalid.
+CREATE TABLE IF NOT EXISTS ship_combat_lists (
+    list_entry_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    game_id TEXT NOT NULL,
+    ship_id INTEGER NOT NULL,
+    list_type TEXT NOT NULL,            -- 'target' | 'defend' | 'avoid'
+    entry_type TEXT NOT NULL,           -- 'ship' | 'base' | 'faction'
+    entry_id INTEGER NOT NULL,
+    added_turn_year INTEGER,
+    added_turn_week INTEGER,
+    UNIQUE(game_id, ship_id, list_type, entry_type, entry_id),
+    FOREIGN KEY (game_id) REFERENCES games(game_id),
+    FOREIGN KEY (ship_id) REFERENCES ships(ship_id)
+);
+
+-- Per-base combat lists (target + defend only — bases cannot avoid).
+CREATE TABLE IF NOT EXISTS base_combat_lists (
+    list_entry_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    game_id TEXT NOT NULL,
+    base_kind TEXT NOT NULL,            -- 'starbase' | 'port' | 'outpost'
+    base_id INTEGER NOT NULL,
+    list_type TEXT NOT NULL,            -- 'target' | 'defend'
+    entry_type TEXT NOT NULL,           -- 'ship' | 'base' | 'faction'
+    entry_id INTEGER NOT NULL,
+    added_turn_year INTEGER,
+    added_turn_week INTEGER,
+    UNIQUE(game_id, base_kind, base_id, list_type, entry_type, entry_id),
+    FOREIGN KEY (game_id) REFERENCES games(game_id)
+);
+
+-- A combat engagement is one ongoing battle. It persists across turns
+-- until an end condition is met. status: 'active' | 'resolved' | 'fled'
+CREATE TABLE IF NOT EXISTS combat_engagements (
+    engagement_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    game_id TEXT NOT NULL,
+    started_turn_year INTEGER NOT NULL,
+    started_turn_week INTEGER NOT NULL,
+    started_on_round INTEGER NOT NULL,
+    last_active_turn_year INTEGER,
+    last_active_turn_week INTEGER,
+    system_id INTEGER NOT NULL,
+    grid_col TEXT,
+    grid_row INTEGER,
+    status TEXT DEFAULT 'active',
+    resolution TEXT,
+    FOREIGN KEY (game_id) REFERENCES games(game_id)
+);
+
+-- Each ship/base in an engagement. participant_kind = 'ship' | 'starbase' | 'port' | 'outpost'.
+CREATE TABLE IF NOT EXISTS combat_participants (
+    participant_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    engagement_id INTEGER NOT NULL,
+    participant_kind TEXT NOT NULL,
+    participant_id_value INTEGER NOT NULL,
+    owner_prefect_id INTEGER,
+    joined_turn_year INTEGER,
+    joined_turn_week INTEGER,
+    joined_on_round INTEGER,
+    left_turn_year INTEGER,
+    left_turn_week INTEGER,
+    left_on_round INTEGER,
+    integrity_at_join REAL,
+    integrity_at_end REAL,
+    status TEXT DEFAULT 'active',       -- 'active' | 'destroyed' | 'fled'
+    UNIQUE(engagement_id, participant_kind, participant_id_value),
+    FOREIGN KEY (engagement_id) REFERENCES combat_engagements(engagement_id)
+);
+
+-- Combat events log: per-engagement, per-round, what each participant did.
+CREATE TABLE IF NOT EXISTS combat_log (
+    log_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    engagement_id INTEGER NOT NULL,
+    turn_year INTEGER NOT NULL,
+    turn_week INTEGER NOT NULL,
+    round_number INTEGER NOT NULL,
+    actor_kind TEXT NOT NULL,           -- ship/starbase/port/outpost/system
+    actor_id INTEGER,
+    action TEXT NOT NULL,               -- 'fire' | 'move' | 'evade' | 'destroyed' | 'flee' | 'engage' | 'note'
+    target_kind TEXT,
+    target_id INTEGER,
+    damage REAL,
+    integrity_after REAL,
+    detail TEXT,
+    FOREIGN KEY (engagement_id) REFERENCES combat_engagements(engagement_id)
+);
+
+-- Indexes for combat tables
+CREATE INDEX IF NOT EXISTS idx_combat_lists_ship ON ship_combat_lists(game_id, ship_id);
+CREATE INDEX IF NOT EXISTS idx_combat_lists_base ON base_combat_lists(game_id, base_kind, base_id);
+CREATE INDEX IF NOT EXISTS idx_engagement_active ON combat_engagements(game_id, status);
+CREATE INDEX IF NOT EXISTS idx_participants_engagement ON combat_participants(engagement_id);
+CREATE INDEX IF NOT EXISTS idx_combat_log_engagement ON combat_log(engagement_id, turn_year, turn_week, round_number);
 
 -- Turn orders (stored for audit)
 CREATE TABLE IF NOT EXISTS turn_orders (
