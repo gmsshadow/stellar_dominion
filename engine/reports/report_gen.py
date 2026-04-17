@@ -354,6 +354,19 @@ def generate_ship_report(turn_result, db_path=None, game_id="OMICRON101",
                                f"Gravity Rating: {ship['gravity_rating']:.1f}"))
     lines.append(section_line(f"Engines: {engine_count}/{optimal_engines} -> {engine_pct}%".ljust(COL_LEFT) +
                                "MOVE cost scales with engines"))
+    # Defensive systems (armour + shields)
+    armour_val = ship['armour'] if 'armour' in ship.keys() and ship['armour'] else 0
+    shield_sp = ship['shield_sp'] if 'shield_sp' in ship.keys() and ship['shield_sp'] is not None else 0
+    max_shield = ship['max_shield_sp'] if 'max_shield_sp' in ship.keys() and ship['max_shield_sp'] else 0
+    if armour_val > 0 or max_shield > 0:
+        # Shield thickness = floor(current_SP / ship_size), no minimum
+        thickness = (shield_sp // ship_size) if ship_size > 0 else 0
+        armour_str = f"Armour: {armour_val}" if armour_val > 0 else "Armour: -"
+        if max_shield > 0:
+            shield_str = f"Shields: {shield_sp}/{max_shield} SP (thickness {thickness})"
+        else:
+            shield_str = "Shields: -"
+        lines.append(section_line(f"{armour_str}".ljust(COL_LEFT) + shield_str))
     lines.append(section_line())
 
     # ==========================================

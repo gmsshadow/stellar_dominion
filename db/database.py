@@ -20,6 +20,19 @@ STATE_DB_PATH = GAME_DATA_DIR / "game_state.db"
 
 
 # ======================================================================
+# GAME CONSTANTS (tunable)
+# ======================================================================
+
+# Max integrity = ship_size × multiplier for that hull type. Military
+# hulls are 1.5× tougher than Commercial. Armour modules (future) will
+# add flat HP on top of this base. Unknown hull types fall back to 1.0.
+HULL_HP_MULTIPLIER = {
+    'Commercial': 1.0,
+    'Military':   1.5,
+}
+
+
+# ======================================================================
 # CONNECTION MANAGEMENT
 # ======================================================================
 
@@ -470,6 +483,68 @@ def get_connection(state_db_path=None, universe_db_path=None):
                 "UPDATE ships SET max_integrity = ?, integrity = ? WHERE ship_id = ?",
                 (float(size), float(new_integrity), r['ship_id'])
             )
+        conn.commit()
+
+    # Migrate: apply hull-type HP multiplier. If any ship's max_integrity
+    # doesn't match (ship_size × hull_multiplier), recompute — preserving
+    # current health as a percentage so a ship at 60% stays at 60%.
+    needs_fix = conn.execute(
+        """SELECT ship_id, ship_size, hull_type, integrity, max_integrity
+           FROM ships"""
+    ).fetchall()
+    for r in needs_fix:
+        size = r['ship_size'] or 50
+        hull = (r['hull_type'] or 'Commercial').strip()
+        mult = HULL_HP_MULTIPLIER.get(hull, 1.0)
+        expected_max = float(size) * mult
+        cur_max = r['max_integrity'] or 0
+        if abs(cur_max - expected_max) < 0.01:
+            continue  # already correct
+        cur_integrity = r['integrity'] if r['integrity'] is not None else cur_max
+        # Preserve health percentage
+        pct = (cur_integrity / cur_max) if cur_max > 0 else 1.0
+        new_integrity = expected_max * pct
+        conn.execute(
+            "UPDATE ships SET max_integrity = ?, integrity = ? WHERE ship_id = ?",
+            (expected_max, new_integrity, r['ship_id'])
+        )
+    conn.commit()
+
+    # Migrate: add armour and shield columns to ships
+    ship_cols_now = [r[1] for r in conn.execute("PRAGMA table_info(ships)").fetchall()]
+    for col, typ_default in [
+        ('armour',         'INTEGER DEFAULT 0'),
+        ('shield_sp',      'INTEGER DEFAULT 0'),
+        ('max_shield_sp',  'INTEGER DEFAULT 0'),
+    ]:
+        if col not in ship_cols_now:
+            conn.execute(f"ALTER TABLE ships ADD COLUMN {col} {typ_default}")
+    conn.commit()
+
+    # Migrate: add shield-generator columns to ship_components (in universe.db).
+    # shield_sp_capacity is the SP each unit of this component provides.
+    sc_cols_pre = [r[1] for r in conn.execute("PRAGMA universe.table_info(ship_components)").fetchall()]
+    if 'shield_sp_capacity' not in sc_cols_pre:
+        conn.execute("ALTER TABLE universe.ship_components ADD COLUMN shield_sp_capacity INTEGER DEFAULT 0")
+    conn.commit()
+
+    # Seed Shield Generator Mk1 (idempotent).
+    shield_gen = conn.execute(
+        "SELECT component_id FROM universe.ship_components WHERE component_id = 210"
+    ).fetchone()
+    if not shield_gen:
+        conn.execute(
+            """INSERT INTO universe.ship_components
+               (component_id, name, category, st_cost, cargo_capacity,
+                crew_capacity, life_capacity, thrust, engine_efficiency,
+                sensor_rating, jump_range, jump_oc_cost, hull_restriction,
+                base_price, weapon_damage, weapon_range, weapon_shots_per_round,
+                weapon_subcategory, weapon_requires_ammo, shield_sp_capacity,
+                description)
+               VALUES (210, 'Shield Generator Mk1', 'shield', 20, 0, 0, 0, 0,
+                       0, 0, 0, 0, NULL, 3000, 0, 0, 0, NULL, 0, 30,
+                       'Provides 30 SP per unit. Thickness = floor(total_SP / ship_size).')"""
+        )
         conn.commit()
 
     # Migrate: add weapon columns to ship_components (in universe.db)
@@ -1037,6 +1112,9 @@ CREATE TABLE IF NOT EXISTS ships (
     integrity REAL DEFAULT 50.0,
     max_integrity REAL DEFAULT 50.0,
     combat_doctrine TEXT DEFAULT 'defensive',
+    armour INTEGER DEFAULT 0,
+    shield_sp INTEGER DEFAULT 0,
+    max_shield_sp INTEGER DEFAULT 0,
     FOREIGN KEY (game_id) REFERENCES games(game_id),
     FOREIGN KEY (owner_prefect_id) REFERENCES prefects(prefect_id)
 );
@@ -1493,7 +1571,8 @@ def get_ship_components(conn, ship_id):
                sc.name, sc.category, sc.st_cost,
                sc.cargo_capacity, sc.crew_capacity, sc.life_capacity,
                sc.thrust, sc.engine_efficiency, sc.sensor_rating,
-               sc.jump_range, sc.jump_oc_cost, sc.hull_restriction
+               sc.jump_range, sc.jump_oc_cost, sc.hull_restriction,
+               sc.shield_sp_capacity
         FROM installed_items ii
         JOIN ship_components sc ON ii.component_id = sc.component_id
         WHERE ii.ship_id = ?
@@ -1551,6 +1630,7 @@ def recalculate_ship_stats(conn, ship_id):
 
     # Sensor arrays aggregate with diminishing returns: best × sqrt(count)
     sensor_components = []  # list of (rating_per_unit, qty)
+    total_shield_sp = 0
     for c in components:
         qty = c['quantity']
         total_cargo += c['cargo_capacity'] * qty
@@ -1568,6 +1648,10 @@ def recalculate_ship_stats(conn, ship_id):
                 if c['jump_range'] > best_jump_range:
                     best_jump_range = c['jump_range']
                     best_jump_oc = c['jump_oc_cost']
+        # Shield generators contribute SP
+        if (c['category'] == 'shield' and c['shield_sp_capacity']
+                and c['shield_sp_capacity'] > 0):
+            total_shield_sp += c['shield_sp_capacity'] * qty
 
     # Compute total sensor rating with sqrt diminishing returns.
     # Formula: best_per_unit_rating × sqrt(total_unit_count)
@@ -1598,10 +1682,11 @@ def recalculate_ship_stats(conn, ship_id):
     # Sensor profile = ship_size / 100 (detection signature strength)
     sensor_profile = ship_size / 100.0 if ship_size > 0 else 0.5
 
-    # Max integrity scales with ship_size. If ship_size shrinks (e.g. via
-    # refit), clamp current integrity down. Current integrity is never raised
-    # here — repair is a separate action.
-    max_integrity = float(ship_size)
+    # Max integrity = ship_size × hull type multiplier. Military hulls
+    # are 1.5× tougher than Commercial. Armour modules (future) will
+    # layer additional HP on top of this base.
+    hull_type = (ship['hull_type'] or 'Commercial').strip()
+    max_integrity = float(ship_size) * HULL_HP_MULTIPLIER.get(hull_type, 1.0)
 
     conn.execute("""
         UPDATE ships SET
@@ -1612,11 +1697,15 @@ def recalculate_ship_stats(conn, ship_id):
             gravity_rating = ?,
             crew_required = ?,
             max_integrity = ?,
-            integrity = MIN(integrity, ?)
+            integrity = MIN(integrity, ?),
+            max_shield_sp = ?,
+            shield_sp = MIN(shield_sp, ?)
         WHERE ship_id = ?
     """, (total_cargo, total_life_cap, total_sensor, round(sensor_profile, 2),
           round(gravity_rating, 2), crew_required,
-          max_integrity, max_integrity, ship_id))
+          max_integrity, max_integrity,
+          total_shield_sp, total_shield_sp,
+          ship_id))
     conn.commit()
 
     return {
@@ -1633,6 +1722,7 @@ def recalculate_ship_stats(conn, ship_id):
         'jump_range': best_jump_range,
         'jump_oc_cost': best_jump_oc,
         'crew_required': crew_required,
+        'max_shield_sp': total_shield_sp,
         'st_used': get_ship_st_used(conn, ship_id),
         'st_capacity': ship_size * 50,
     }

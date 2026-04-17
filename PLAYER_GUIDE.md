@@ -320,6 +320,33 @@ DOCTRINE aggressive
 
 If your ship has a DEFEND entry and an ally on that list is attacked within 5 cells of your ship, you'll automatically join the engagement. Defenders close to engage even on `defensive` doctrine — the priority is reaching the fight to help.
 
+### Defensive Systems
+
+Ships can reduce incoming damage with armour and shields. Both are optional and stack in this order: **shields → armour → integrity**.
+
+**Armour** is a flat damage reduction applied to every hit. Non-ablative (doesn't degrade during combat). Military ships only (future fitting rule — for now it's just a number on the ship). Each point of armour subtracts 1 from every incoming shot.
+
+**Shields** are provided by installed Shield Generator components. Each generator contributes Shield Points (SP) to the ship's total pool. Shields work as a layered absorber:
+
+- **Total SP** = sum of all installed generators
+- **Max Shield SP** = current cap from installed generators
+- **Shield Thickness** = `floor(current_SP / ship_size)` — no minimum, so a partially-drained shield can drop to thickness 0 while SP remains
+- **Per hit**: shields absorb up to `thickness` damage, and SP is depleted by the same amount. Thickness recomputes after every hit
+- **Shields are ablative** — SP goes down as they absorb damage
+- **Shield regeneration**: ships NOT in an active engagement regenerate 10% of max SP per turn. Ships in combat do not regen (damaged shields stay down until the fight ends)
+
+**Example** — a size-300 Military cruiser with 300 SP and armour 3 is hit for 20 damage:
+- Shields absorb 1 (thickness = 300/300 = 1) → SP drops to 299, thickness drops to 0
+- Armour reduces remaining 19 by 3 → 16 damage through
+- Integrity takes 16 damage
+- Next hit: thickness is now 0 (299/300 = 0), shields absorb 0, armour reduces by 3
+
+Both Commercial and Military ships can install shields, but shields take ST that could otherwise be cargo or other components. Only Military ships can carry armour.
+
+**Current defensive components:**
+
+- **Shield Generator Mk1** (id 210) — 30 SP per unit, 20 ST cost, 3,000 cr
+
 ### Weapons
 
 The current ship-installable weapon is:

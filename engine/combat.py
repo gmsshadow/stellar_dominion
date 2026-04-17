@@ -534,22 +534,69 @@ def apply_damage_to_ship(conn, ship_id, damage, attacker_kind=None,
                           system_id=None, turn_year=None, turn_week=None,
                           tick=None):
     """
-    Reduce ship integrity. Returns new integrity.
+    Apply damage to a ship. Damage resolves in this order:
+      1. Shields absorb up to `thickness` damage. Absorbed damage depletes
+         total SP by the same amount, and thickness is recomputed on every
+         hit (floor(current_SP / ship_size), no minimum).
+      2. Armour reduces the remaining damage by a flat amount (non-ablative).
+      3. Whatever's left reduces integrity.
 
-    Damage = perfect detection: when ship takes damage, the attacker is
-    recorded as a known contact for the victim's owner (regardless of
-    sensor odds). The contact is marked detection_source='damage'.
+    Damage = perfect detection: taking any hit (even a fully-absorbed one)
+    records the attacker as a known contact.
+
+    Returns a dict with details:
+      {'new_integrity': float, 'absorbed_by_shields': int,
+       'absorbed_by_armour': int, 'damage_through': int,
+       'shield_sp_after': int, 'shield_thickness_after': int}
     """
     row = conn.execute(
-        "SELECT integrity, owner_prefect_id FROM ships WHERE ship_id = ?",
+        """SELECT integrity, owner_prefect_id, ship_size,
+                  armour, shield_sp, max_shield_sp
+           FROM ships WHERE ship_id = ?""",
         (ship_id,)
     ).fetchone()
     if not row:
-        return 0
-    new_integrity = max(0, (row['integrity'] or 100) - damage)
-    conn.execute("UPDATE ships SET integrity = ? WHERE ship_id = ?",
-                  (new_integrity, ship_id))
+        return {
+            'new_integrity': 0, 'absorbed_by_shields': 0,
+            'absorbed_by_armour': 0, 'damage_through': 0,
+            'shield_sp_after': 0, 'shield_thickness_after': 0,
+        }
+
+    raw = max(0, int(damage))
+    remaining = raw
+    ship_size = row['ship_size'] or 50
+    current_sp = row['shield_sp'] or 0
+    armour = row['armour'] or 0
+
+    # --- 1. Shields (ablative, recompute thickness per hit) ---
+    absorbed_by_shields = 0
+    if current_sp > 0 and ship_size > 0:
+        # Thickness = floor(SP / ship_size), no minimum
+        thickness = current_sp // ship_size
+        if thickness > 0:
+            absorbed_by_shields = min(thickness, remaining)
+            remaining -= absorbed_by_shields
+            current_sp = max(0, current_sp - absorbed_by_shields)
+
+    # --- 2. Armour (flat reduction, non-ablative) ---
+    absorbed_by_armour = 0
+    if armour > 0 and remaining > 0:
+        absorbed_by_armour = min(armour, remaining)
+        remaining -= absorbed_by_armour
+
+    # --- 3. Integrity takes the rest ---
+    damage_through = remaining
+    new_integrity = max(0, (row['integrity'] or 100) - damage_through)
+
+    # Write back: integrity, shield_sp (armour is unchanged)
+    conn.execute(
+        "UPDATE ships SET integrity = ?, shield_sp = ? WHERE ship_id = ?",
+        (new_integrity, current_sp, ship_id)
+    )
     conn.commit()
+
+    # Shield thickness AFTER this hit, for reporting
+    new_thickness = (current_sp // ship_size) if ship_size > 0 else 0
 
     # Auto-record attacker as a known contact for the victim's owner
     victim_prefect = row['owner_prefect_id']
@@ -591,7 +638,14 @@ def apply_damage_to_ship(conn, ship_id, damage, attacker_kind=None,
                  tick)
             )
         conn.commit()
-    return new_integrity
+    return {
+        'new_integrity': new_integrity,
+        'absorbed_by_shields': absorbed_by_shields,
+        'absorbed_by_armour': absorbed_by_armour,
+        'damage_through': damage_through,
+        'shield_sp_after': current_sp,
+        'shield_thickness_after': new_thickness,
+    }
 
 
 def update_ship_position(conn, ship_id, col, row):
@@ -878,7 +932,7 @@ def resolve_engagement_round(conn, game_id, engagement, round_number):
 
             # Apply damage to target
             if tgt['kind'] == 'ship':
-                new_integ = apply_damage_to_ship(
+                dmg_result = apply_damage_to_ship(
                     conn, tgt['id'], total_dmg,
                     attacker_kind=actor['kind'],
                     attacker_id=actor['id'],
@@ -893,11 +947,26 @@ def resolve_engagement_round(conn, game_id, engagement, round_number):
                     turn_week=turn_week,
                     tick=round_number,
                 )
+                new_integ = dmg_result['new_integrity']
+                # Build detail string showing defensive breakdown
+                defence_bits = []
+                if dmg_result['absorbed_by_shields'] > 0:
+                    defence_bits.append(
+                        f"shields -{dmg_result['absorbed_by_shields']} "
+                        f"(SP now {dmg_result['shield_sp_after']}, "
+                        f"thickness {dmg_result['shield_thickness_after']})")
+                if dmg_result['absorbed_by_armour'] > 0:
+                    defence_bits.append(
+                        f"armour -{dmg_result['absorbed_by_armour']}")
+                defence_str = (" [" + ", ".join(defence_bits) + "]") if defence_bits else ""
+                hull_str = f"-{dmg_result['damage_through']} hull" if dmg_result['damage_through'] > 0 else "fully absorbed"
+                max_int = int(tgt.get('max_integrity', 0) or 0)
                 log_combat_event(conn, engagement_id, turn_year, turn_week,
                                   round_number, actor['kind'], actor['id'], 'fire',
                                   target_kind=tgt['kind'], target_id=tgt['id'],
                                   damage=total_dmg, integrity_after=new_integ,
-                                  detail=f"fired {weapon_summary} ({int(total_dmg)} dmg) at {tgt['name']} -> {int(new_integ)}/{int(tgt.get('max_integrity', 0) or 0)} hp")
+                                  detail=(f"fired {weapon_summary} ({int(total_dmg)} dmg) at {tgt['name']}"
+                                           f"{defence_str} -> {hull_str}, hull {int(new_integ)}/{max_int}"))
                 # Check for destruction
                 if new_integ <= 0:
                     log_combat_event(conn, engagement_id, turn_year, turn_week,

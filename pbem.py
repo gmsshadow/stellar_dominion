@@ -947,6 +947,28 @@ def cmd_run_turn(args):
                   f"{s['grid_col']}{s['grid_row']:02d} sys {s['system_id']} "
                   f"— {s['rounds_run']} round(s)")
 
+    # Phase 1.98: Shield regeneration. Ships NOT in an active engagement
+    # regen 10% of max_shield_sp per turn, capped at max. Ships still in
+    # combat don't regen (damaged shields stay down until the fight ends).
+    regen_ships = conn.execute(
+        """SELECT ship_id, shield_sp, max_shield_sp FROM ships
+           WHERE game_id = ? AND max_shield_sp > 0 AND shield_sp < max_shield_sp""",
+        (args.game,)
+    ).fetchall()
+    regen_count = 0
+    for rs in regen_ships:
+        if is_ship_in_combat(conn, args.game, rs['ship_id']):
+            continue
+        regen_amount = max(1, int(rs['max_shield_sp'] * 0.10))
+        new_sp = min(rs['max_shield_sp'], (rs['shield_sp'] or 0) + regen_amount)
+        if new_sp > (rs['shield_sp'] or 0):
+            conn.execute("UPDATE ships SET shield_sp = ? WHERE ship_id = ?",
+                          (new_sp, rs['ship_id']))
+            regen_count += 1
+    if regen_count > 0:
+        conn.commit()
+        print(f"  Shields regenerated on {regen_count} ship(s) (10% of max).")
+
     # Filter ship_orders_map: any ship still in active combat after the
     # combat phase has its queued orders carried forward (overflow) and
     # is removed from this turn's normal resolution.

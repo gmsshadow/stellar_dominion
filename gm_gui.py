@@ -1174,8 +1174,17 @@ class StellarDominionGUI:
         self.combat_eng_tree.configure(yscrollcommand=eng_sb.set)
         self.combat_eng_tree.pack(side=tk.LEFT, fill=tk.X, expand=True)
         eng_sb.pack(side=tk.LEFT, fill=tk.Y)
+        # Double-click or "View Log" button pops up the full round-by-round log
+        self.combat_eng_tree.bind("<Double-1>", lambda e: self._combat_show_log_popup())
 
-        # End-engagement (uses selected row)
+        # Buttons below tree: view log + end engagement
+        btn_row = ttk.Frame(viewer_frame)
+        btn_row.pack(fill=tk.X, pady=(6, 2))
+        ttk.Button(btn_row, text="View Log for Selected", width=22,
+                   command=self._combat_show_log_popup).pack(side=tk.LEFT, padx=2)
+        ttk.Label(btn_row, text="(or double-click a row)",
+                   foreground="#888", font=("", 8, "italic")).pack(side=tk.LEFT, padx=(4, 0))
+
         end_row = ttk.Frame(viewer_frame)
         end_row.pack(fill=tk.X, pady=(6, 2))
         ttk.Button(end_row, text="End Selected Engagement", width=26,
@@ -1352,6 +1361,143 @@ class StellarDominionGUI:
                          '--note', note],
                         "End Engagement")
         self.root.after(600, self._combat_refresh_engagements)
+
+    def _combat_show_log_popup(self):
+        """Open a modal showing the full round-by-round log for the selected engagement."""
+        sel = self.combat_eng_tree.selection()
+        if not sel:
+            messagebox.showerror("No selection", "Pick an engagement first.")
+            return
+        values = self.combat_eng_tree.item(sel[0])['values']
+        eng_id = int(values[0])
+        try:
+            from db.database import get_connection
+            conn = get_connection()
+            eng = conn.execute(
+                "SELECT * FROM combat_engagements WHERE engagement_id = ?",
+                (eng_id,)
+            ).fetchone()
+            if not eng:
+                conn.close()
+                messagebox.showerror("Not found", f"Engagement #{eng_id} not found.")
+                return
+            parts = conn.execute(
+                "SELECT * FROM combat_participants WHERE engagement_id = ? "
+                "ORDER BY participant_id",
+                (eng_id,)
+            ).fetchall()
+            log = conn.execute(
+                "SELECT * FROM combat_log WHERE engagement_id = ? "
+                "ORDER BY turn_year, turn_week, round_number, log_id",
+                (eng_id,)
+            ).fetchall()
+
+            # Build name lookup for participants (so the log reads nicely)
+            name_cache = {}
+            for p in parts:
+                pk, pv = p['participant_kind'], p['participant_id_value']
+                if pk == 'ship':
+                    r = conn.execute(
+                        "SELECT name FROM ships WHERE ship_id = ?", (pv,)
+                    ).fetchone()
+                else:
+                    tbl_map = {'starbase': ('starbases', 'base_id'),
+                                'port': ('surface_ports', 'port_id'),
+                                'outpost': ('outposts', 'outpost_id')}
+                    tbl, idcol = tbl_map.get(pk, (None, None))
+                    r = conn.execute(
+                        f"SELECT name FROM {tbl} WHERE {idcol} = ?", (pv,)
+                    ).fetchone() if tbl else None
+                name_cache[(pk, pv)] = r['name'] if r else f"{pk}#{pv}"
+            conn.close()
+        except Exception as ex:
+            messagebox.showerror("Load error",
+                                  f"Could not load engagement #{eng_id}:\n{ex}")
+            return
+
+        # Build the popup window
+        popup = tk.Toplevel(self.root)
+        popup.title(f"Combat Log — Engagement #{eng_id}")
+        popup.geometry("720x520")
+
+        header = ttk.Frame(popup, padding=8)
+        header.pack(fill=tk.X)
+        ttk.Label(header,
+                   text=f"Engagement #{eng_id} — {(eng['status'] or '?').upper()}",
+                   font=("", 11, "bold")).pack(anchor=tk.W)
+        loc_txt = f"{eng['grid_col']}{eng['grid_row']:02d}" if eng['grid_col'] else '?'
+        ttk.Label(header,
+                   text=(f"Location: {loc_txt} system {eng['system_id']}   "
+                         f"Started: {eng['started_turn_year']}.{eng['started_turn_week']} "
+                         f"R{eng['started_on_round']}   "
+                         f"Last active: {eng['last_active_turn_year']}."
+                         f"{eng['last_active_turn_week']}"),
+                   foreground="#555").pack(anchor=tk.W)
+        if eng['resolution']:
+            ttk.Label(header, text=f"Resolution: {eng['resolution']}",
+                       foreground="#333").pack(anchor=tk.W)
+
+        # Participants summary
+        parts_frame = ttk.LabelFrame(popup, text="Participants", padding=6)
+        parts_frame.pack(fill=tk.X, padx=8, pady=(0, 4))
+        for p in parts:
+            pname = name_cache.get((p['participant_kind'], p['participant_id_value']),
+                                     f"#{p['participant_id_value']}")
+            joined = (f"{p['joined_turn_year']}.{p['joined_turn_week']} "
+                       f"R{p['joined_on_round']}" if p['joined_turn_year'] else '?')
+            left = ""
+            if p['left_turn_year']:
+                left = (f"  left {p['left_turn_year']}.{p['left_turn_week']} "
+                         f"R{p['left_on_round']}")
+            int_join = f"{p['integrity_at_join']:.0f}" if p['integrity_at_join'] is not None else '?'
+            int_end = f"{p['integrity_at_end']:.0f}" if p['integrity_at_end'] is not None else '-'
+            ttk.Label(parts_frame,
+                       text=(f"  {p['participant_kind']:8s} {pname} "
+                             f"({p['participant_id_value']})  "
+                             f"status: {(p['status'] or '?').upper():10s}  "
+                             f"HP: {int_join} -> {int_end}  "
+                             f"joined: {joined}{left}"),
+                       font=("Consolas", 9)).pack(anchor=tk.W)
+
+        # Scrollable log
+        log_frame = ttk.LabelFrame(popup, text="Round-by-Round Log", padding=4)
+        log_frame.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 8))
+        txt = scrolledtext.ScrolledText(log_frame, wrap=tk.WORD,
+                                          bg="#1e1e1e", fg="#d4d4d4",
+                                          font=("Consolas", 9),
+                                          insertbackground="white")
+        txt.pack(fill=tk.BOTH, expand=True)
+        txt.tag_config("round", foreground="#9cdcfe", font=("Consolas", 9, "bold"))
+        txt.tag_config("engage", foreground="#dcdcaa")
+        txt.tag_config("fire", foreground="#ffffff")
+        txt.tag_config("destroyed", foreground="#f48771", font=("Consolas", 9, "bold"))
+        txt.tag_config("flee", foreground="#c586c0")
+        txt.tag_config("move", foreground="#808080")
+
+        cur_turn = None
+        for le in log:
+            tag = le['action'] if le['action'] in (
+                'engage', 'fire', 'destroyed', 'flee', 'move') else None
+            tk_tuple = (le['turn_year'], le['turn_week'])
+            if tk_tuple != cur_turn:
+                txt.insert(tk.END,
+                             f"\n--- Turn {tk_tuple[0]}.{tk_tuple[1]} ---\n",
+                             "round")
+                cur_turn = tk_tuple
+            actor = ''
+            if le['actor_kind'] and le['actor_id']:
+                actor = name_cache.get(
+                    (le['actor_kind'], le['actor_id']),
+                    f"{le['actor_kind']}#{le['actor_id']}")
+            elif le['actor_kind']:
+                actor = le['actor_kind']
+            line = (f"R{le['round_number']}  {actor:15s}  "
+                     f"{le['action']:10s}  {le['detail'] or ''}\n")
+            txt.insert(tk.END, line, tag)
+        txt.config(state=tk.DISABLED)
+
+        ttk.Button(popup, text="Close",
+                    command=popup.destroy).pack(pady=(0, 8))
 
     def _build_previews_tab(self):
         tab = ttk.Frame(self.notebook)
@@ -1657,6 +1803,7 @@ class StellarDominionGUI:
             ('grid_col', 'Grid Col:', 6),
             ('grid_row', 'Grid Row:', 6),
             ('tu_remaining', 'OC Remaining:', 10),
+            ('armour', 'Armour:', 6),
         ]
         for key, label, width in BASIC_FIELDS:
             row = ttk.Frame(basic)
@@ -1668,6 +1815,43 @@ class StellarDominionGUI:
 
         ttk.Button(basic, text="Save Basic Info", width=18,
                    command=self._ship_ed_save_basic).pack(anchor=tk.W, pady=(4, 0))
+
+        # ----- Combat State (integrity + shield SP) -----
+        cstate = ttk.LabelFrame(inner, text="Combat State", padding=6)
+        cstate.pack(fill=tk.X, padx=5, pady=4)
+
+        # Integrity row
+        int_row = ttk.Frame(cstate)
+        int_row.pack(fill=tk.X, pady=2)
+        ttk.Label(int_row, text="Integrity:", width=12).pack(side=tk.LEFT)
+        self.ship_ed_integrity_entry = ttk.Entry(int_row, width=8)
+        self.ship_ed_integrity_entry.pack(side=tk.LEFT, padx=(2, 4))
+        ttk.Label(int_row, text="/").pack(side=tk.LEFT)
+        self.ship_ed_max_integrity_label = ttk.Label(int_row, text="-", width=10,
+                                                       foreground="#555")
+        self.ship_ed_max_integrity_label.pack(side=tk.LEFT, padx=(4, 10))
+        ttk.Label(int_row, text="(max auto-computed from ship_size × hull multiplier)",
+                   foreground="#888", font=("", 8, "italic")).pack(side=tk.LEFT)
+
+        # Shield SP row
+        sp_row = ttk.Frame(cstate)
+        sp_row.pack(fill=tk.X, pady=2)
+        ttk.Label(sp_row, text="Shield SP:", width=12).pack(side=tk.LEFT)
+        self.ship_ed_shield_entry = ttk.Entry(sp_row, width=8)
+        self.ship_ed_shield_entry.pack(side=tk.LEFT, padx=(2, 4))
+        ttk.Label(sp_row, text="/").pack(side=tk.LEFT)
+        self.ship_ed_max_shield_label = ttk.Label(sp_row, text="-", width=10,
+                                                    foreground="#555")
+        self.ship_ed_max_shield_label.pack(side=tk.LEFT, padx=(4, 10))
+        ttk.Label(sp_row, text="(max auto-computed from installed shield generators)",
+                   foreground="#888", font=("", 8, "italic")).pack(side=tk.LEFT)
+
+        btn_row = ttk.Frame(cstate)
+        btn_row.pack(fill=tk.X, pady=(4, 0))
+        ttk.Button(btn_row, text="Save Combat State", width=20,
+                   command=self._ship_ed_save_combat_state).pack(side=tk.LEFT, padx=2)
+        ttk.Button(btn_row, text="Repair to Full", width=14,
+                   command=self._ship_ed_repair_full).pack(side=tk.LEFT, padx=2)
 
         # ----- Installed Components -----
         comp = ttk.LabelFrame(inner, text="Installed Components", padding=6)
@@ -1888,7 +2072,7 @@ class StellarDominionGUI:
                 ('name', '', 0), ('ship_size', '', 0), ('hull_type', '', 0),
                 ('ship_class', '', 0), ('design', '', 0),
                 ('system_id', '', 0), ('grid_col', '', 0), ('grid_row', '', 0),
-                ('tu_remaining', '', 0),
+                ('tu_remaining', '', 0), ('armour', '', 0),
             ]:
                 self.ship_ed_fields[key].delete(0, tk.END)
                 v = ship[key] if ship[key] is not None else ''
@@ -1961,7 +2145,7 @@ class StellarDominionGUI:
                     name = ?, ship_size = ?, hull_type = ?,
                     ship_class = ?, design = ?,
                     system_id = ?, grid_col = ?, grid_row = ?,
-                    tu_remaining = ?
+                    tu_remaining = ?, armour = ?
                 WHERE ship_id = ?
             """, (
                 f['name'].get().strip(),
@@ -1973,6 +2157,7 @@ class StellarDominionGUI:
                 f['grid_col'].get().strip() or 'M',
                 int(f['grid_row'].get().strip() or '13'),
                 int(f['tu_remaining'].get().strip() or '0'),
+                int(f['armour'].get().strip() or '0'),
                 self.ship_ed_current_id,
             ))
             conn.commit()
@@ -2225,21 +2410,38 @@ class StellarDominionGUI:
     # ----- Ship editor: combat -----
 
     def _ship_ed_refresh_combat(self):
-        """Load doctrine and combat lists for the currently loaded ship."""
+        """Load doctrine, combat lists, and combat state for the currently loaded ship."""
         for lt in ('target', 'defend', 'avoid'):
             tv = self.ship_ed_list_trees[lt]
             for row_id in tv.get_children():
                 tv.delete(row_id)
+        # Reset combat state fields even if no ship loaded
+        self.ship_ed_integrity_entry.delete(0, tk.END)
+        self.ship_ed_max_integrity_label.config(text="-")
+        self.ship_ed_shield_entry.delete(0, tk.END)
+        self.ship_ed_max_shield_label.config(text="-")
         if self.ship_ed_current_id is None:
             return
         try:
             conn = self._ship_ed_rw_conn()
             row = conn.execute(
-                "SELECT combat_doctrine FROM ships WHERE ship_id = ?",
+                """SELECT combat_doctrine, integrity, max_integrity,
+                          shield_sp, max_shield_sp
+                   FROM ships WHERE ship_id = ?""",
                 (self.ship_ed_current_id,)
             ).fetchone()
             doctrine = (row['combat_doctrine'] if row else 'defensive') or 'defensive'
             self.ship_ed_doctrine.set(doctrine)
+            # Combat state fields
+            if row:
+                integ = row['integrity'] if row['integrity'] is not None else 0
+                max_integ = row['max_integrity'] if row['max_integrity'] is not None else 0
+                sp = row['shield_sp'] if row['shield_sp'] is not None else 0
+                max_sp = row['max_shield_sp'] if row['max_shield_sp'] is not None else 0
+                self.ship_ed_integrity_entry.insert(0, f"{int(integ)}")
+                self.ship_ed_max_integrity_label.config(text=f"{int(max_integ)}")
+                self.ship_ed_shield_entry.insert(0, f"{int(sp)}")
+                self.ship_ed_max_shield_label.config(text=f"{int(max_sp)}")
             lists = conn.execute(
                 "SELECT list_type, entry_type, entry_id FROM ship_combat_lists "
                 "WHERE game_id = ? AND ship_id = ? "
@@ -2254,6 +2456,69 @@ class StellarDominionGUI:
                                values=(r['entry_type'], r['entry_id']))
         except Exception as ex:
             self._ship_ed_msg(f"Refresh combat failed: {ex}", ok=False)
+
+    def _ship_ed_save_combat_state(self):
+        """Save integrity and shield_sp values. Both are clamped to their max."""
+        if self.ship_ed_current_id is None:
+            self._ship_ed_msg("Load a ship first.", ok=False)
+            return
+        try:
+            integ_str = self.ship_ed_integrity_entry.get().strip()
+            sp_str = self.ship_ed_shield_entry.get().strip()
+            if not integ_str.isdigit() or not sp_str.isdigit():
+                messagebox.showerror("Input error",
+                                      "Integrity and Shield SP must be non-negative integers.")
+                return
+            integ = int(integ_str)
+            sp = int(sp_str)
+            conn = self._ship_ed_rw_conn()
+            row = conn.execute(
+                "SELECT max_integrity, max_shield_sp FROM ships WHERE ship_id = ?",
+                (self.ship_ed_current_id,)
+            ).fetchone()
+            max_integ = int(row['max_integrity'] or 0)
+            max_sp = int(row['max_shield_sp'] or 0)
+            # Clamp to maxes
+            clamped_integ = min(integ, max_integ) if max_integ > 0 else integ
+            clamped_sp = min(sp, max_sp)
+            conn.execute(
+                "UPDATE ships SET integrity = ?, shield_sp = ? WHERE ship_id = ?",
+                (clamped_integ, clamped_sp, self.ship_ed_current_id)
+            )
+            conn.commit()
+            conn.close()
+            msg_bits = []
+            if clamped_integ != integ:
+                msg_bits.append(f"integrity clamped to {clamped_integ} (max {max_integ})")
+            if clamped_sp != sp:
+                msg_bits.append(f"shield SP clamped to {clamped_sp} (max {max_sp})")
+            note = " — " + "; ".join(msg_bits) if msg_bits else ""
+            self._ship_ed_msg(f"Combat state saved{note}")
+            self._ship_ed_refresh_combat()
+        except Exception as ex:
+            self._ship_ed_msg(f"Save combat state failed: {ex}", ok=False)
+
+    def _ship_ed_repair_full(self):
+        """Set integrity and shield_sp to their respective maxes."""
+        if self.ship_ed_current_id is None:
+            self._ship_ed_msg("Load a ship first.", ok=False)
+            return
+        if not messagebox.askyesno("Confirm",
+                                      "Restore integrity and shields to full?"):
+            return
+        try:
+            conn = self._ship_ed_rw_conn()
+            conn.execute(
+                "UPDATE ships SET integrity = max_integrity, "
+                "shield_sp = max_shield_sp WHERE ship_id = ?",
+                (self.ship_ed_current_id,)
+            )
+            conn.commit()
+            conn.close()
+            self._ship_ed_msg("Integrity and shields restored to full.")
+            self._ship_ed_refresh_combat()
+        except Exception as ex:
+            self._ship_ed_msg(f"Repair failed: {ex}", ok=False)
 
     def _ship_ed_save_doctrine(self):
         if self.ship_ed_current_id is None:
