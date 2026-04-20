@@ -349,24 +349,11 @@ def generate_ship_report(turn_result, db_path=None, game_id="OMICRON101",
         max_integ = 1
     integ_pct = (integ_val / max_integ) * 100
     lines.append(section_line(f"{hull_info}".ljust(COL_LEFT) +
-                               f"Integrity: {integ_val:.0f}/{max_integ:.0f} ({integ_pct:.0f}%)"))
+                               f"Integrity: {integ_pct:.0f}%"))
     lines.append(section_line(f"Internal: {st_used}/{st_capacity} ST".ljust(COL_LEFT) +
                                f"Gravity Rating: {ship['gravity_rating']:.1f}"))
     lines.append(section_line(f"Engines: {engine_count}/{optimal_engines} -> {engine_pct}%".ljust(COL_LEFT) +
                                "MOVE cost scales with engines"))
-    # Defensive systems (armour + shields)
-    armour_val = ship['armour'] if 'armour' in ship.keys() and ship['armour'] else 0
-    shield_sp = ship['shield_sp'] if 'shield_sp' in ship.keys() and ship['shield_sp'] is not None else 0
-    max_shield = ship['max_shield_sp'] if 'max_shield_sp' in ship.keys() and ship['max_shield_sp'] else 0
-    if armour_val > 0 or max_shield > 0:
-        # Shield thickness = floor(current_SP / ship_size), no minimum
-        thickness = (shield_sp // ship_size) if ship_size > 0 else 0
-        armour_str = f"Armour: {armour_val}" if armour_val > 0 else "Armour: -"
-        if max_shield > 0:
-            shield_str = f"Shields: {shield_sp}/{max_shield} SP (thickness {thickness})"
-        else:
-            shield_str = "Shields: -"
-        lines.append(section_line(f"{armour_str}".ljust(COL_LEFT) + shield_str))
     lines.append(section_line())
 
     # ==========================================
@@ -443,6 +430,157 @@ def generate_ship_report(turn_result, db_path=None, game_id="OMICRON101",
             ))
     else:
         lines.append(section_line("Cargo hold empty."))
+    lines.append(section_line())
+
+    # ==========================================
+    # SPACE COMBAT SUMMARY
+    # ==========================================
+    # Always show — players need doctrine visible. Defensive stats, weapons,
+    # magazines, and PD only appear if the ship has them.
+    from db.database import SHIELD_THICKNESS_FACTOR
+    armour_val = ship['armour'] if 'armour' in ship.keys() and ship['armour'] else 0
+    shield_sp = ship['shield_sp'] if 'shield_sp' in ship.keys() and ship['shield_sp'] is not None else 0
+    max_shield = ship['max_shield_sp'] if 'max_shield_sp' in ship.keys() and ship['max_shield_sp'] else 0
+    missiles = ship['missiles_loaded'] if 'missiles_loaded' in ship.keys() and ship['missiles_loaded'] is not None else 0
+    max_missiles = ship['max_missiles'] if 'max_missiles' in ship.keys() and ship['max_missiles'] else 0
+    torpedoes = ship['torpedoes_loaded'] if 'torpedoes_loaded' in ship.keys() and ship['torpedoes_loaded'] is not None else 0
+    max_torpedoes = ship['max_torpedoes'] if 'max_torpedoes' in ship.keys() and ship['max_torpedoes'] else 0
+    doctrine = (ship['combat_doctrine'] if 'combat_doctrine' in ship.keys() and ship['combat_doctrine'] else 'defensive')
+
+    # Pull weapons and PD from installed_items + ship_components
+    weapons_rows = conn.execute(
+        """SELECT sc.name, sc.category, sc.weapon_damage, sc.weapon_range,
+                  sc.weapon_shots_per_round, sc.weapon_accuracy,
+                  sc.ammo_type, sc.flight_rounds, ii.quantity
+           FROM installed_items ii
+           JOIN ship_components sc ON ii.component_id = sc.component_id
+           WHERE ii.ship_id = ? AND sc.category IN ('weapon', 'pd')
+           ORDER BY sc.category, sc.name""",
+        (ship['ship_id'],)
+    ).fetchall()
+
+    weapon_entries = [w for w in weapons_rows if w['category'] == 'weapon']
+    pd_entries = [w for w in weapons_rows if w['category'] == 'pd']
+
+    # Helper: format a float as "N" if integer or "N.NN" with trailing zeros stripped
+    def _fmt_salvos(val):
+        if val == int(val):
+            return f"{int(val)}"
+        # Up to 2 decimals, strip trailing zeros
+        s = f"{val:.2f}".rstrip('0').rstrip('.')
+        return s
+
+    lines.append(section_header("Space Combat Summary"))
+    lines.append(section_line())
+
+    # Defences (if any)
+    if armour_val > 0 or max_shield > 0:
+        thickness = ((SHIELD_THICKNESS_FACTOR * shield_sp) // ship_size) if ship_size > 0 and shield_sp > 0 else 0
+        lines.append(section_line("DEFENCES"))
+        if armour_val > 0:
+            lines.append(section_line(f"  Armour: {armour_val} (non-ablative, flat reduction per hit)"))
+        if max_shield > 0:
+            lines.append(section_line(
+                f"  Shields: {shield_sp}/{max_shield} SP, thickness {thickness} "
+                f"(absorbs up to {thickness} dmg/hit, ablates SP)"))
+        lines.append(section_line())
+
+    # Weapons (if any)
+    if weapon_entries:
+        lines.append(section_line("WEAPONS"))
+        # Max content width is 74. Format: 2 indent + 26 name + 4 qty + 5 dmg + 5 rng + 5 acc + 5 shots + 20 notes = 72
+        comp_fmt = "  {:<26s} {:>3s} {:>4s} {:>4s} {:>4s} {:>4s} {}"
+        lines.append(section_line(comp_fmt.format(
+            "Weapon", "Qty", "Dmg", "Rng", "Acc", "Shot", "Notes")))
+        lines.append(section_line(comp_fmt.format(
+            "-"*26, "-"*3, "-"*4, "-"*4, "-"*4, "-"*4, "-"*18)))
+        for w in weapon_entries:
+            qty = w['quantity']
+            acc = w['weapon_accuracy'] if w['weapon_accuracy'] is not None else 1.0
+            # Compact notes: "missile/1rd", "torp/2rd", or "instant"
+            if w['ammo_type']:
+                notes = f"{w['ammo_type']}/{w['flight_rounds']}rd"
+            else:
+                notes = "instant"
+            lines.append(section_line(comp_fmt.format(
+                w['name'][:26], str(qty),
+                str(w['weapon_damage'] or 0),
+                str(w['weapon_range'] or 0),
+                f"{acc:.2f}",
+                str((w['weapon_shots_per_round'] or 0) * qty),
+                notes
+            )))
+        lines.append(section_line())
+
+    # Ammunition (aggregate per ammo type — salvos at current launcher count)
+    if max_missiles > 0 or max_torpedoes > 0:
+        lines.append(section_line("AMMUNITION"))
+        for ammo_label, loaded, max_cap in [
+            ('Missiles', missiles, max_missiles),
+            ('Torpedoes', torpedoes, max_torpedoes),
+        ]:
+            if max_cap <= 0:
+                continue
+            # Total launcher shots/round for this ammo type
+            ammo_type_key = ammo_label.lower().rstrip('s')  # "missile" / "torpedoe" — strip 's'
+            # Actually the ammo_type column uses 'missile'/'torpedo' — match properly
+            if ammo_label == 'Missiles':
+                ammo_type_key = 'missile'
+            else:
+                ammo_type_key = 'torpedo'
+            shots_per_round = sum(
+                (w['weapon_shots_per_round'] or 0) * w['quantity']
+                for w in weapon_entries
+                if w['ammo_type'] == ammo_type_key
+            )
+            if shots_per_round > 0:
+                salvos = loaded / shots_per_round
+                salvos_str = (
+                    f"{_fmt_salvos(salvos)} salvo{'s' if salvos != 1 else ''} "
+                    f"at {shots_per_round} shot{'s' if shots_per_round != 1 else ''}/round"
+                )
+            else:
+                salvos_str = "no launchers installed to fire these"
+            lines.append(section_line(
+                f"  {ammo_label}: {loaded}/{max_cap} loaded — {salvos_str}"
+            ))
+        lines.append(section_line())
+
+    # Point Defence (if any)
+    if pd_entries:
+        lines.append(section_line("POINT DEFENCE"))
+        pd_fmt = "  {:<26s} {:>3s} {:>4s} {:>4s} {}"
+        lines.append(section_line(pd_fmt.format(
+            "Turret", "Qty", "Acc", "Shot", "Notes")))
+        lines.append(section_line(pd_fmt.format(
+            "-"*26, "-"*3, "-"*4, "-"*4, "-"*30)))
+        total_pd_shots = 0
+        for p in pd_entries:
+            qty = p['quantity']
+            acc = p['weapon_accuracy'] if p['weapon_accuracy'] is not None else 1.0
+            shots = (p['weapon_shots_per_round'] or 0) * qty
+            total_pd_shots += shots
+            lines.append(section_line(pd_fmt.format(
+                p['name'][:26], str(qty), f"{acc:.2f}", str(shots),
+                "intercepts missiles/torpedoes"
+            )))
+        lines.append(section_line(
+            f"  Total: {total_pd_shots} intercept shot"
+            f"{'s' if total_pd_shots != 1 else ''}/round"
+            " (torpedoes prioritised first)"
+        ))
+        lines.append(section_line())
+
+    # Combat doctrine (always shown at end of summary)
+    doctrine_descs = {
+        'aggressive': "pursue and engage; retreat only below 25% integrity",
+        'defensive':  "engage if attacked; retreat below 50% integrity",
+        'evasive':    "prefer to flee; retreat below 75% integrity",
+    }
+    lines.append(section_line(
+        f"COMBAT DOCTRINE: {doctrine.upper()}  "
+        f"({doctrine_descs.get(doctrine, '')})"
+    ))
     lines.append(section_line())
 
     # ==========================================

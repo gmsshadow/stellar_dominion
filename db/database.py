@@ -31,6 +31,12 @@ HULL_HP_MULTIPLIER = {
     'Military':   1.5,
 }
 
+# Shield thickness formula: thickness = floor(FACTOR × current_SP / ship_size).
+# Higher FACTOR = more absorption per hit for a given SP pool, meaning SP
+# depletes faster during combat. FACTOR=1 would mean 1 thickness per ship_size
+# SP. FACTOR=2 means thickness drops 1 step for every size/2 SP depleted.
+SHIELD_THICKNESS_FACTOR = 2
+
 
 # ======================================================================
 # CONNECTION MANAGEMENT
@@ -513,9 +519,13 @@ def get_connection(state_db_path=None, universe_db_path=None):
     # Migrate: add armour and shield columns to ships
     ship_cols_now = [r[1] for r in conn.execute("PRAGMA table_info(ships)").fetchall()]
     for col, typ_default in [
-        ('armour',         'INTEGER DEFAULT 0'),
-        ('shield_sp',      'INTEGER DEFAULT 0'),
-        ('max_shield_sp',  'INTEGER DEFAULT 0'),
+        ('armour',           'INTEGER DEFAULT 0'),
+        ('shield_sp',        'INTEGER DEFAULT 0'),
+        ('max_shield_sp',    'INTEGER DEFAULT 0'),
+        ('missiles_loaded',  'INTEGER DEFAULT 0'),
+        ('torpedoes_loaded', 'INTEGER DEFAULT 0'),
+        ('max_missiles',     'INTEGER DEFAULT 0'),
+        ('max_torpedoes',    'INTEGER DEFAULT 0'),
     ]:
         if col not in ship_cols_now:
             conn.execute(f"ALTER TABLE ships ADD COLUMN {col} {typ_default}")
@@ -528,9 +538,11 @@ def get_connection(state_db_path=None, universe_db_path=None):
         conn.execute("ALTER TABLE universe.ship_components ADD COLUMN shield_sp_capacity INTEGER DEFAULT 0")
     conn.commit()
 
-    # Seed Shield Generator Mk1 (idempotent).
+    # Seed Shield Generator Mk1 (idempotent). If it already exists but has
+    # stale values (e.g. older 30-SP spec), update to the current 15 SP.
     shield_gen = conn.execute(
-        "SELECT component_id FROM universe.ship_components WHERE component_id = 210"
+        "SELECT component_id, shield_sp_capacity FROM universe.ship_components "
+        "WHERE component_id = 210"
     ).fetchone()
     if not shield_gen:
         conn.execute(
@@ -542,28 +554,70 @@ def get_connection(state_db_path=None, universe_db_path=None):
                 weapon_subcategory, weapon_requires_ammo, shield_sp_capacity,
                 description)
                VALUES (210, 'Shield Generator Mk1', 'shield', 20, 0, 0, 0, 0,
-                       0, 0, 0, 0, NULL, 3000, 0, 0, 0, NULL, 0, 30,
-                       'Provides 30 SP per unit. Thickness = floor(total_SP / ship_size).')"""
+                       0, 0, 0, 0, NULL, 3000, 0, 0, 0, NULL, 0, 15,
+                       'Provides 15 SP per unit. Thickness = floor(2 × total_SP / ship_size).')"""
         )
+        conn.commit()
+    elif shield_gen['shield_sp_capacity'] != 15:
+        # Migration: previous spec gave 30 SP per generator. Halve it so existing
+        # DBs pick up the 15-SP balance change.
+        conn.execute(
+            "UPDATE universe.ship_components SET shield_sp_capacity = 15, "
+            "description = 'Provides 15 SP per unit. Thickness = floor(2 × total_SP / ship_size).' "
+            "WHERE component_id = 210"
+        )
+        conn.commit()
+        # Recompute max_shield_sp for every ship so the new value propagates.
+        # Preserve current health percentage (damaged shields stay damaged proportionally).
+        from_ships = conn.execute(
+            "SELECT ship_id, shield_sp, max_shield_sp FROM ships WHERE max_shield_sp > 0"
+        ).fetchall()
+        for r in from_ships:
+            # Count this ship's shield generators now
+            gens = conn.execute(
+                "SELECT COALESCE(SUM(ii.quantity * sc.shield_sp_capacity), 0) AS sp "
+                "FROM installed_items ii JOIN universe.ship_components sc "
+                "  ON ii.component_id = sc.component_id "
+                "WHERE ii.ship_id = ? AND sc.category = 'shield'",
+                (r['ship_id'],)
+            ).fetchone()
+            new_max = int(gens['sp'] or 0)
+            old_max = r['max_shield_sp'] or 0
+            if old_max > 0:
+                pct = (r['shield_sp'] or 0) / old_max
+            else:
+                pct = 1.0
+            new_sp = min(new_max, int(new_max * pct))
+            conn.execute(
+                "UPDATE ships SET max_shield_sp = ?, shield_sp = ? WHERE ship_id = ?",
+                (new_max, new_sp, r['ship_id'])
+            )
         conn.commit()
 
     # Migrate: add weapon columns to ship_components (in universe.db)
     sc_cols = [r[1] for r in conn.execute("PRAGMA universe.table_info(ship_components)").fetchall()]
     weapon_col_defs = [
-        ('weapon_damage',           'INTEGER DEFAULT 0'),
-        ('weapon_range',            'INTEGER DEFAULT 0'),
-        ('weapon_shots_per_round',  'INTEGER DEFAULT 0'),
-        ('weapon_subcategory',      'TEXT DEFAULT NULL'),
-        ('weapon_requires_ammo',    'INTEGER DEFAULT 0'),
+        ('weapon_damage',               'INTEGER DEFAULT 0'),
+        ('weapon_range',                'INTEGER DEFAULT 0'),
+        ('weapon_shots_per_round',      'INTEGER DEFAULT 0'),
+        ('weapon_subcategory',          'TEXT DEFAULT NULL'),
+        ('weapon_requires_ammo',        'INTEGER DEFAULT 0'),
+        ('weapon_accuracy',             'REAL DEFAULT 1.0'),
+        ('ammo_type',                   'TEXT DEFAULT NULL'),
+        ('flight_rounds',               'INTEGER DEFAULT 0'),
+        ('magazine_missile_capacity',   'INTEGER DEFAULT 0'),
+        ('magazine_torpedo_capacity',   'INTEGER DEFAULT 0'),
     ]
     for col, typ in weapon_col_defs:
         if col not in sc_cols:
             conn.execute(f"ALTER TABLE universe.ship_components ADD COLUMN {col} {typ}")
     conn.commit()
 
-    # Seed Beam Cannon Mk1 weapon (idempotent via INSERT OR IGNORE) — use named cols
-    # so this survives any future ALTER TABLE column ordering.
-    if sc_cols:
+    # Seed/update Beam Cannon Mk1 (idempotent). If the row already exists but
+    # has stale values, set the canonical current ones.
+    sc_cols_now = [r[1] for r in conn.execute(
+        "PRAGMA universe.table_info(ship_components)").fetchall()]
+    if sc_cols_now:
         beam_cannon = {
             'component_id': 200, 'name': 'Beam Cannon Mk1', 'category': 'weapon',
             'st_cost': 15, 'cargo_capacity': 0, 'crew_capacity': 0, 'life_capacity': 0,
@@ -572,7 +626,8 @@ def get_connection(state_db_path=None, universe_db_path=None):
             'base_price': 2500,
             'weapon_damage': 10, 'weapon_range': 2, 'weapon_shots_per_round': 1,
             'weapon_subcategory': 'beam', 'weapon_requires_ammo': 0,
-            'description': 'Standard energy beam weapon. Damage 10, range 2, 1 shot per combat round. No ammunition required.',
+            'weapon_accuracy': 0.8,
+            'description': 'Standard energy beam weapon. Damage 10, range 2, accuracy 0.8, 1 shot per combat round. No ammunition required.',
         }
         cols = ', '.join(beam_cannon.keys())
         placeholders = ', '.join(['?'] * len(beam_cannon))
@@ -580,7 +635,97 @@ def get_connection(state_db_path=None, universe_db_path=None):
             f"INSERT OR IGNORE INTO universe.ship_components ({cols}) VALUES ({placeholders})",
             tuple(beam_cannon.values())
         )
+        # Idempotently refresh accuracy for existing Beam Cannon rows so DBs
+        # migrated before this change get the 0.8 value.
+        conn.execute(
+            "UPDATE universe.ship_components SET weapon_accuracy = 0.8 "
+            "WHERE component_id = 200 AND (weapon_accuracy IS NULL OR weapon_accuracy = 0 OR weapon_accuracy = 1.0)"
+        )
         conn.commit()
+
+    # Seed projectile launchers, Laser PD, and magazines (idempotent).
+    # All use named columns so they survive future ALTER TABLE reordering.
+    projectile_components = [
+        {
+            'component_id': 220, 'name': 'Missile Launcher Mk1', 'category': 'weapon',
+            'st_cost': 20, 'cargo_capacity': 0, 'crew_capacity': 0, 'life_capacity': 0,
+            'thrust': 0, 'engine_efficiency': 0, 'sensor_rating': 0,
+            'jump_range': 0, 'jump_oc_cost': 0, 'hull_restriction': None,
+            'base_price': 4000,
+            'weapon_damage': 30, 'weapon_range': 2, 'weapon_shots_per_round': 1,
+            'weapon_subcategory': 'missile', 'weapon_requires_ammo': 1,
+            'weapon_accuracy': 0.9,
+            'ammo_type': 'missile', 'flight_rounds': 1,
+            'magazine_missile_capacity': 0, 'magazine_torpedo_capacity': 0,
+            'shield_sp_capacity': 0,
+            'description': 'Fires guided missiles. Damage 30, range 2, accuracy 0.9, 1 missile per shot, 1-round flight. Consumes 1 missile per shot from the ship\'s magazine. Can be intercepted by Point Defence.',
+        },
+        {
+            'component_id': 230, 'name': 'Torpedo Launcher Mk1', 'category': 'weapon',
+            'st_cost': 40, 'cargo_capacity': 0, 'crew_capacity': 0, 'life_capacity': 0,
+            'thrust': 0, 'engine_efficiency': 0, 'sensor_rating': 0,
+            'jump_range': 0, 'jump_oc_cost': 0, 'hull_restriction': None,
+            'base_price': 8000,
+            'weapon_damage': 80, 'weapon_range': 2, 'weapon_shots_per_round': 1,
+            'weapon_subcategory': 'torpedo', 'weapon_requires_ammo': 1,
+            'weapon_accuracy': 0.95,
+            'ammo_type': 'torpedo', 'flight_rounds': 2,
+            'magazine_missile_capacity': 0, 'magazine_torpedo_capacity': 0,
+            'shield_sp_capacity': 0,
+            'description': 'Fires heavy torpedoes. Damage 80, range 2, accuracy 0.95, 1 torpedo per shot, 2-round flight. Consumes 1 torpedo per shot from the ship\'s magazine. More vulnerable to Point Defence due to longer flight time.',
+        },
+        {
+            'component_id': 240, 'name': 'Laser Point Defence Mk1', 'category': 'pd',
+            'st_cost': 10, 'cargo_capacity': 0, 'crew_capacity': 0, 'life_capacity': 0,
+            'thrust': 0, 'engine_efficiency': 0, 'sensor_rating': 0,
+            'jump_range': 0, 'jump_oc_cost': 0, 'hull_restriction': None,
+            'base_price': 2000,
+            'weapon_damage': 0, 'weapon_range': 0, 'weapon_shots_per_round': 4,
+            'weapon_subcategory': 'pd', 'weapon_requires_ammo': 0,
+            'weapon_accuracy': 0.6,
+            'ammo_type': None, 'flight_rounds': 0,
+            'magazine_missile_capacity': 0, 'magazine_torpedo_capacity': 0,
+            'shield_sp_capacity': 0,
+            'description': 'Rapid-fire laser turret that auto-intercepts incoming missiles and torpedoes. 4 shots per round at 0.6 accuracy. Prioritises torpedoes (higher damage) first. No anti-ship capability.',
+        },
+        {
+            'component_id': 250, 'name': 'Missile Magazine Mk1', 'category': 'magazine',
+            'st_cost': 20, 'cargo_capacity': 0, 'crew_capacity': 0, 'life_capacity': 0,
+            'thrust': 0, 'engine_efficiency': 0, 'sensor_rating': 0,
+            'jump_range': 0, 'jump_oc_cost': 0, 'hull_restriction': None,
+            'base_price': 500,
+            'weapon_damage': 0, 'weapon_range': 0, 'weapon_shots_per_round': 0,
+            'weapon_subcategory': None, 'weapon_requires_ammo': 0,
+            'weapon_accuracy': 1.0,
+            'ammo_type': None, 'flight_rounds': 0,
+            'magazine_missile_capacity': 20, 'magazine_torpedo_capacity': 0,
+            'shield_sp_capacity': 0,
+            'description': 'Holds up to 20 missiles in ready-to-fire state. Load/unload via LOAD MAGAZINE / UNLOAD MAGAZINE orders (1 OC each).',
+        },
+        {
+            'component_id': 260, 'name': 'Torpedo Magazine Mk1', 'category': 'magazine',
+            'st_cost': 30, 'cargo_capacity': 0, 'crew_capacity': 0, 'life_capacity': 0,
+            'thrust': 0, 'engine_efficiency': 0, 'sensor_rating': 0,
+            'jump_range': 0, 'jump_oc_cost': 0, 'hull_restriction': None,
+            'base_price': 800,
+            'weapon_damage': 0, 'weapon_range': 0, 'weapon_shots_per_round': 0,
+            'weapon_subcategory': None, 'weapon_requires_ammo': 0,
+            'weapon_accuracy': 1.0,
+            'ammo_type': None, 'flight_rounds': 0,
+            'magazine_missile_capacity': 0, 'magazine_torpedo_capacity': 5,
+            'shield_sp_capacity': 0,
+            'description': 'Holds up to 5 torpedoes in ready-to-fire state. Load/unload via LOAD MAGAZINE / UNLOAD MAGAZINE orders (1 OC each).',
+        },
+    ]
+    for comp in projectile_components:
+        cols = ', '.join(comp.keys())
+        placeholders = ', '.join(['?'] * len(comp))
+        conn.execute(
+            f"INSERT OR IGNORE INTO universe.ship_components ({cols}) "
+            f"VALUES ({placeholders})",
+            tuple(comp.values())
+        )
+    conn.commit()
 
     # Migrate: create combat tables if missing (idempotent)
     combat_tables_ddl = [
@@ -653,6 +798,23 @@ def get_connection(state_db_path=None, universe_db_path=None):
             integrity_after REAL,
             detail TEXT
         )""",
+        """CREATE TABLE IF NOT EXISTS combat_projectiles (
+            projectile_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            engagement_id INTEGER NOT NULL,
+            launched_turn_year INTEGER,
+            launched_turn_week INTEGER,
+            launched_on_round INTEGER,
+            arrives_on_round INTEGER,
+            attacker_kind TEXT,
+            attacker_id INTEGER,
+            attacker_name TEXT,
+            target_kind TEXT,
+            target_id INTEGER,
+            damage INTEGER,
+            accuracy REAL,
+            ammo_type TEXT,
+            status TEXT DEFAULT 'in-flight'
+        )""",
     ]
     for ddl in combat_tables_ddl:
         conn.execute(ddl)
@@ -662,8 +824,90 @@ def get_connection(state_db_path=None, universe_db_path=None):
         "CREATE INDEX IF NOT EXISTS idx_engagement_active ON combat_engagements(game_id, status)",
         "CREATE INDEX IF NOT EXISTS idx_participants_engagement ON combat_participants(engagement_id)",
         "CREATE INDEX IF NOT EXISTS idx_combat_log_engagement ON combat_log(engagement_id, turn_year, turn_week, round_number)",
+        "CREATE INDEX IF NOT EXISTS idx_projectiles_engagement ON combat_projectiles(engagement_id, status, arrives_on_round)",
     ]:
         conn.execute(idx)
+    conn.commit()
+
+    # Migrate: seed Missile and Torpedo as trade goods (ammo), available at
+    # all bases. Prices are fixed (not fluctuating). Cargo mass: missile 1,
+    # torpedo 4. Buy prices as spec'd, sell prices lower (60%).
+    for item_id, name, price, mass in [
+        (501, 'Missile', 100, 1),
+        (502, 'Torpedo', 500, 4),
+    ]:
+        existing = conn.execute(
+            "SELECT item_id FROM universe.trade_goods WHERE item_id = ?", (item_id,)
+        ).fetchone()
+        if not existing:
+            conn.execute(
+                """INSERT INTO universe.trade_goods
+                   (item_id, name, base_price, mass_per_unit, origin_system_id)
+                   VALUES (?, ?, ?, ?, NULL)""",
+                (item_id, name, price, mass)
+            )
+    conn.commit()
+
+    # Ensure every starbase has base_trade_config rows for Missile and Torpedo.
+    # Idempotent: only inserts if missing. 'average' trade_role so they're
+    # available everywhere at standard rates.
+    bases = conn.execute(
+        "SELECT DISTINCT base_id, game_id FROM base_trade_config"
+    ).fetchall()
+    # Include starbases that have no trade config yet
+    all_starbases = conn.execute(
+        "SELECT base_id, game_id FROM starbases"
+    ).fetchall()
+    configs_to_add = set()
+    for b in bases:
+        configs_to_add.add((b['base_id'], b['game_id']))
+    for b in all_starbases:
+        configs_to_add.add((b['base_id'], b['game_id']))
+    for base_id, game_id in configs_to_add:
+        for ammo_id in (501, 502):
+            existing = conn.execute(
+                "SELECT config_id FROM base_trade_config "
+                "WHERE base_id = ? AND game_id = ? AND item_id = ?",
+                (base_id, game_id, ammo_id)
+            ).fetchone()
+            if not existing:
+                conn.execute(
+                    """INSERT INTO base_trade_config
+                       (base_id, game_id, item_id, trade_role)
+                       VALUES (?, ?, ?, 'average')""",
+                    (base_id, game_id, ammo_id)
+                )
+    conn.commit()
+
+    # Populate market_prices for missile/torpedo at each base's current cycle
+    # so they're immediately available. Idempotent: only inserts if missing.
+    # Uses fixed-price values (100/60 for missiles, 500/300 for torpedoes).
+    fixed_ammo = {
+        501: {'buy': 100, 'sell': 60, 'stock': 500, 'demand': 100},
+        502: {'buy': 500, 'sell': 300, 'stock': 100, 'demand': 50},
+    }
+    existing_cycles = conn.execute(
+        "SELECT DISTINCT game_id, base_id, turn_year, turn_week FROM market_prices"
+    ).fetchall()
+    for c_row in existing_cycles:
+        for ammo_id, fp in fixed_ammo.items():
+            already = conn.execute(
+                """SELECT price_id FROM market_prices
+                   WHERE game_id = ? AND base_id = ? AND item_id = ?
+                         AND turn_year = ? AND turn_week = ?""",
+                (c_row['game_id'], c_row['base_id'], ammo_id,
+                 c_row['turn_year'], c_row['turn_week'])
+            ).fetchone()
+            if not already:
+                conn.execute(
+                    """INSERT INTO market_prices
+                       (game_id, base_id, item_id, turn_year, turn_week,
+                        buy_price, sell_price, stock, demand)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (c_row['game_id'], c_row['base_id'], ammo_id,
+                     c_row['turn_year'], c_row['turn_week'],
+                     fp['buy'], fp['sell'], fp['stock'], fp['demand'])
+                )
     conn.commit()
 
     # Migrate: add detection detail columns to known_contacts
@@ -1572,7 +1816,8 @@ def get_ship_components(conn, ship_id):
                sc.cargo_capacity, sc.crew_capacity, sc.life_capacity,
                sc.thrust, sc.engine_efficiency, sc.sensor_rating,
                sc.jump_range, sc.jump_oc_cost, sc.hull_restriction,
-               sc.shield_sp_capacity
+               sc.shield_sp_capacity,
+               sc.magazine_missile_capacity, sc.magazine_torpedo_capacity
         FROM installed_items ii
         JOIN ship_components sc ON ii.component_id = sc.component_id
         WHERE ii.ship_id = ?
@@ -1631,6 +1876,8 @@ def recalculate_ship_stats(conn, ship_id):
     # Sensor arrays aggregate with diminishing returns: best × sqrt(count)
     sensor_components = []  # list of (rating_per_unit, qty)
     total_shield_sp = 0
+    total_missile_capacity = 0
+    total_torpedo_capacity = 0
     for c in components:
         qty = c['quantity']
         total_cargo += c['cargo_capacity'] * qty
@@ -1652,6 +1899,12 @@ def recalculate_ship_stats(conn, ship_id):
         if (c['category'] == 'shield' and c['shield_sp_capacity']
                 and c['shield_sp_capacity'] > 0):
             total_shield_sp += c['shield_sp_capacity'] * qty
+        # Magazines contribute missile/torpedo capacity
+        if c['category'] == 'magazine':
+            if c['magazine_missile_capacity']:
+                total_missile_capacity += c['magazine_missile_capacity'] * qty
+            if c['magazine_torpedo_capacity']:
+                total_torpedo_capacity += c['magazine_torpedo_capacity'] * qty
 
     # Compute total sensor rating with sqrt diminishing returns.
     # Formula: best_per_unit_rating × sqrt(total_unit_count)
@@ -1699,12 +1952,18 @@ def recalculate_ship_stats(conn, ship_id):
             max_integrity = ?,
             integrity = MIN(integrity, ?),
             max_shield_sp = ?,
-            shield_sp = MIN(shield_sp, ?)
+            shield_sp = MIN(shield_sp, ?),
+            max_missiles = ?,
+            missiles_loaded = MIN(missiles_loaded, ?),
+            max_torpedoes = ?,
+            torpedoes_loaded = MIN(torpedoes_loaded, ?)
         WHERE ship_id = ?
     """, (total_cargo, total_life_cap, total_sensor, round(sensor_profile, 2),
           round(gravity_rating, 2), crew_required,
           max_integrity, max_integrity,
           total_shield_sp, total_shield_sp,
+          total_missile_capacity, total_missile_capacity,
+          total_torpedo_capacity, total_torpedo_capacity,
           ship_id))
     conn.commit()
 
@@ -1723,6 +1982,8 @@ def recalculate_ship_stats(conn, ship_id):
         'jump_oc_cost': best_jump_oc,
         'crew_required': crew_required,
         'max_shield_sp': total_shield_sp,
+        'max_missiles': total_missile_capacity,
+        'max_torpedoes': total_torpedo_capacity,
         'st_used': get_ship_st_used(conn, ship_id),
         'st_capacity': ship_size * 50,
     }

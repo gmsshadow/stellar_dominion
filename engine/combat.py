@@ -36,17 +36,58 @@ DOCTRINE_RETREAT_THRESHOLDS = {
 
 
 def get_ship_weapons(conn, ship_id):
-    """Return a list of (name, damage, range, shots_per_round, qty) for installed weapons."""
+    """Return a list of weapon dicts for installed weapons.
+    Each dict: name, damage, range, shots_per_round, qty, accuracy,
+    ammo_type (None for beams, 'missile'/'torpedo' for launchers),
+    flight_rounds (0 for instant, 1/2 for projectiles).
+    """
     rows = conn.execute(
         """SELECT sc.name, sc.weapon_damage, sc.weapon_range,
-                  sc.weapon_shots_per_round, ii.quantity
+                  sc.weapon_shots_per_round, sc.weapon_accuracy,
+                  sc.ammo_type, sc.flight_rounds, ii.quantity
            FROM installed_items ii
            JOIN ship_components sc ON ii.component_id = sc.component_id
            WHERE ii.ship_id = ? AND sc.category = 'weapon'""",
         (ship_id,)
     ).fetchall()
-    return [(r['name'], r['weapon_damage'] or 0, r['weapon_range'] or 0,
-             r['weapon_shots_per_round'] or 0, r['quantity']) for r in rows]
+    return [{
+        'name': r['name'],
+        'damage': r['weapon_damage'] or 0,
+        'range': r['weapon_range'] or 0,
+        'shots_per_round': r['weapon_shots_per_round'] or 0,
+        'qty': r['quantity'],
+        'accuracy': r['weapon_accuracy'] if r['weapon_accuracy'] is not None else 1.0,
+        'ammo_type': r['ammo_type'],
+        'flight_rounds': r['flight_rounds'] or 0,
+    } for r in rows]
+
+
+def get_ship_pd(conn, ship_id):
+    """Return installed Point Defence components for a ship.
+    Each element: (name, shots_per_round, qty, accuracy).
+    """
+    rows = conn.execute(
+        """SELECT sc.name, sc.weapon_shots_per_round, sc.weapon_accuracy,
+                  ii.quantity
+           FROM installed_items ii
+           JOIN ship_components sc ON ii.component_id = sc.component_id
+           WHERE ii.ship_id = ? AND sc.category = 'pd'""",
+        (ship_id,)
+    ).fetchall()
+    return [(r['name'], r['weapon_shots_per_round'] or 0, r['quantity'],
+             r['weapon_accuracy'] if r['weapon_accuracy'] is not None else 1.0)
+            for r in rows]
+
+
+def get_ship_ammo(conn, ship_id):
+    """Return (missiles_loaded, torpedoes_loaded) for a ship."""
+    row = conn.execute(
+        "SELECT missiles_loaded, torpedoes_loaded FROM ships WHERE ship_id = ?",
+        (ship_id,)
+    ).fetchone()
+    if not row:
+        return (0, 0)
+    return (row['missiles_loaded'] or 0, row['torpedoes_loaded'] or 0)
 
 
 def get_base_weapons(conn, base_kind, base_id):
@@ -254,6 +295,8 @@ def get_participant_state(conn, game_id, kind, entity_id):
         if not row:
             return None
         weapons = get_ship_weapons(conn, entity_id)
+        pd_components = get_ship_pd(conn, entity_id)
+        missiles_loaded, torpedoes_loaded = get_ship_ammo(conn, entity_id)
         integ = row['integrity'] if row['integrity'] is not None else 100.0
         # max_integrity scales with ship_size. Fall back to ship_size if the
         # column is somehow null (e.g. pre-migration rows).
@@ -273,6 +316,9 @@ def get_participant_state(conn, game_id, kind, entity_id):
             'hull_type': row['hull_type'],
             'owner_prefect_id': row['owner_prefect_id'],
             'weapons': weapons,
+            'pd': pd_components,
+            'missiles_loaded': missiles_loaded,
+            'torpedoes_loaded': torpedoes_loaded,
             'movement': ship_movement_per_round(row['gravity_rating'] or 1.0),
         }
     else:  # 'starbase' | 'port' | 'outpost'
@@ -424,7 +470,7 @@ def decide_action(conn, game_id, actor, target, all_participants_state):
         # Cornered (can't move, e.g. same cell as enemy or grid edge)
         # Fight back rather than just evade — at least take some with us.
         dist = grid_distance(actor['col'], actor['row'], target['col'], target['row'])
-        max_wrange = max((w[2] for w in actor.get('weapons', [])), default=0)
+        max_wrange = max((w['range'] for w in actor.get('weapons', [])), default=0)
         if max_wrange > 0 and dist <= max_wrange:
             return ('fire', target)
         return ('evade', None)
@@ -434,7 +480,7 @@ def decide_action(conn, game_id, actor, target, all_participants_state):
 
     # Determine effective max weapon range
     if actor['kind'] == 'ship':
-        max_wrange = max((w[2] for w in actor.get('weapons', [])), default=0)
+        max_wrange = max((w['range'] for w in actor.get('weapons', [])), default=0)
     else:
         max_wrange = actor.get('base_weapon_range', 0)
 
@@ -526,6 +572,14 @@ def _step(actor, target, sign):
     return (chr(new_col_n), new_row)
 
 
+def _shield_thickness(sp, ship_size):
+    """Compute shield thickness from current SP and ship size, using global factor."""
+    from db.database import SHIELD_THICKNESS_FACTOR
+    if ship_size <= 0 or sp <= 0:
+        return 0
+    return (SHIELD_THICKNESS_FACTOR * sp) // ship_size
+
+
 def apply_damage_to_ship(conn, ship_id, damage, attacker_kind=None,
                           attacker_id=None, attacker_name=None,
                           attacker_faction_id=None,
@@ -571,8 +625,8 @@ def apply_damage_to_ship(conn, ship_id, damage, attacker_kind=None,
     # --- 1. Shields (ablative, recompute thickness per hit) ---
     absorbed_by_shields = 0
     if current_sp > 0 and ship_size > 0:
-        # Thickness = floor(SP / ship_size), no minimum
-        thickness = current_sp // ship_size
+        # Thickness = floor(FACTOR × current_SP / ship_size), no minimum
+        thickness = _shield_thickness(current_sp, ship_size)
         if thickness > 0:
             absorbed_by_shields = min(thickness, remaining)
             remaining -= absorbed_by_shields
@@ -596,7 +650,7 @@ def apply_damage_to_ship(conn, ship_id, damage, attacker_kind=None,
     conn.commit()
 
     # Shield thickness AFTER this hit, for reporting
-    new_thickness = (current_sp // ship_size) if ship_size > 0 else 0
+    new_thickness = _shield_thickness(current_sp, ship_size)
 
     # Auto-record attacker as a known contact for the victim's owner
     victim_prefect = row['owner_prefect_id']
@@ -831,6 +885,255 @@ def propagate_defend_responses(conn, game_id, engagement, turn_year, turn_week,
             )
 
 
+def resolve_arriving_projectiles(conn, game_id, engagement_id, round_number,
+                                    turn_year, turn_week, p_record_map):
+    """
+    Resolve all projectiles with arrives_on_round == round_number. For each:
+      1. Find the target's PD; compute PD shots budget
+      2. Sort projectiles by damage descending (torpedoes first)
+      3. For each projectile: PD rolls to intercept (stops at first hit),
+         then if not intercepted, projectile rolls accuracy,
+         then applies damage through shield/armour/integrity pipeline
+      4. Update projectile status; mark participant destroyed if hit kills
+
+    Returns a list of summary dicts (one per target) for later logging.
+    """
+    import random
+    proj_rows = conn.execute(
+        """SELECT * FROM combat_projectiles
+           WHERE engagement_id = ? AND status = 'in-flight'
+                 AND arrives_on_round = ?
+           ORDER BY damage DESC, projectile_id""",
+        (engagement_id, round_number)
+    ).fetchall()
+    if not proj_rows:
+        return
+
+    # Group projectiles by target. For each target we'll:
+    #   - Find PD on that target ship and compute a pool of PD shots
+    #   - Sort that target's incoming projectiles by damage desc (torpedoes first)
+    #   - Apply PD shots per projectile; each PD shot is an independent intercept roll
+    #   - Any missile surviving PD rolls its own accuracy, then deals damage
+    targets = {}
+    for p in proj_rows:
+        tgt_key = (p['target_kind'], p['target_id'])
+        targets.setdefault(tgt_key, []).append(p)
+
+    for (tgt_kind, tgt_id), incoming in targets.items():
+        # PD only defends ships (bases don't take damage in v1 either way)
+        if tgt_kind != 'ship':
+            # Resolve directly: no PD, just accuracy check, but bases take no damage
+            for p in incoming:
+                status = 'hit' if random.random() <= p['accuracy'] else 'missed'
+                conn.execute(
+                    "UPDATE combat_projectiles SET status = ? WHERE projectile_id = ?",
+                    (status, p['projectile_id'])
+                )
+                log_combat_event(
+                    conn, engagement_id, turn_year, turn_week, round_number,
+                    'projectile', None, 'impact',
+                    target_kind=tgt_kind, target_id=tgt_id,
+                    detail=(f"{p['ammo_type']} from {p['attacker_name']} "
+                             f"{'struck' if status == 'hit' else 'missed'} "
+                             f"{tgt_kind} (bases invulnerable)")
+                )
+            continue
+
+        # Target is a ship — fetch its PD loadout and current state
+        target_state = get_participant_state(conn, game_id, tgt_kind, tgt_id)
+        if not target_state or target_state['integrity'] <= 0:
+            # Target is already destroyed — remaining projectiles wasted
+            for p in incoming:
+                conn.execute(
+                    "UPDATE combat_projectiles SET status = 'missed' "
+                    "WHERE projectile_id = ?",
+                    (p['projectile_id'],)
+                )
+                log_combat_event(
+                    conn, engagement_id, turn_year, turn_week, round_number,
+                    'projectile', None, 'impact',
+                    target_kind=tgt_kind, target_id=tgt_id,
+                    detail=(f"{p['ammo_type']} wasted — {target_state['name'] if target_state else 'target'} already destroyed")
+                )
+            continue
+
+        pd_list = target_state.get('pd', [])
+        # Build flat list of (accuracy, 1) for each PD shot the target can fire
+        pd_shots_remaining = []
+        for pd_name, pd_shots, pd_qty, pd_acc in pd_list:
+            total_pd_shots = pd_shots * pd_qty
+            pd_shots_remaining.extend([(pd_name, pd_acc)] * total_pd_shots)
+
+        # Sort incoming by damage desc so torpedoes get prioritized
+        incoming.sort(key=lambda p: (-p['damage'], p['projectile_id']))
+
+        # Per-target summary tracking
+        target_summary = {
+            'target_name': target_state['name'],
+            'max_integrity': int(target_state.get('max_integrity', 0) or 0),
+            'incoming_count': len(incoming),
+            'missiles_in': sum(1 for p in incoming if p['ammo_type'] == 'missile'),
+            'torps_in': sum(1 for p in incoming if p['ammo_type'] == 'torpedo'),
+            'intercepted': 0,
+            'missiles_intercepted': 0,
+            'torps_intercepted': 0,
+            'pd_shots_total': len(pd_shots_remaining),
+            'pd_shots_used': 0,
+            'pd_hits': 0,
+            'hits': 0,
+            'misses': 0,
+            'wasted': 0,
+            'missiles_hit': 0,
+            'torps_hit': 0,
+            'total_shield_absorbed': 0,
+            'total_armour_absorbed': 0,
+            'total_hull_damage': 0,
+            'final_integrity': target_state['integrity'],
+            'final_sp': target_state.get('shield_sp', 0) or 0,
+            'final_thk': 0,
+        }
+        tgt_size = target_state.get('ship_size') or 0
+        target_destroyed = False
+
+        for p in incoming:
+            if target_destroyed:
+                # Target dead — remaining projectiles wasted
+                conn.execute(
+                    "UPDATE combat_projectiles SET status = 'missed' "
+                    "WHERE projectile_id = ?",
+                    (p['projectile_id'],)
+                )
+                target_summary['wasted'] += 1
+                continue
+
+            # PD intercept: each PD shot is a sequential chance to kill the
+            # projectile. Stops at first successful hit.
+            intercepted = False
+            for _ in range(len(pd_shots_remaining)):
+                if not pd_shots_remaining:
+                    break
+                pd_name, pd_acc = pd_shots_remaining.pop(0)
+                target_summary['pd_shots_used'] += 1
+                if random.random() <= pd_acc:
+                    # PD hits — projectile destroyed
+                    target_summary['pd_hits'] += 1
+                    intercepted = True
+                    break
+
+            if intercepted:
+                conn.execute(
+                    "UPDATE combat_projectiles SET status = 'intercepted' "
+                    "WHERE projectile_id = ?",
+                    (p['projectile_id'],)
+                )
+                target_summary['intercepted'] += 1
+                if p['ammo_type'] == 'missile':
+                    target_summary['missiles_intercepted'] += 1
+                else:
+                    target_summary['torps_intercepted'] += 1
+                continue
+
+            # Not intercepted — roll projectile accuracy
+            if random.random() > p['accuracy']:
+                conn.execute(
+                    "UPDATE combat_projectiles SET status = 'missed' "
+                    "WHERE projectile_id = ?",
+                    (p['projectile_id'],)
+                )
+                target_summary['misses'] += 1
+                continue
+
+            # Hit! Apply damage through the normal pipeline
+            dmg_result = apply_damage_to_ship(
+                conn, tgt_id, p['damage'],
+                attacker_kind=p['attacker_kind'],
+                attacker_id=p['attacker_id'],
+                attacker_name=p['attacker_name'],
+                attacker_col=None, attacker_row=None,
+                turn_year=turn_year, turn_week=turn_week,
+                tick=round_number,
+            )
+            conn.execute(
+                "UPDATE combat_projectiles SET status = 'hit' "
+                "WHERE projectile_id = ?",
+                (p['projectile_id'],)
+            )
+            target_summary['hits'] += 1
+            if p['ammo_type'] == 'missile':
+                target_summary['missiles_hit'] += 1
+            else:
+                target_summary['torps_hit'] += 1
+            target_summary['total_shield_absorbed'] += dmg_result['absorbed_by_shields']
+            target_summary['total_armour_absorbed'] += dmg_result['absorbed_by_armour']
+            target_summary['total_hull_damage'] += dmg_result['damage_through']
+            target_summary['final_integrity'] = dmg_result['new_integrity']
+            target_summary['final_sp'] = dmg_result['shield_sp_after']
+            target_summary['final_thk'] = dmg_result['shield_thickness_after']
+            if dmg_result['new_integrity'] <= 0:
+                target_destroyed = True
+                log_combat_event(
+                    conn, engagement_id, turn_year, turn_week, round_number,
+                    tgt_kind, tgt_id, 'destroyed',
+                    detail=f"{target_state['name']} destroyed by incoming {p['ammo_type']} from {p['attacker_name']}"
+                )
+                pid = p_record_map.get((tgt_kind, tgt_id))
+                if pid:
+                    mark_participant_left(conn, pid, turn_year, turn_week,
+                                            round_number, 'destroyed', 0)
+
+        # Build and log the impact summary
+        s = target_summary
+        bits = []
+        # Incoming count
+        in_bits = []
+        if s['missiles_in']:
+            in_bits.append(f"{s['missiles_in']} missile{'s' if s['missiles_in'] != 1 else ''}")
+        if s['torps_in']:
+            in_bits.append(f"{s['torps_in']} torpedo{'es' if s['torps_in'] != 1 else ''}")
+        incoming_desc = " + ".join(in_bits)
+        # PD summary
+        pd_bits = []
+        if s['pd_shots_total']:
+            pd_bits.append(
+                f"PD fired {s['pd_shots_used']}/{s['pd_shots_total']} shots, "
+                f"intercepted {s['intercepted']}")
+        else:
+            if s['incoming_count'] > 0:
+                pd_bits.append("no PD defence")
+        # Hits/misses
+        outcome_bits = [f"{s['hits']} hit{'s' if s['hits'] != 1 else ''}"]
+        if s['misses']:
+            outcome_bits.append(f"{s['misses']} miss{'es' if s['misses'] != 1 else ''}")
+        if s['wasted']:
+            outcome_bits.append(f"{s['wasted']} wasted")
+        bits.append(f"{incoming_desc} arrived @ {s['target_name']}")
+        if pd_bits:
+            bits.append(" | ".join(pd_bits))
+        bits.append(", ".join(outcome_bits))
+        # Defence breakdown
+        defence_bits = []
+        if s['total_shield_absorbed'] > 0:
+            defence_bits.append(
+                f"shields absorbed {s['total_shield_absorbed']} "
+                f"(SP now {s['final_sp']}, thk {s['final_thk']})")
+        if s['total_armour_absorbed'] > 0:
+            defence_bits.append(f"armour absorbed {s['total_armour_absorbed']}")
+        if defence_bits:
+            bits.append("[" + ", ".join(defence_bits) + "]")
+        bits.append(f"hull -{s['total_hull_damage']}, "
+                     f"hull {int(s['final_integrity'])}/{s['max_integrity']}")
+        detail = " — ".join(bits)
+        log_combat_event(
+            conn, engagement_id, turn_year, turn_week, round_number,
+            'projectile', None, 'impact',
+            target_kind=tgt_kind, target_id=tgt_id,
+            damage=s['total_hull_damage'],
+            integrity_after=s['final_integrity'],
+            detail=detail
+        )
+    conn.commit()
+
+
 def resolve_engagement_round(conn, game_id, engagement, round_number):
     """
     Run one round of combat for an engagement.
@@ -869,6 +1172,12 @@ def resolve_engagement_round(conn, game_id, engagement, round_number):
                         status='resolved')
         return False
 
+    # Resolve arriving projectiles BEFORE the actor loop. These were launched
+    # in previous rounds and arrive this round. PD fires automatically,
+    # destruction propagates into participant state for the actor loop below.
+    resolve_arriving_projectiles(conn, game_id, engagement_id, round_number,
+                                   turn_year, turn_week, p_record_map)
+
     actor_states = list(state_map.values())
 
     # Each actor decides and acts in sequence
@@ -902,73 +1211,245 @@ def resolve_engagement_round(conn, game_id, engagement, round_number):
 
         if action == 'fire':
             tgt = payload
-            # Sum total damage from all weapons, scaled by shots_per_round
-            if actor['kind'] == 'ship':
-                total_dmg = 0
-                weapon_names = []
-                for wname, wdmg, wrange, wshots, wqty in actor.get('weapons', []):
-                    dist = grid_distance(actor['col'], actor['row'], tgt['col'], tgt['row'])
-                    if dist > wrange or wdmg <= 0 or wshots <= 0:
-                        continue
-                    weapon_total = wdmg * wshots * wqty
-                    total_dmg += weapon_total
-                    weapon_names.append(f"{wname}x{wqty}")
-                if total_dmg <= 0:
-                    log_combat_event(conn, engagement_id, turn_year, turn_week,
-                                      round_number, actor['kind'], actor['id'],
-                                      'hold',
-                                      detail='no weapons in range')
-                    continue
-                weapon_summary = ', '.join(weapon_names)
-            else:
-                # Base
-                total_dmg = actor.get('base_weapon_damage', 0)
-                weapon_summary = 'turrets'
-                if total_dmg <= 0:
-                    log_combat_event(conn, engagement_id, turn_year, turn_week,
-                                      round_number, actor['kind'], actor['id'],
-                                      'hold', detail='no weapons')
-                    continue
+            dist = grid_distance(actor['col'], actor['row'], tgt['col'], tgt['row'])
+            MAX_COMBAT_ROUNDS = 6  # must match the turn-round cap elsewhere
 
-            # Apply damage to target
+            # Separate weapons into beams (instant) and launchers (projectile).
+            # Launchers create projectile records that resolve in a later round.
+            beam_shots = []          # list of (weapon, damage, accuracy)
+            launch_groups = []       # list of (weapon, damage, accuracy, ammo_type, flight_rounds, n_shots, wqty)
+            weapon_label_bits = []
+            ammo_depleted_bits = []  # track "wanted to fire but no ammo loaded"
+            overflow_bits = []       # track "wanted to fire but too late in turn"
+            if actor['kind'] == 'ship':
+                missiles_left = actor.get('missiles_loaded', 0) or 0
+                torpedoes_left = actor.get('torpedoes_loaded', 0) or 0
+
+                for w in actor.get('weapons', []):
+                    wname, wdmg, wrange = w['name'], w['damage'], w['range']
+                    wshots, wqty, wacc = w['shots_per_round'], w['qty'], w['accuracy']
+                    ammo_t = w.get('ammo_type')
+                    flight = w.get('flight_rounds', 0) or 0
+                    if dist > wrange or wdmg <= 0 or wshots <= 0 or wqty <= 0:
+                        continue
+                    n_shots = wshots * wqty
+
+                    if ammo_t is None or flight == 0:
+                        # Beam weapon — instant
+                        weapon_label_bits.append(f"{wname}x{wqty}")
+                        for _ in range(n_shots):
+                            beam_shots.append((wname, wdmg, wacc))
+                    else:
+                        # Launcher — check late-turn prevention: projectile
+                        # must arrive by round MAX_COMBAT_ROUNDS
+                        arrives = round_number + flight
+                        if arrives > MAX_COMBAT_ROUNDS:
+                            overflow_bits.append(f"{wname}x{wqty} (arrives R{arrives})")
+                            continue
+                        # Check ammo availability
+                        if ammo_t == 'missile':
+                            available = min(n_shots, missiles_left)
+                        elif ammo_t == 'torpedo':
+                            available = min(n_shots, torpedoes_left)
+                        else:
+                            available = 0
+                        if available <= 0:
+                            ammo_depleted_bits.append(f"{wname}x{wqty} (no {ammo_t}s)")
+                            continue
+                        # Deplete ammo pool (for this round's decisions only;
+                        # DB update happens after the launch loop)
+                        if ammo_t == 'missile':
+                            missiles_left -= available
+                        elif ammo_t == 'torpedo':
+                            torpedoes_left -= available
+                        weapon_label_bits.append(f"{wname}x{wqty}")
+                        launch_groups.append({
+                            'name': wname, 'damage': wdmg, 'accuracy': wacc,
+                            'ammo_type': ammo_t, 'flight_rounds': flight,
+                            'n_shots': available, 'wqty': wqty,
+                            'arrives_on_round': arrives,
+                        })
+
+                weapon_summary = ', '.join(weapon_label_bits) if weapon_label_bits else 'no weapons'
+            else:
+                # Base: one "shot" per round using base_weapon_damage.
+                # Bases don't track per-weapon accuracy in v1; assume 1.0.
+                bwd = actor.get('base_weapon_damage', 0)
+                weapon_summary = 'turrets'
+                if bwd > 0:
+                    beam_shots.append(('turrets', bwd, 1.0))
+
+            if not beam_shots and not launch_groups:
+                # Nothing to fire. If it's because ammo is out, note that.
+                notes = []
+                if ammo_depleted_bits:
+                    notes.append("ammo depleted: " + ", ".join(ammo_depleted_bits))
+                if overflow_bits:
+                    notes.append("skipped (late-turn): " + ", ".join(overflow_bits))
+                detail = "no weapons in range" if not notes else "; ".join(notes)
+                log_combat_event(conn, engagement_id, turn_year, turn_week,
+                                  round_number, actor['kind'], actor['id'],
+                                  'hold',
+                                  detail=detail)
+                continue
+
+            # --- Launch projectiles (missiles/torpedoes) ---
+            # These create combat_projectiles rows and deplete ammo. They do
+            # NOT deal damage this round — they resolve on the arrival round.
+            if launch_groups and tgt['kind'] == 'ship':
+                # Summarize: total missiles and torpedoes launched
+                total_missiles_launched = 0
+                total_torpedoes_launched = 0
+                arrival_rounds = set()
+                for lg in launch_groups:
+                    for _ in range(lg['n_shots']):
+                        conn.execute(
+                            """INSERT INTO combat_projectiles
+                                (engagement_id, launched_turn_year, launched_turn_week,
+                                 launched_on_round, arrives_on_round,
+                                 attacker_kind, attacker_id, attacker_name,
+                                 target_kind, target_id,
+                                 damage, accuracy, ammo_type, status)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'in-flight')""",
+                            (engagement_id, turn_year, turn_week,
+                             round_number, lg['arrives_on_round'],
+                             actor['kind'], actor['id'], actor.get('name'),
+                             tgt['kind'], tgt['id'],
+                             lg['damage'], lg['accuracy'], lg['ammo_type'])
+                        )
+                    if lg['ammo_type'] == 'missile':
+                        total_missiles_launched += lg['n_shots']
+                    else:
+                        total_torpedoes_launched += lg['n_shots']
+                    arrival_rounds.add(lg['arrives_on_round'])
+                # Deplete ammo on the ship record
+                if total_missiles_launched > 0:
+                    conn.execute(
+                        "UPDATE ships SET missiles_loaded = MAX(0, missiles_loaded - ?) "
+                        "WHERE ship_id = ?",
+                        (total_missiles_launched, actor['id'])
+                    )
+                if total_torpedoes_launched > 0:
+                    conn.execute(
+                        "UPDATE ships SET torpedoes_loaded = MAX(0, torpedoes_loaded - ?) "
+                        "WHERE ship_id = ?",
+                        (total_torpedoes_launched, actor['id'])
+                    )
+                conn.commit()
+                # Log the launch as a single summary event
+                launch_bits = []
+                if total_missiles_launched:
+                    launch_bits.append(f"{total_missiles_launched} missile{'s' if total_missiles_launched != 1 else ''}")
+                if total_torpedoes_launched:
+                    launch_bits.append(f"{total_torpedoes_launched} torpedo{'es' if total_torpedoes_launched != 1 else ''}")
+                arrival_str = ", ".join(f"R{r}" for r in sorted(arrival_rounds))
+                detail = (f"launched {' + '.join(launch_bits)} @ {tgt['name']} "
+                           f"(arrive {arrival_str})")
+                log_combat_event(conn, engagement_id, turn_year, turn_week,
+                                  round_number, actor['kind'], actor['id'], 'launch',
+                                  target_kind=tgt['kind'], target_id=tgt['id'],
+                                  detail=detail)
+
+            # --- Resolve beam shots (instant) ---
+            if not beam_shots:
+                continue
+
+            # Now resolve per shot against the target
             if tgt['kind'] == 'ship':
-                dmg_result = apply_damage_to_ship(
-                    conn, tgt['id'], total_dmg,
-                    attacker_kind=actor['kind'],
-                    attacker_id=actor['id'],
-                    attacker_name=actor.get('name'),
-                    attacker_faction_id=actor.get('faction_id'),
-                    attacker_hull_type=actor.get('hull_type'),
-                    attacker_size=actor.get('ship_size'),
-                    attacker_col=actor['col'],
-                    attacker_row=actor['row'],
-                    system_id=actor.get('system_id'),
-                    turn_year=turn_year,
-                    turn_week=turn_week,
-                    tick=round_number,
-                )
-                new_integ = dmg_result['new_integrity']
-                # Build detail string showing defensive breakdown
+                total_fired = len(beam_shots)
+                hits = 0
+                misses = 0
+                total_shield_absorbed = 0
+                total_armour_absorbed = 0
+                total_hull_damage = 0
+                final_integ = tgt['integrity']
+                target_destroyed = False
+
+                # Pull initial target SP and ship_size for the "started with" note
+                tgt_size = tgt.get('ship_size') or 0
+                tgt_max_int = int(tgt.get('max_integrity', 0) or 0)
+
+                for wname, wdmg, wacc in beam_shots:
+                    if target_destroyed:
+                        # Remaining shots wasted — target already dead
+                        break
+                    # Accuracy roll
+                    if random.random() > wacc:
+                        misses += 1
+                        continue
+                    hits += 1
+                    dmg_result = apply_damage_to_ship(
+                        conn, tgt['id'], wdmg,
+                        attacker_kind=actor['kind'],
+                        attacker_id=actor['id'],
+                        attacker_name=actor.get('name'),
+                        attacker_faction_id=actor.get('faction_id'),
+                        attacker_hull_type=actor.get('hull_type'),
+                        attacker_size=actor.get('ship_size'),
+                        attacker_col=actor['col'],
+                        attacker_row=actor['row'],
+                        system_id=actor.get('system_id'),
+                        turn_year=turn_year,
+                        turn_week=turn_week,
+                        tick=round_number,
+                    )
+                    total_shield_absorbed += dmg_result['absorbed_by_shields']
+                    total_armour_absorbed += dmg_result['absorbed_by_armour']
+                    total_hull_damage += dmg_result['damage_through']
+                    final_integ = dmg_result['new_integrity']
+                    final_sp = dmg_result['shield_sp_after']
+                    final_thk = dmg_result['shield_thickness_after']
+                    if final_integ <= 0:
+                        target_destroyed = True
+
+                wasted = total_fired - hits - misses
+
+                # Fetch final SP for the summary line (in case there were no hits at all)
+                if hits == 0:
+                    sp_row = conn.execute(
+                        "SELECT shield_sp FROM ships WHERE ship_id = ?",
+                        (tgt['id'],)
+                    ).fetchone()
+                    final_sp = sp_row['shield_sp'] if sp_row else 0
+                    final_thk = _shield_thickness(final_sp, tgt_size) if tgt_size else 0
+
+                # Build summary detail
+                hit_bits = [f"{hits} hit{'s' if hits != 1 else ''}"]
+                if misses:
+                    hit_bits.append(f"{misses} miss{'es' if misses != 1 else ''}")
+                if wasted:
+                    hit_bits.append(f"{wasted} wasted")
+                # Beam-only weapon list for the summary
+                beam_label_bits = []
+                for w in actor.get('weapons', []):
+                    if (w.get('ammo_type') is None or (w.get('flight_rounds', 0) or 0) == 0) and w['damage'] > 0 and dist <= w['range']:
+                        beam_label_bits.append(f"{w['name']}x{w['qty']}")
+                beam_summary = ', '.join(beam_label_bits) if beam_label_bits else weapon_summary
+                summary_parts = [
+                    f"{total_fired} shot{'s' if total_fired != 1 else ''} "
+                    f"[{beam_summary}] @ {tgt['name']} ({', '.join(hit_bits)})"
+                ]
                 defence_bits = []
-                if dmg_result['absorbed_by_shields'] > 0:
+                if total_shield_absorbed > 0:
                     defence_bits.append(
-                        f"shields -{dmg_result['absorbed_by_shields']} "
-                        f"(SP now {dmg_result['shield_sp_after']}, "
-                        f"thickness {dmg_result['shield_thickness_after']})")
-                if dmg_result['absorbed_by_armour'] > 0:
+                        f"shields absorbed {total_shield_absorbed} "
+                        f"(SP now {final_sp}, thk {final_thk})")
+                if total_armour_absorbed > 0:
                     defence_bits.append(
-                        f"armour -{dmg_result['absorbed_by_armour']}")
-                defence_str = (" [" + ", ".join(defence_bits) + "]") if defence_bits else ""
-                hull_str = f"-{dmg_result['damage_through']} hull" if dmg_result['damage_through'] > 0 else "fully absorbed"
-                max_int = int(tgt.get('max_integrity', 0) or 0)
+                        f"armour absorbed {total_armour_absorbed}")
+                if defence_bits:
+                    summary_parts.append("[" + ", ".join(defence_bits) + "]")
+                summary_parts.append(
+                    f"hull -{total_hull_damage}, hull {int(final_integ)}/{tgt_max_int}"
+                )
+                detail_str = " — ".join(summary_parts)
                 log_combat_event(conn, engagement_id, turn_year, turn_week,
                                   round_number, actor['kind'], actor['id'], 'fire',
                                   target_kind=tgt['kind'], target_id=tgt['id'],
-                                  damage=total_dmg, integrity_after=new_integ,
-                                  detail=(f"fired {weapon_summary} ({int(total_dmg)} dmg) at {tgt['name']}"
-                                           f"{defence_str} -> {hull_str}, hull {int(new_integ)}/{max_int}"))
-                # Check for destruction
-                if new_integ <= 0:
+                                  damage=total_hull_damage,
+                                  integrity_after=final_integ,
+                                  detail=detail_str)
+                if target_destroyed:
                     log_combat_event(conn, engagement_id, turn_year, turn_week,
                                       round_number, tgt['kind'], tgt['id'],
                                       'destroyed',
@@ -978,7 +1459,7 @@ def resolve_engagement_round(conn, game_id, engagement, round_number):
                         mark_participant_left(conn, pid, turn_year, turn_week,
                                                 round_number, 'destroyed', 0)
             else:
-                # Bases don't take damage in v1 — log the attempt but no effect
+                # Bases don't take damage in v1
                 log_combat_event(conn, engagement_id, turn_year, turn_week,
                                   round_number, actor['kind'], actor['id'], 'fire',
                                   target_kind=tgt['kind'], target_id=tgt['id'],
@@ -1085,6 +1566,16 @@ def resolve_active_engagements(conn, game_id, turn_year, turn_week):
             rounds_run += 1
             if not still_active:
                 break
+
+        # End-of-turn: any projectiles still 'in-flight' are expired.
+        # Under Option D (late-turn launch prevention), this should be
+        # an empty set unless a bug let one slip through.
+        conn.execute(
+            """UPDATE combat_projectiles SET status = 'expired'
+               WHERE engagement_id = ? AND status = 'in-flight'""",
+            (engagement_id,)
+        )
+        conn.commit()
 
         summaries.append({
             'engagement_id': engagement_id,

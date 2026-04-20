@@ -322,7 +322,7 @@ If your ship has a DEFEND entry and an ally on that list is attacked within 5 ce
 
 ### Defensive Systems
 
-Ships can reduce incoming damage with armour and shields. Both are optional and stack in this order: **shields → armour → integrity**.
+Ships can reduce incoming damage with armour and shields. Both are optional and stack in this order: **shields → armour → integrity**. Damage is applied **per shot** — each individual weapon firing rolls its own accuracy, hits (or misses), and gets resolved independently through the defensive layers.
 
 **Armour** is a flat damage reduction applied to every hit. Non-ablative (doesn't degrade during combat). Military ships only (future fitting rule — for now it's just a number on the ship). Each point of armour subtracts 1 from every incoming shot.
 
@@ -330,30 +330,70 @@ Ships can reduce incoming damage with armour and shields. Both are optional and 
 
 - **Total SP** = sum of all installed generators
 - **Max Shield SP** = current cap from installed generators
-- **Shield Thickness** = `floor(current_SP / ship_size)` — no minimum, so a partially-drained shield can drop to thickness 0 while SP remains
-- **Per hit**: shields absorb up to `thickness` damage, and SP is depleted by the same amount. Thickness recomputes after every hit
-- **Shields are ablative** — SP goes down as they absorb damage
-- **Shield regeneration**: ships NOT in an active engagement regenerate 10% of max SP per turn. Ships in combat do not regen (damaged shields stay down until the fight ends)
+- **Shield Thickness** = `floor(2 × current_SP / ship_size)` — no minimum, so a partially-drained shield can drop to thickness 0 while SP remains. The factor (currently 2) is tunable in the engine.
+- **Per hit**: shields absorb up to `thickness` damage, and SP is depleted by the same amount. Thickness recomputes after every hit.
+- **Shields are ablative** — SP goes down as they absorb damage.
+- **Shield regeneration**: ships NOT in an active engagement regenerate 10% of max SP per turn. Ships in combat do not regen (damaged shields stay down until the fight ends).
 
-**Example** — a size-300 Military cruiser with 300 SP and armour 3 is hit for 20 damage:
-- Shields absorb 1 (thickness = 300/300 = 1) → SP drops to 299, thickness drops to 0
-- Armour reduces remaining 19 by 3 → 16 damage through
-- Integrity takes 16 damage
-- Next hit: thickness is now 0 (299/300 = 0), shields absorb 0, armour reduces by 3
+**Example** — a size-100 Military cruiser with 900 SP (60 generators) and armour 5 is hit by a 10-damage Beam Cannon shot:
+- Initial thickness = floor(2 × 900 / 100) = 18, so shields absorb all 10 dmg → SP drops to 890, thickness recomputes to floor(2 × 890 / 100) = 17 for the next hit
+- Armour absorbs 0 (nothing got through)
+- Integrity takes 0 damage
+
+As SP depletes, thickness degrades. When thickness drops below the per-shot damage, damage starts bleeding through to armour and hull. A 10-dmg shot hitting a ship whose thickness has dropped to 3: shields absorb 3, armour absorbs 5, 2 damage through to hull.
 
 Both Commercial and Military ships can install shields, but shields take ST that could otherwise be cargo or other components. Only Military ships can carry armour.
 
 **Current defensive components:**
 
-- **Shield Generator Mk1** (id 210) — 30 SP per unit, 20 ST cost, 3,000 cr
+- **Shield Generator Mk1** (id 210) — 15 SP per unit, 20 ST cost, 3,000 cr
+- **Laser Point Defence Mk1** (id 240) — 4 shots/round, accuracy 0.6, no anti-ship use, 10 ST, 2,000 cr
 
 ### Weapons
 
-The current ship-installable weapon is:
+Weapons fire **per shot** each round. Every shot independently rolls against the weapon's accuracy to see if it hits, then resolves through shields → armour → integrity. If the target is destroyed mid-salvo, remaining shots are wasted (can't redirect).
 
-- **Beam Cannon Mk1** (id 200) — damage 10, range 2 cells, 1 shot per round, no ammo, 15 ST cost, 2,500 cr
+**Accuracy** is a probability (0.0 to 1.0) that an individual shot hits. If it misses, no damage is applied and shields are untouched. Weapons with higher accuracy hit more consistently.
 
-Bases use Defence Turret modules; each turret contributes its `defence_rating` as damage per round at range 2.
+**Ship-installable weapons:**
+
+- **Beam Cannon Mk1** (id 200) — damage 10, range 2, 1 shot/round, accuracy 0.8, no ammo, 15 ST, 2,500 cr
+- **Missile Launcher Mk1** (id 220) — damage 30, range 2, 1 shot/round, accuracy 0.9, **1-round flight**, 1 missile/shot, 20 ST, 4,000 cr
+- **Torpedo Launcher Mk1** (id 230) — damage 80, range 2, 1 shot/round, accuracy 0.95, **2-round flight**, 1 torpedo/shot, 40 ST, 8,000 cr
+
+Bases use Defence Turret modules; each turret contributes its `defence_rating` as damage per round at range 2 (always hits — bases don't have accuracy in v1).
+
+### Projectiles (missiles & torpedoes)
+
+Launchers fire projectiles that take time to reach their target. They're more damaging than beams but can be intercepted by Point Defence.
+
+**Flight time** — a missile launched in round N arrives in round N+1; a torpedo launched in round N arrives in round N+2. Launchers whose projectiles would arrive after round 6 (the turn-round cap) will skip firing that round — you'll see a note in the combat log: *"skipped (late-turn): Torpedo Launcher Mk1x1 (arrives R7)"*.
+
+**Magazines** store ammo. A launcher can only fire if there's matching ammo loaded. If it's empty, the launcher holds:
+- **Missile Magazine Mk1** (id 250) — holds 20 missiles, 20 ST, 500 cr
+- **Torpedo Magazine Mk1** (id 260) — holds 5 torpedoes, 30 ST, 800 cr
+
+**Ammo purchase and transfer** — missiles and torpedoes are trade goods available at every starbase:
+- **Missile** (item 501) — 100 cr buy / 60 cr sell, 1 ST per unit in cargo
+- **Torpedo** (item 502) — 500 cr buy / 300 cr sell, 4 ST per unit in cargo
+
+Order syntax:
+- `BUY <base_id> 501 10` — buy 10 missiles into cargo (takes 10 ST)
+- `BUY <base_id> 501 10 MAGAZINE` — buy 10 missiles directly into magazine (bypasses cargo, but limited by magazine free space)
+- `LOAD MAGAZINE MISSILE 5` — transfer 5 missiles from cargo to magazine (1 OC; anywhere)
+- `UNLOAD MAGAZINE TORPEDO 2` — transfer 2 torpedoes from magazine to cargo (1 OC; anywhere)
+
+### Point Defence
+
+Point Defence (PD) turrets automatically intercept incoming projectiles targeting your ship. **PDs do not fire at enemy ships** and are not selectable as weapons — they exist solely to shoot down missiles and torpedoes.
+
+When multiple projectiles arrive in the same round, PD **prioritises torpedoes first** (highest damage), then missiles. Each PD shot is a sequential intercept attempt at the PD's accuracy; the first successful roll destroys that projectile and the PD moves to the next incoming.
+
+**Example** — a ship with 2 Laser PD Mk1s has 2 × 4 = 8 PD shots per round at 0.6 accuracy. Three projectiles incoming (1 torp + 2 missiles): PD attempts to intercept the torpedo first (up to several shots until it hits or it runs out of PD shots for that target), then the missiles.
+
+Projectiles that survive PD still roll their own accuracy, then resolve damage through the normal shields → armour → integrity pipeline.
+
+**A ship whose magazine is empty at the moment of destruction loses its ammo** — the magazine goes up with the ship.
 
 ### Combat Reports
 

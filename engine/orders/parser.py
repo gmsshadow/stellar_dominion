@@ -24,6 +24,8 @@ VALID_COMMANDS = {
     'SCANSURFACE': {'params': 'none', 'description': 'Scan the surface of the planet you are orbiting or landed on'},
     'BUY': {'params': 'trade_order', 'description': 'Buy items from base market'},
     'SELL': {'params': 'trade_order', 'description': 'Sell items to base market'},
+    'LOADMAGAZINE':   {'params': 'magazine_op', 'description': 'Move ammo from cargo to magazine: LOADMAGAZINE <missile|torpedo> <qty>'},
+    'UNLOADMAGAZINE': {'params': 'magazine_op', 'description': 'Move ammo from magazine to cargo: UNLOADMAGAZINE <missile|torpedo> <qty>'},
     'GETMARKET': {'params': 'base_id', 'description': 'View base market prices'},
     'JUMP': {'params': 'system_id', 'description': 'Jump to a linked star system'},
     'MESSAGE': {'params': 'message_order', 'description': 'Send a message to another position'},
@@ -47,6 +49,9 @@ VALID_COMMANDS = {
     'BUILD': {'params': 'build_order', 'description': 'Build/install a module on a base'},
     'SETBUY': {'params': 'setprice_order', 'description': 'Set market buy price for an item'},
     'SETSELL': {'params': 'setprice_order', 'description': 'Set market sell price for an item'},
+    # Magazine management (per-ship): transfer missiles/torpedoes between cargo and magazine
+    'LOAD':   {'params': 'magazine_op', 'description': 'Load ammo into magazine from cargo: LOAD MAGAZINE MISSILE|TORPEDO <qty>'},
+    'UNLOAD': {'params': 'magazine_op', 'description': 'Unload ammo from magazine to cargo: UNLOAD MAGAZINE MISSILE|TORPEDO <qty>'},
 }
 
 
@@ -191,6 +196,37 @@ def parse_order(command_str, params):
             return command, params, f"{command}: must be one of {', '.join(VALID_DOCTRINES)}"
         return command, {'doctrine': value}, None
 
+    elif spec['params'] == 'magazine_op':
+        # LOAD/UNLOAD MAGAZINE MISSILE|TORPEDO <qty>
+        # YAML: {ammo: 'missile'|'torpedo', qty: N}
+        # Text: MAGAZINE MISSILE 5  (the verb LOAD/UNLOAD is the command)
+        VALID_AMMO = ('missile', 'torpedo')
+        if isinstance(params, dict):
+            ammo = str(params.get('ammo', '')).strip().lower()
+            try:
+                qty = int(params.get('qty', params.get('quantity', 0)))
+            except (ValueError, TypeError):
+                return command, params, f"{command}: qty must be a positive integer"
+        elif isinstance(params, str):
+            parts = params.strip().split()
+            # Accept either "MAGAZINE MISSILE N" or "MISSILE N" (MAGAZINE keyword optional)
+            if len(parts) >= 3 and parts[0].upper() == 'MAGAZINE':
+                parts = parts[1:]
+            if len(parts) < 2:
+                return command, params, f"{command}: expected 'MAGAZINE <MISSILE|TORPEDO> <qty>', got '{params}'"
+            ammo = parts[0].strip().lower()
+            try:
+                qty = int(parts[1])
+            except (ValueError, TypeError):
+                return command, params, f"{command}: qty must be a positive integer, got '{parts[1]}'"
+        else:
+            return command, params, f"{command}: expected '<MISSILE|TORPEDO> <qty>'"
+        if ammo not in VALID_AMMO:
+            return command, params, f"{command}: ammo must be one of {', '.join(VALID_AMMO)}, got '{ammo}'"
+        if qty <= 0:
+            return command, params, f"{command}: qty must be positive"
+        return command, {'ammo': ammo, 'qty': qty}, None
+
     elif spec['params'] == 'coordinate':
         if isinstance(params, str):
             col, row = validate_coordinate(params)
@@ -207,35 +243,77 @@ def parse_order(command_str, params):
             return command, params, f"{command}: expected numeric ID, got '{params}'"
 
     elif spec['params'] == 'trade_order':
-        # BUY/SELL: needs base_id, item_id, quantity [INSTALL]
-        # YAML: {base: 45687590, item: 101, qty: 10, install: true} or "45687590 101 10 INSTALL"
-        # Text: BUY 45687590 101 10  or  BUY 45687590 130 2 INSTALL
+        # BUY/SELL: needs base_id, item_id, quantity [INSTALL | MAGAZINE]
+        # INSTALL: on BUY, auto-install the item as a component
+        # MAGAZINE: on BUY, load ammo directly into the ship's magazine
+        # YAML: {base: 45687590, item: 101, qty: 10, install: true|magazine: true}
+        # Text: BUY 45687590 101 10  or  BUY 45687590 130 2 INSTALL  or  BUY 45687590 501 10 MAGAZINE
         if isinstance(params, dict):
             try:
                 base_id = int(params.get('base', params.get('base_id', 0)))
                 item_id = int(params.get('item', params.get('item_id', 0)))
                 qty = int(params.get('qty', params.get('quantity', 0)))
                 install = bool(params.get('install', False))
+                magazine = bool(params.get('magazine', False))
+                if install and magazine:
+                    return command, params, f"{command}: cannot specify both INSTALL and MAGAZINE"
                 if base_id <= 0 or item_id <= 0 or qty <= 0:
                     return command, params, f"{command}: base, item, and qty must be positive integers"
-                return command, {'base_id': base_id, 'item_id': item_id, 'quantity': qty, 'install': install}, None
+                return command, {'base_id': base_id, 'item_id': item_id, 'quantity': qty,
+                                   'install': install, 'magazine': magazine}, None
             except (ValueError, TypeError):
                 return command, params, f"{command}: invalid trade parameters"
         elif isinstance(params, str):
             parts = params.strip().split()
             if len(parts) < 3:
-                return command, params, f"{command}: expected 'base_id item_id quantity [INSTALL]', got '{params}'"
-            install = len(parts) >= 4 and parts[3].upper() == 'INSTALL'
+                return command, params, f"{command}: expected 'base_id item_id quantity [INSTALL|MAGAZINE]', got '{params}'"
+            flag = parts[3].upper() if len(parts) >= 4 else ''
+            install = flag == 'INSTALL'
+            magazine = flag == 'MAGAZINE'
+            if flag and not (install or magazine):
+                return command, params, f"{command}: unknown flag '{parts[3]}' (expected INSTALL or MAGAZINE)"
             try:
                 base_id = int(parts[0])
                 item_id = int(parts[1])
                 qty = int(parts[2])
                 if base_id <= 0 or item_id <= 0 or qty <= 0:
                     return command, params, f"{command}: base, item, and qty must be positive integers"
-                return command, {'base_id': base_id, 'item_id': item_id, 'quantity': qty, 'install': install}, None
+                return command, {'base_id': base_id, 'item_id': item_id, 'quantity': qty,
+                                   'install': install, 'magazine': magazine}, None
             except ValueError:
                 return command, params, f"{command}: expected numeric values, got '{params}'"
         return command, params, f"{command}: expected trade parameters (base_id item_id quantity)"
+
+    elif spec['params'] == 'magazine_op':
+        # LOADMAGAZINE / UNLOADMAGAZINE: ammo_type and quantity.
+        # YAML: {ammo: 'missile', qty: 5} or "missile 5"
+        # Text: LOADMAGAZINE MISSILE 5
+        if isinstance(params, dict):
+            ammo = str(params.get('ammo', params.get('type', ''))).strip().lower()
+            try:
+                qty = int(params.get('qty', params.get('quantity', 0)))
+            except (ValueError, TypeError):
+                return command, params, f"{command}: qty must be a positive integer"
+            if ammo not in ('missile', 'torpedo'):
+                return command, params, f"{command}: ammo type must be 'missile' or 'torpedo', got '{ammo}'"
+            if qty <= 0:
+                return command, params, f"{command}: qty must be a positive integer"
+            return command, {'ammo_type': ammo, 'quantity': qty}, None
+        elif isinstance(params, str):
+            parts = params.strip().split()
+            if len(parts) != 2:
+                return command, params, f"{command}: expected 'missile|torpedo <qty>', got '{params}'"
+            ammo = parts[0].lower()
+            if ammo not in ('missile', 'torpedo'):
+                return command, params, f"{command}: ammo type must be 'missile' or 'torpedo', got '{parts[0]}'"
+            try:
+                qty = int(parts[1])
+            except ValueError:
+                return command, params, f"{command}: qty must be a positive integer, got '{parts[1]}'"
+            if qty <= 0:
+                return command, params, f"{command}: qty must be a positive integer"
+            return command, {'ammo_type': ammo, 'quantity': qty}, None
+        return command, params, f"{command}: expected 'missile|torpedo <qty>'"
 
     elif spec['params'] == 'land_order':
         # LAND: needs body_id x y

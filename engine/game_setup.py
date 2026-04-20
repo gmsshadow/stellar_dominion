@@ -71,6 +71,8 @@ def get_market_weeks_remaining(turn_week):
 # These don't fluctuate — stock refreshes each market cycle.
 FIXED_PRICE_ITEMS = {
     401: {'buy': 5, 'sell': 3, 'stock': 100, 'demand': 100},  # Human Crew
+    501: {'buy': 100, 'sell': 60, 'stock': 500, 'demand': 100},  # Missile
+    502: {'buy': 500, 'sell': 300, 'stock': 100, 'demand': 50},  # Torpedo
 }
 
 

@@ -29,6 +29,8 @@ TU_COSTS = {
     'SCANSURFACE': 20,
     'BUY': 0,          # trading while docked is free
     'SELL': 0,
+    'LOAD': 1,         # load ammo from cargo to magazine
+    'UNLOAD': 1,       # unload ammo from magazine to cargo
     'GETMARKET': 0,
     'JUMP': 60,        # priority estimate only — actual cost from installed drive
     'MESSAGE': 0,      # sending messages is free
@@ -856,6 +858,10 @@ class TurnResolver:
             return self._cmd_buy(state, params)
         elif cmd == 'SELL':
             return self._cmd_sell(state, params)
+        elif cmd == 'LOADMAGAZINE':
+            return self._cmd_loadmagazine(state, params)
+        elif cmd == 'UNLOADMAGAZINE':
+            return self._cmd_unloadmagazine(state, params)
         elif cmd == 'GETMARKET':
             return self._cmd_getmarket(state, params)
         elif cmd == 'JUMP':
@@ -902,6 +908,8 @@ class TurnResolver:
             return self._cmd_combat_list(state, cmd, params)
         elif cmd == 'DOCTRINE':
             return self._cmd_doctrine(state, params)
+        elif cmd in ('LOAD', 'UNLOAD'):
+            return self._cmd_magazine_transfer(state, cmd, params)
         else:
             return {
                 'command': cmd, 'params': params,
@@ -1917,13 +1925,14 @@ class TurnResolver:
         }
 
     def _cmd_buy(self, state, params):
-        """BUY <base_id> <item_id> <quantity> [INSTALL] - buy items from base market."""
+        """BUY <base_id> <item_id> <quantity> [INSTALL|MAGAZINE] - buy items from base market."""
         tu_before = state['tu']
         base_id = params['base_id']
         item_id = params['item_id']
         quantity = params['quantity']
         install = params.get('install', False)
-        install_str = " INSTALL" if install else ""
+        magazine = params.get('magazine', False)
+        install_str = " INSTALL" if install else (" MAGAZINE" if magazine else "")
         params_str = f"{base_id} {item_id} {quantity}{install_str}"
 
         # Must be docked at this base
@@ -1986,6 +1995,19 @@ class TurnResolver:
         # Cap quantity to available stock
         actual_qty = min(quantity, available_stock)
 
+        # MAGAZINE flag: validate the item is missile/torpedo and the ship
+        # has a matching magazine with free space. Rejects cleanly otherwise.
+        MISSILE_ITEM_ID = 501
+        TORPEDO_ITEM_ID = 502
+        if magazine:
+            if item_id not in (MISSILE_ITEM_ID, TORPEDO_ITEM_ID):
+                return {
+                    'command': 'BUY', 'params': params_str,
+                    'tu_before': tu_before, 'tu_after': state['tu'],
+                    'tu_cost': 0, 'success': False,
+                    'message': (f"Cannot BUY MAGAZINE: {item['name']} is not missile/torpedo ammo.")
+                }
+
         # Cap to available credits (skip for unlimited_credits prefects)
         ship = self.get_ship(state['ship_id'])
         prefect = self.conn.execute(
@@ -1997,11 +2019,20 @@ class TurnResolver:
             max_by_credits = int(prefect['credits'] // buy_price)
             actual_qty = min(actual_qty, max_by_credits)
 
-        # Cap to available cargo space (crew don't take cargo space)
-        available_mu = ship['cargo_capacity'] - ship['cargo_used']
-        if item['mass_per_unit'] > 0 and item_id != CREW_ITEM_ID:
-            max_by_cargo = int(available_mu // item['mass_per_unit'])
-            actual_qty = min(actual_qty, max_by_cargo)
+        # Cap to available storage space. When magazine=True and item is
+        # ammo, cap by magazine free space. Otherwise cap by cargo space.
+        if magazine:
+            if item_id == MISSILE_ITEM_ID:
+                mag_free = (ship['max_missiles'] or 0) - (ship['missiles_loaded'] or 0)
+            else:  # torpedo
+                mag_free = (ship['max_torpedoes'] or 0) - (ship['torpedoes_loaded'] or 0)
+            actual_qty = min(actual_qty, max(0, mag_free))
+        else:
+            # Cap to available cargo space (crew don't take cargo space)
+            available_mu = ship['cargo_capacity'] - ship['cargo_used']
+            if item['mass_per_unit'] > 0 and item_id != CREW_ITEM_ID:
+                max_by_cargo = int(available_mu // item['mass_per_unit'])
+                actual_qty = min(actual_qty, max_by_cargo)
 
         # Cap crew purchases to life support capacity
         if item_id == CREW_ITEM_ID:
@@ -2016,13 +2047,21 @@ class TurnResolver:
                 current_crew = self._get_crew_count(state['ship_id'])
                 life_support = ship['life_support_capacity'] if ship['life_support_capacity'] else 20
                 extra_info = f", life support={current_crew}/{life_support}"
+            if magazine:
+                if item_id == MISSILE_ITEM_ID:
+                    extra_info += f", missile magazine={ship['missiles_loaded']}/{ship['max_missiles']}"
+                else:
+                    extra_info += f", torpedo magazine={ship['torpedoes_loaded']}/{ship['max_torpedoes']}"
+                space_info = ""
+            else:
+                space_info = f", cargo space={ship['cargo_capacity'] - ship['cargo_used']} ST free"
             return {
                 'command': 'BUY', 'params': params_str,
                 'tu_before': tu_before, 'tu_after': state['tu'],
                 'tu_cost': 0, 'success': False,
                 'message': (f"Cannot buy any {item['name']}: "
-                            f"stock={available_stock}, credits={prefect['credits']:,.0f} cr, "
-                            f"cargo space={available_mu} ST free{extra_info}.")
+                            f"stock={available_stock}, credits={prefect['credits']:,.0f} cr"
+                            f"{space_info}{extra_info}.")
             }
 
         # Build capped message
@@ -2032,8 +2071,19 @@ class TurnResolver:
                 cap_reasons.append(f"stock={available_stock}")
             if buy_price > 0 and not has_unlimited and int(prefect['credits'] // buy_price) < quantity:
                 cap_reasons.append(f"credits={prefect['credits']:,.0f} cr")
-            if item['mass_per_unit'] > 0 and item_id != CREW_ITEM_ID and int(available_mu // item['mass_per_unit']) < quantity:
-                cap_reasons.append(f"cargo={available_mu} ST free")
+            if magazine:
+                if item_id == MISSILE_ITEM_ID:
+                    mag_free = (ship['max_missiles'] or 0) - (ship['missiles_loaded'] or 0)
+                    if mag_free < quantity:
+                        cap_reasons.append(f"missile magazine free={mag_free}")
+                elif item_id == TORPEDO_ITEM_ID:
+                    mag_free = (ship['max_torpedoes'] or 0) - (ship['torpedoes_loaded'] or 0)
+                    if mag_free < quantity:
+                        cap_reasons.append(f"torpedo magazine free={mag_free}")
+            else:
+                available_mu = ship['cargo_capacity'] - ship['cargo_used']
+                if item['mass_per_unit'] > 0 and item_id != CREW_ITEM_ID and int(available_mu // item['mass_per_unit']) < quantity:
+                    cap_reasons.append(f"cargo={available_mu} ST free")
             if item_id == CREW_ITEM_ID:
                 current_crew = self._get_crew_count(state['ship_id'])
                 life_support = ship['life_support_capacity'] if ship['life_support_capacity'] else 20
@@ -2045,7 +2095,11 @@ class TurnResolver:
 
         total_cost_cr = buy_price * actual_qty
         # Crew don't occupy cargo space - they use life support capacity instead
-        total_mass = 0 if item_id == CREW_ITEM_ID else item['mass_per_unit'] * actual_qty
+        # Magazine ammo bypasses cargo space entirely (stored in magazine)
+        if magazine or item_id == CREW_ITEM_ID:
+            total_mass = 0
+        else:
+            total_mass = item['mass_per_unit'] * actual_qty
 
         # Execute purchase
         if not has_unlimited:
@@ -2065,22 +2119,40 @@ class TurnResolver:
             WHERE price_id = ?
         """, (actual_qty, price_row['price_id']))
 
-        # Add to cargo (merge with existing if same item)
-        existing = self.conn.execute(
-            "SELECT * FROM cargo_items WHERE ship_id = ? AND item_type_id = ?",
-            (state['ship_id'], item_id)
-        ).fetchone()
-        if existing:
-            self.conn.execute(
-                "UPDATE cargo_items SET quantity = quantity + ? WHERE cargo_id = ?",
-                (actual_qty, existing['cargo_id'])
-            )
+        # Add to destination: magazine or cargo
+        if magazine:
+            if item_id == MISSILE_ITEM_ID:
+                self.conn.execute(
+                    "UPDATE ships SET missiles_loaded = missiles_loaded + ? "
+                    "WHERE ship_id = ?",
+                    (actual_qty, state['ship_id'])
+                )
+                dest_str = "missile magazine"
+            else:  # torpedo
+                self.conn.execute(
+                    "UPDATE ships SET torpedoes_loaded = torpedoes_loaded + ? "
+                    "WHERE ship_id = ?",
+                    (actual_qty, state['ship_id'])
+                )
+                dest_str = "torpedo magazine"
         else:
-            stored_mass = 0 if item_id == CREW_ITEM_ID else item['mass_per_unit']
-            self.conn.execute("""
-                INSERT INTO cargo_items (ship_id, item_type_id, item_name, quantity, mass_per_unit)
-                VALUES (?, ?, ?, ?, ?)
-            """, (state['ship_id'], item_id, item['name'], actual_qty, stored_mass))
+            # Add to cargo (merge with existing if same item)
+            existing = self.conn.execute(
+                "SELECT * FROM cargo_items WHERE ship_id = ? AND item_type_id = ?",
+                (state['ship_id'], item_id)
+            ).fetchone()
+            if existing:
+                self.conn.execute(
+                    "UPDATE cargo_items SET quantity = quantity + ? WHERE cargo_id = ?",
+                    (actual_qty, existing['cargo_id'])
+                )
+            else:
+                stored_mass = 0 if item_id == CREW_ITEM_ID else item['mass_per_unit']
+                self.conn.execute("""
+                    INSERT INTO cargo_items (ship_id, item_type_id, item_name, quantity, mass_per_unit)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (state['ship_id'], item_id, item['name'], actual_qty, stored_mass))
+            dest_str = "cargo"
 
         # Sync crew_count and efficiency if buying crew
         if item_id == CREW_ITEM_ID:
@@ -2104,7 +2176,8 @@ class TurnResolver:
             'quantity': actual_qty,
             'message': (f"Bought {actual_qty} {item['name']} ({item_id}) "
                         f"at {buy_price} cr each = {total_cost_cr:,} cr total "
-                        f"from {base_name} ({base_id}). [{total_mass} ST]{capped_msg}")
+                        f"from {base_name} ({base_id}) -> {dest_str}. "
+                        f"[{total_mass} ST]{capped_msg}")
         }
 
     def _cmd_sell(self, state, params):
@@ -3614,6 +3687,163 @@ class TurnResolver:
             'tu_cost': 0, 'success': True,
             'message': f"Combat doctrine set to {doctrine.upper()} (was {old.upper() if old else 'DEFENSIVE'})."
         }
+
+    def _cmd_magazine_transfer(self, state, cmd, params):
+        """LOAD MAGAZINE <ammo> <qty> / UNLOAD MAGAZINE <ammo> <qty>.
+        Moves missiles or torpedoes between cargo and magazine. 1 OC per order.
+        Can be performed anywhere (docked or not).
+        """
+        tu_before = state['tu']
+        ship_id = state['ship_id']
+        ammo = params.get('ammo') if isinstance(params, dict) else None
+        qty = params.get('qty') if isinstance(params, dict) else None
+        params_str = f"MAGAZINE {ammo.upper() if ammo else '?'} {qty}"
+
+        if ammo not in ('missile', 'torpedo') or not isinstance(qty, int) or qty <= 0:
+            return {
+                'command': cmd, 'params': params_str,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': False,
+                'message': f"{cmd}: invalid parameters (ammo={ammo}, qty={qty})."
+            }
+
+        oc_cost = 1
+        if state['tu'] < oc_cost:
+            return {
+                'command': cmd, 'params': params_str,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': False,
+                'message': f"{cmd}: insufficient OC (need {oc_cost}, have {state['tu']})."
+            }
+
+        MISSILE_ITEM_ID = 501
+        TORPEDO_ITEM_ID = 502
+        item_id = MISSILE_ITEM_ID if ammo == 'missile' else TORPEDO_ITEM_ID
+        ammo_label = 'missile' if ammo == 'missile' else 'torpedo'
+        mag_col_cur = 'missiles_loaded' if ammo == 'missile' else 'torpedoes_loaded'
+        mag_col_max = 'max_missiles' if ammo == 'missile' else 'max_torpedoes'
+
+        ship = self.get_ship(ship_id)
+        item = self.conn.execute(
+            "SELECT name, mass_per_unit FROM trade_goods WHERE item_id = ?",
+            (item_id,)
+        ).fetchone()
+        mass_per = item['mass_per_unit'] if item else (1 if ammo == 'missile' else 4)
+        item_name = item['name'] if item else ammo_label.capitalize()
+
+        cur_mag = ship[mag_col_cur] or 0
+        max_mag = ship[mag_col_max] or 0
+
+        cargo_row = self.conn.execute(
+            "SELECT cargo_id, quantity FROM cargo_items "
+            "WHERE ship_id = ? AND item_type_id = ?",
+            (ship_id, item_id)
+        ).fetchone()
+        cargo_qty = cargo_row['quantity'] if cargo_row else 0
+
+        if cmd == 'LOAD':
+            # cargo -> magazine
+            mag_free = max_mag - cur_mag
+            if mag_free <= 0:
+                return {
+                    'command': cmd, 'params': params_str,
+                    'tu_before': tu_before, 'tu_after': state['tu'],
+                    'tu_cost': 0, 'success': False,
+                    'message': f"LOAD: {ammo_label} magazine is full ({cur_mag}/{max_mag})."
+                }
+            if cargo_qty <= 0:
+                return {
+                    'command': cmd, 'params': params_str,
+                    'tu_before': tu_before, 'tu_after': state['tu'],
+                    'tu_cost': 0, 'success': False,
+                    'message': f"LOAD: no {ammo_label}s in cargo to load."
+                }
+            actual = min(qty, mag_free, cargo_qty)
+            cap_bits = []
+            if mag_free < qty:
+                cap_bits.append(f"magazine free={mag_free}")
+            if cargo_qty < qty:
+                cap_bits.append(f"cargo={cargo_qty}")
+            cap_msg = f" (capped from {qty} to {actual}: {', '.join(cap_bits)})" if cap_bits else ""
+
+            # Update magazine +actual, cargo -actual, cargo_used -actual*mass
+            self.conn.execute(
+                f"UPDATE ships SET {mag_col_cur} = {mag_col_cur} + ?, "
+                f"cargo_used = MAX(0, cargo_used - ?) WHERE ship_id = ?",
+                (actual, actual * mass_per, ship_id)
+            )
+            if cargo_qty == actual:
+                self.conn.execute("DELETE FROM cargo_items WHERE cargo_id = ?",
+                                    (cargo_row['cargo_id'],))
+            else:
+                self.conn.execute(
+                    "UPDATE cargo_items SET quantity = quantity - ? WHERE cargo_id = ?",
+                    (actual, cargo_row['cargo_id'])
+                )
+            state['tu'] -= oc_cost
+            self.conn.commit()
+            return {
+                'command': cmd, 'params': params_str,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': oc_cost, 'success': True,
+                'message': (f"Loaded {actual} {item_name}(s) into magazine "
+                             f"({cur_mag + actual}/{max_mag}){cap_msg}.")
+            }
+
+        else:  # UNLOAD
+            # magazine -> cargo
+            if cur_mag <= 0:
+                return {
+                    'command': cmd, 'params': params_str,
+                    'tu_before': tu_before, 'tu_after': state['tu'],
+                    'tu_cost': 0, 'success': False,
+                    'message': f"UNLOAD: {ammo_label} magazine is empty."
+                }
+            # Cargo free space check
+            cargo_free_mass = (ship['cargo_capacity'] or 0) - (ship['cargo_used'] or 0)
+            max_by_cargo = cargo_free_mass // mass_per if mass_per > 0 else qty
+            actual = min(qty, cur_mag, max_by_cargo)
+            if actual <= 0:
+                return {
+                    'command': cmd, 'params': params_str,
+                    'tu_before': tu_before, 'tu_after': state['tu'],
+                    'tu_cost': 0, 'success': False,
+                    'message': (f"UNLOAD: no cargo space for {ammo_label}s "
+                                 f"(free={cargo_free_mass} ST, need {mass_per} ST each).")
+                }
+            cap_bits = []
+            if cur_mag < qty:
+                cap_bits.append(f"magazine has {cur_mag}")
+            if max_by_cargo < qty:
+                cap_bits.append(f"cargo free={cargo_free_mass} ST")
+            cap_msg = f" (capped from {qty} to {actual}: {', '.join(cap_bits)})" if cap_bits else ""
+
+            self.conn.execute(
+                f"UPDATE ships SET {mag_col_cur} = MAX(0, {mag_col_cur} - ?), "
+                f"cargo_used = cargo_used + ? WHERE ship_id = ?",
+                (actual, actual * mass_per, ship_id)
+            )
+            if cargo_row:
+                self.conn.execute(
+                    "UPDATE cargo_items SET quantity = quantity + ? WHERE cargo_id = ?",
+                    (actual, cargo_row['cargo_id'])
+                )
+            else:
+                self.conn.execute(
+                    """INSERT INTO cargo_items
+                       (ship_id, item_type_id, item_name, quantity, mass_per_unit)
+                       VALUES (?, ?, ?, ?, ?)""",
+                    (ship_id, item_id, item_name, actual, mass_per)
+                )
+            state['tu'] -= oc_cost
+            self.conn.commit()
+            return {
+                'command': cmd, 'params': params_str,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': oc_cost, 'success': True,
+                'message': (f"Unloaded {actual} {item_name}(s) to cargo "
+                             f"(magazine: {cur_mag - actual}/{max_mag}){cap_msg}.")
+            }
 
     def resolve_prefect_orders(self, prefect_orders_map):
         """

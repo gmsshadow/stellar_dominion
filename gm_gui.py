@@ -1846,6 +1846,32 @@ class StellarDominionGUI:
         ttk.Label(sp_row, text="(max auto-computed from installed shield generators)",
                    foreground="#888", font=("", 8, "italic")).pack(side=tk.LEFT)
 
+        # Missiles row
+        m_row = ttk.Frame(cstate)
+        m_row.pack(fill=tk.X, pady=2)
+        ttk.Label(m_row, text="Missiles:", width=12).pack(side=tk.LEFT)
+        self.ship_ed_missiles_entry = ttk.Entry(m_row, width=8)
+        self.ship_ed_missiles_entry.pack(side=tk.LEFT, padx=(2, 4))
+        ttk.Label(m_row, text="/").pack(side=tk.LEFT)
+        self.ship_ed_max_missiles_label = ttk.Label(m_row, text="-", width=10,
+                                                      foreground="#555")
+        self.ship_ed_max_missiles_label.pack(side=tk.LEFT, padx=(4, 10))
+        ttk.Label(m_row, text="(max auto-computed from installed missile magazines)",
+                   foreground="#888", font=("", 8, "italic")).pack(side=tk.LEFT)
+
+        # Torpedoes row
+        t_row = ttk.Frame(cstate)
+        t_row.pack(fill=tk.X, pady=2)
+        ttk.Label(t_row, text="Torpedoes:", width=12).pack(side=tk.LEFT)
+        self.ship_ed_torpedoes_entry = ttk.Entry(t_row, width=8)
+        self.ship_ed_torpedoes_entry.pack(side=tk.LEFT, padx=(2, 4))
+        ttk.Label(t_row, text="/").pack(side=tk.LEFT)
+        self.ship_ed_max_torpedoes_label = ttk.Label(t_row, text="-", width=10,
+                                                       foreground="#555")
+        self.ship_ed_max_torpedoes_label.pack(side=tk.LEFT, padx=(4, 10))
+        ttk.Label(t_row, text="(max auto-computed from installed torpedo magazines)",
+                   foreground="#888", font=("", 8, "italic")).pack(side=tk.LEFT)
+
         btn_row = ttk.Frame(cstate)
         btn_row.pack(fill=tk.X, pady=(4, 0))
         ttk.Button(btn_row, text="Save Combat State", width=20,
@@ -2420,13 +2446,19 @@ class StellarDominionGUI:
         self.ship_ed_max_integrity_label.config(text="-")
         self.ship_ed_shield_entry.delete(0, tk.END)
         self.ship_ed_max_shield_label.config(text="-")
+        self.ship_ed_missiles_entry.delete(0, tk.END)
+        self.ship_ed_max_missiles_label.config(text="-")
+        self.ship_ed_torpedoes_entry.delete(0, tk.END)
+        self.ship_ed_max_torpedoes_label.config(text="-")
         if self.ship_ed_current_id is None:
             return
         try:
             conn = self._ship_ed_rw_conn()
             row = conn.execute(
                 """SELECT combat_doctrine, integrity, max_integrity,
-                          shield_sp, max_shield_sp
+                          shield_sp, max_shield_sp,
+                          missiles_loaded, max_missiles,
+                          torpedoes_loaded, max_torpedoes
                    FROM ships WHERE ship_id = ?""",
                 (self.ship_ed_current_id,)
             ).fetchone()
@@ -2438,10 +2470,18 @@ class StellarDominionGUI:
                 max_integ = row['max_integrity'] if row['max_integrity'] is not None else 0
                 sp = row['shield_sp'] if row['shield_sp'] is not None else 0
                 max_sp = row['max_shield_sp'] if row['max_shield_sp'] is not None else 0
+                miss = row['missiles_loaded'] if row['missiles_loaded'] is not None else 0
+                max_miss = row['max_missiles'] if row['max_missiles'] is not None else 0
+                torp = row['torpedoes_loaded'] if row['torpedoes_loaded'] is not None else 0
+                max_torp = row['max_torpedoes'] if row['max_torpedoes'] is not None else 0
                 self.ship_ed_integrity_entry.insert(0, f"{int(integ)}")
                 self.ship_ed_max_integrity_label.config(text=f"{int(max_integ)}")
                 self.ship_ed_shield_entry.insert(0, f"{int(sp)}")
                 self.ship_ed_max_shield_label.config(text=f"{int(max_sp)}")
+                self.ship_ed_missiles_entry.insert(0, f"{int(miss)}")
+                self.ship_ed_max_missiles_label.config(text=f"{int(max_miss)}")
+                self.ship_ed_torpedoes_entry.insert(0, f"{int(torp)}")
+                self.ship_ed_max_torpedoes_label.config(text=f"{int(max_torp)}")
             lists = conn.execute(
                 "SELECT list_type, entry_type, entry_id FROM ship_combat_lists "
                 "WHERE game_id = ? AND ship_id = ? "
@@ -2458,32 +2498,46 @@ class StellarDominionGUI:
             self._ship_ed_msg(f"Refresh combat failed: {ex}", ok=False)
 
     def _ship_ed_save_combat_state(self):
-        """Save integrity and shield_sp values. Both are clamped to their max."""
+        """Save integrity, shield_sp, missiles, torpedoes. All clamped to max."""
         if self.ship_ed_current_id is None:
             self._ship_ed_msg("Load a ship first.", ok=False)
             return
         try:
             integ_str = self.ship_ed_integrity_entry.get().strip()
             sp_str = self.ship_ed_shield_entry.get().strip()
-            if not integ_str.isdigit() or not sp_str.isdigit():
-                messagebox.showerror("Input error",
-                                      "Integrity and Shield SP must be non-negative integers.")
-                return
+            miss_str = self.ship_ed_missiles_entry.get().strip()
+            torp_str = self.ship_ed_torpedoes_entry.get().strip()
+            for label, v in [('integrity', integ_str), ('shield SP', sp_str),
+                              ('missiles', miss_str), ('torpedoes', torp_str)]:
+                if not v.isdigit():
+                    messagebox.showerror("Input error",
+                                          f"{label} must be a non-negative integer (got '{v}').")
+                    return
             integ = int(integ_str)
             sp = int(sp_str)
+            miss = int(miss_str)
+            torp = int(torp_str)
             conn = self._ship_ed_rw_conn()
             row = conn.execute(
-                "SELECT max_integrity, max_shield_sp FROM ships WHERE ship_id = ?",
+                """SELECT max_integrity, max_shield_sp, max_missiles, max_torpedoes
+                   FROM ships WHERE ship_id = ?""",
                 (self.ship_ed_current_id,)
             ).fetchone()
             max_integ = int(row['max_integrity'] or 0)
             max_sp = int(row['max_shield_sp'] or 0)
+            max_miss = int(row['max_missiles'] or 0)
+            max_torp = int(row['max_torpedoes'] or 0)
             # Clamp to maxes
             clamped_integ = min(integ, max_integ) if max_integ > 0 else integ
             clamped_sp = min(sp, max_sp)
+            clamped_miss = min(miss, max_miss)
+            clamped_torp = min(torp, max_torp)
             conn.execute(
-                "UPDATE ships SET integrity = ?, shield_sp = ? WHERE ship_id = ?",
-                (clamped_integ, clamped_sp, self.ship_ed_current_id)
+                """UPDATE ships SET integrity = ?, shield_sp = ?,
+                          missiles_loaded = ?, torpedoes_loaded = ?
+                   WHERE ship_id = ?""",
+                (clamped_integ, clamped_sp, clamped_miss, clamped_torp,
+                 self.ship_ed_current_id)
             )
             conn.commit()
             conn.close()
@@ -2492,6 +2546,10 @@ class StellarDominionGUI:
                 msg_bits.append(f"integrity clamped to {clamped_integ} (max {max_integ})")
             if clamped_sp != sp:
                 msg_bits.append(f"shield SP clamped to {clamped_sp} (max {max_sp})")
+            if clamped_miss != miss:
+                msg_bits.append(f"missiles clamped to {clamped_miss} (max {max_miss})")
+            if clamped_torp != torp:
+                msg_bits.append(f"torpedoes clamped to {clamped_torp} (max {max_torp})")
             note = " — " + "; ".join(msg_bits) if msg_bits else ""
             self._ship_ed_msg(f"Combat state saved{note}")
             self._ship_ed_refresh_combat()
@@ -2499,18 +2557,22 @@ class StellarDominionGUI:
             self._ship_ed_msg(f"Save combat state failed: {ex}", ok=False)
 
     def _ship_ed_repair_full(self):
-        """Set integrity and shield_sp to their respective maxes."""
+        """Set integrity, shield_sp, missiles, torpedoes to their maxes."""
         if self.ship_ed_current_id is None:
             self._ship_ed_msg("Load a ship first.", ok=False)
             return
         if not messagebox.askyesno("Confirm",
-                                      "Restore integrity and shields to full?"):
+                                      "Restore integrity, shields, and magazines to full?"):
             return
         try:
             conn = self._ship_ed_rw_conn()
             conn.execute(
-                "UPDATE ships SET integrity = max_integrity, "
-                "shield_sp = max_shield_sp WHERE ship_id = ?",
+                """UPDATE ships SET
+                       integrity = max_integrity,
+                       shield_sp = max_shield_sp,
+                       missiles_loaded = max_missiles,
+                       torpedoes_loaded = max_torpedoes
+                   WHERE ship_id = ?""",
                 (self.ship_ed_current_id,)
             )
             conn.commit()
