@@ -583,6 +583,52 @@ def generate_ship_report(turn_result, db_path=None, game_id="OMICRON101",
     ))
     lines.append(section_line())
 
+    # Combat lists (target / defend / avoid)
+    list_rows = conn.execute(
+        """SELECT list_type, entry_type, entry_id
+           FROM ship_combat_lists
+           WHERE game_id = ? AND ship_id = ?
+           ORDER BY list_type, entry_type, entry_id""",
+        (game_id, ship['ship_id'])
+    ).fetchall()
+    grouped = {'target': [], 'defend': [], 'avoid': []}
+    for r in list_rows:
+        if r['list_type'] in grouped:
+            grouped[r['list_type']].append((r['entry_type'], r['entry_id']))
+
+    def _describe_entry(conn, entry_type, entry_id):
+        """Resolve an entry to 'Name (id)' form. Falls back to raw on lookup failure."""
+        if entry_type == 'ship':
+            r = conn.execute("SELECT name FROM ships WHERE ship_id = ?", (entry_id,)).fetchone()
+            if r:
+                return f"{r['name']} (ship {entry_id})"
+            return f"ship {entry_id}"
+        if entry_type == 'base':
+            # Could be starbase, port, or outpost — try each
+            for tbl, col in [('starbases', 'base_id'), ('surface_ports', 'port_id'),
+                              ('outposts', 'outpost_id')]:
+                r = conn.execute(f"SELECT name FROM {tbl} WHERE {col} = ?", (entry_id,)).fetchone()
+                if r:
+                    return f"{r['name']} (base {entry_id})"
+            return f"base {entry_id}"
+        if entry_type == 'faction':
+            r = conn.execute("SELECT name FROM factions WHERE faction_id = ?", (entry_id,)).fetchone()
+            if r:
+                return f"{r['name']} (faction {entry_id})"
+            return f"faction {entry_id}"
+        return f"{entry_type} {entry_id}"
+
+    lines.append(section_line("COMBAT LISTS"))
+    for list_type in ('target', 'defend', 'avoid'):
+        entries = grouped[list_type]
+        if not entries:
+            lines.append(section_line(f"  {list_type.upper()}: (empty)"))
+        else:
+            lines.append(section_line(f"  {list_type.upper()}:"))
+            for entry_type, entry_id in entries:
+                lines.append(section_line(f"    {_describe_entry(conn, entry_type, entry_id)}"))
+    lines.append(section_line())
+
     # ==========================================
     # ==========================================
     # INSTALLED COMPONENTS
@@ -948,6 +994,50 @@ def generate_base_report(base_type, base_id, db_path=None, game_id="OMICRON101",
         lines.append(section_line(f"Total Modules: {stats['total_modules']}"))
     else:
         lines.append(section_line("No modules installed."))
+    lines.append(section_line())
+
+    # ==========================================
+    # COMBAT LISTS (target + defend; no avoid for bases)
+    # ==========================================
+    base_kind = base_type  # 'starbase' | 'port' | 'outpost'
+    list_rows = conn.execute(
+        """SELECT list_type, entry_type, entry_id
+           FROM base_combat_lists
+           WHERE game_id = ? AND base_kind = ? AND base_id = ?
+           ORDER BY list_type, entry_type, entry_id""",
+        (game_id, base_kind, base_id)
+    ).fetchall()
+    grouped = {'target': [], 'defend': []}
+    for r in list_rows:
+        if r['list_type'] in grouped:
+            grouped[r['list_type']].append((r['entry_type'], r['entry_id']))
+
+    def _describe_entry(conn, entry_type, entry_id):
+        if entry_type == 'ship':
+            r = conn.execute("SELECT name FROM ships WHERE ship_id = ?", (entry_id,)).fetchone()
+            return f"{r['name']} (ship {entry_id})" if r else f"ship {entry_id}"
+        if entry_type == 'base':
+            for tbl, col in [('starbases', 'base_id'), ('surface_ports', 'port_id'),
+                              ('outposts', 'outpost_id')]:
+                r = conn.execute(f"SELECT name FROM {tbl} WHERE {col} = ?", (entry_id,)).fetchone()
+                if r:
+                    return f"{r['name']} (base {entry_id})"
+            return f"base {entry_id}"
+        if entry_type == 'faction':
+            r = conn.execute("SELECT name FROM factions WHERE faction_id = ?", (entry_id,)).fetchone()
+            return f"{r['name']} (faction {entry_id})" if r else f"faction {entry_id}"
+        return f"{entry_type} {entry_id}"
+
+    lines.append(section_header("Combat Lists"))
+    lines.append(section_line())
+    for list_type in ('target', 'defend'):
+        entries = grouped[list_type]
+        if not entries:
+            lines.append(section_line(f"  {list_type.upper()}: (empty)"))
+        else:
+            lines.append(section_line(f"  {list_type.upper()}:"))
+            for entry_type, entry_id in entries:
+                lines.append(section_line(f"    {_describe_entry(conn, entry_type, entry_id)}"))
     lines.append(section_line())
 
     # ==========================================
