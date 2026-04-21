@@ -102,7 +102,11 @@ def generate_market_prices(conn, game_id, turn_year, turn_week):
         week_averages[g['item_id']] = g['base_price'] * fluctuation
 
     configs = conn.execute(
-        "SELECT * FROM base_trade_config WHERE game_id = ?", (game_id,)
+        """SELECT btc.* FROM base_trade_config btc
+           LEFT JOIN starbases sb ON btc.base_id = sb.base_id AND btc.game_id = sb.game_id
+           WHERE btc.game_id = ?
+             AND (sb.status IS NULL OR sb.status = 'active')""",
+        (game_id,)
     ).fetchall()
 
     # Clear any existing prices for this cycle start (idempotent)

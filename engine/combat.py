@@ -1078,9 +1078,12 @@ def propagate_defend_responses(conn, game_id, engagement, turn_year, turn_week,
                         f"(distance {d} cells)")
             )
 
-    # Bases (starbases) — same logic but no movement
+    # Bases (starbases) — same logic but no movement. Destroyed bases cannot
+    # defend, cannot engage, and cannot be drawn into fresh fights.
     candidate_bases = conn.execute(
-        """SELECT * FROM starbases WHERE game_id = ? AND system_id = ?""",
+        """SELECT * FROM starbases
+           WHERE game_id = ? AND system_id = ?
+             AND (status IS NULL OR status = 'active')""",
         (game_id, sys_id)
     ).fetchall()
     for b in candidate_bases:

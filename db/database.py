@@ -868,7 +868,8 @@ def get_connection(state_db_path=None, universe_db_path=None):
     ).fetchall()
     # Include starbases that have no trade config yet
     all_starbases = conn.execute(
-        "SELECT base_id, game_id FROM starbases"
+        "SELECT base_id, game_id FROM starbases "
+        "WHERE (status IS NULL OR status = 'active')"
     ).fetchall()
     configs_to_add = set()
     for b in bases:

@@ -701,7 +701,16 @@ def generate_ship_report(turn_result, db_path=None, game_id="OMICRON101",
                 return "- " + " ".join(parts)
             else:
                 kind = ctype.title() if ctype else "Object"
-                return f"- {kind} {c['object_name']} ({c['object_id']}) at {loc}"
+                # Flag destroyed starbases
+                destroyed_flag = ""
+                if ctype == 'starbase':
+                    sb_row = conn.execute(
+                        "SELECT status FROM starbases WHERE base_id = ?",
+                        (c['object_id'],)
+                    ).fetchone()
+                    if sb_row and sb_row['status'] == 'destroyed':
+                        destroyed_flag = " [DESTROYED]"
+                return f"- {kind} {c['object_name']} ({c['object_id']}) at {loc}{destroyed_flag}"
 
         if current_contacts:
             lines.append(section_line("Passive contacts this turn:"))
@@ -913,6 +922,13 @@ def generate_base_report(base_type, base_id, db_path=None, game_id="OMICRON101",
     lines.append("")
     lines.append(center_text(f"{display_name} ({id_field})"))
     lines.append("")
+    # Destruction banner (starbases only; ports/outposts invulnerable in v1)
+    base_destroyed = False
+    if base_type == 'starbase' and 'status' in base.keys():
+        if base['status'] == 'destroyed':
+            base_destroyed = True
+            lines.append(center_text("*** DESTROYED — STATION WRECKAGE ***"))
+            lines.append("")
     lines.append(f"Printed on {now_str}, Star Date {turn_year}.{turn_week}")
     lines.append("")
 

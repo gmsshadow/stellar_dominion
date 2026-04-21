@@ -683,9 +683,11 @@ class TurnResolver:
                 'symbol': b['map_symbol']
             })
 
-        # Bases
+        # Bases (active only; destroyed bases are wreckage and don't appear
+        # in scan object listings)
         bases = self.conn.execute(
-            "SELECT * FROM starbases WHERE system_id = ? AND game_id = ?",
+            """SELECT * FROM starbases WHERE system_id = ? AND game_id = ?
+                 AND (status IS NULL OR status = 'active')""",
             (system_id, self.game_id)
         ).fetchall()
         for base in bases:
@@ -1253,7 +1255,9 @@ class TurnResolver:
             ).fetchall()
 
             candidate_starbases = self.conn.execute(
-                "SELECT *, 'starbase' AS kind, base_id FROM starbases WHERE system_id = ? AND game_id = ?",
+                """SELECT *, 'starbase' AS kind, base_id FROM starbases
+                   WHERE system_id = ? AND game_id = ?
+                     AND (status IS NULL OR status = 'active')""",
                 (system_id, self.game_id)
             ).fetchall()
 
@@ -1562,6 +1566,16 @@ class TurnResolver:
                 'tu_cost': 0,
                 'success': False,
                 'message': f"Unable to dock: base {base_id} not found."
+            }
+
+        # Block docking at destroyed bases
+        if ('status' in base.keys() and base['status'] == 'destroyed'):
+            return {
+                'command': 'DOCK', 'params': base_id,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0,
+                'success': False,
+                'message': f"Unable to dock: {base['name']} ({base_id}) has been destroyed."
             }
 
         # Check ship is at base location
