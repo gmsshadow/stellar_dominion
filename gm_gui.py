@@ -2600,17 +2600,65 @@ class StellarDominionGUI:
             return
         lt = self.ship_ed_list_list.get()
         et = self.ship_ed_list_entrytype.get()
-        eid = self.ship_ed_list_entryid.get().strip()
-        if not eid.isdigit():
+        eid_str = self.ship_ed_list_entryid.get().strip()
+        if not eid_str.isdigit():
             messagebox.showerror("Input error", "Entry ID must be a positive integer.")
             return
-        cmd_text = f"{lt.upper()} ADD {et} {eid}"
-        self._run_pbem(
-            ['inject-order', '--ship', str(self.ship_ed_current_id),
-             '--command', cmd_text],
-            f"{lt.upper()} ADD"
-        )
-        self.root.after(500, self._ship_ed_refresh_combat)
+        eid = int(eid_str)
+        # Validate entity exists and resolve a display name (same pattern as base editor)
+        try:
+            conn = self._ship_ed_rw_conn()
+            found_name = None
+            if et == 'ship':
+                r = conn.execute("SELECT name FROM ships WHERE ship_id = ?",
+                                   (eid,)).fetchone()
+                if r:
+                    found_name = r['name']
+            elif et == 'base':
+                for tbl, idcol in (('starbases', 'base_id'),
+                                     ('surface_ports', 'port_id'),
+                                     ('outposts', 'outpost_id')):
+                    r = conn.execute(
+                        f"SELECT name FROM {tbl} WHERE {idcol} = ?", (eid,)
+                    ).fetchone()
+                    if r:
+                        found_name = r['name']
+                        break
+            elif et == 'faction':
+                r = conn.execute("SELECT name FROM factions WHERE faction_id = ?",
+                                   (eid,)).fetchone()
+                if r:
+                    found_name = r['name']
+            if not found_name:
+                conn.close()
+                messagebox.showerror("Not found", f"{et} {eid} does not exist.")
+                return
+            # Check duplicate
+            dup = conn.execute(
+                """SELECT 1 FROM ship_combat_lists
+                   WHERE game_id = ? AND ship_id = ?
+                   AND list_type = ? AND entry_type = ? AND entry_id = ?""",
+                (self.config_data['game_id'], self.ship_ed_current_id,
+                 lt, et, eid)
+            ).fetchone()
+            if dup:
+                conn.close()
+                self._ship_ed_msg(
+                    f"Already on {lt.upper()}: {et} {found_name} ({eid})", ok=False)
+                return
+            conn.execute(
+                """INSERT INTO ship_combat_lists
+                   (game_id, ship_id, list_type, entry_type, entry_id)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (self.config_data['game_id'], self.ship_ed_current_id,
+                 lt, et, eid)
+            )
+            conn.commit()
+            conn.close()
+            self._ship_ed_refresh_combat()
+            self._ship_ed_msg(f"Added to {lt.upper()}: {et} {found_name} ({eid})")
+        except Exception as ex:
+            self._ship_ed_msg(f"Add failed: {ex}", ok=False)
 
     def _ship_ed_list_remove(self):
         if self.ship_ed_current_id is None:
@@ -2624,14 +2672,22 @@ class StellarDominionGUI:
                                   f"Select a row in the {lt.upper()} list first.")
             return
         vals = tv.item(sel[0])['values']
-        et, eid = str(vals[0]), str(vals[1])
-        cmd_text = f"{lt.upper()} REMOVE {et} {eid}"
-        self._run_pbem(
-            ['inject-order', '--ship', str(self.ship_ed_current_id),
-             '--command', cmd_text],
-            f"{lt.upper()} REMOVE"
-        )
-        self.root.after(500, self._ship_ed_refresh_combat)
+        et, eid = str(vals[0]), int(vals[1])
+        try:
+            conn = self._ship_ed_rw_conn()
+            conn.execute(
+                """DELETE FROM ship_combat_lists
+                   WHERE game_id = ? AND ship_id = ?
+                   AND list_type = ? AND entry_type = ? AND entry_id = ?""",
+                (self.config_data['game_id'], self.ship_ed_current_id,
+                 lt, et, eid)
+            )
+            conn.commit()
+            conn.close()
+            self._ship_ed_refresh_combat()
+            self._ship_ed_msg(f"Removed from {lt.upper()}: {et} {eid}")
+        except Exception as ex:
+            self._ship_ed_msg(f"Remove failed: {ex}", ok=False)
 
     def _ship_ed_list_clear(self):
         if self.ship_ed_current_id is None:
@@ -2641,13 +2697,19 @@ class StellarDominionGUI:
         if not messagebox.askyesno("Confirm",
                                       f"Clear the entire {lt.upper()} list?"):
             return
-        cmd_text = f"{lt.upper()} CLEAR"
-        self._run_pbem(
-            ['inject-order', '--ship', str(self.ship_ed_current_id),
-             '--command', cmd_text],
-            f"{lt.upper()} CLEAR"
-        )
-        self.root.after(500, self._ship_ed_refresh_combat)
+        try:
+            conn = self._ship_ed_rw_conn()
+            conn.execute(
+                """DELETE FROM ship_combat_lists
+                   WHERE game_id = ? AND ship_id = ? AND list_type = ?""",
+                (self.config_data['game_id'], self.ship_ed_current_id, lt)
+            )
+            conn.commit()
+            conn.close()
+            self._ship_ed_refresh_combat()
+            self._ship_ed_msg(f"Cleared {lt.upper()} list.")
+        except Exception as ex:
+            self._ship_ed_msg(f"Clear failed: {ex}", ok=False)
 
     # ========================================================================
     # Tab: Base Editor

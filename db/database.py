@@ -37,6 +37,18 @@ HULL_HP_MULTIPLIER = {
 # SP. FACTOR=2 means thickness drops 1 step for every size/2 SP depleted.
 SHIELD_THICKNESS_FACTOR = 2
 
+# Starbase tuning:
+# - HP scales with installed module count
+# - Shield thickness uses a fixed denominator (starbases don't have a size field)
+BASE_HP_PER_MODULE = 50
+BASE_SHIELD_SIZE   = 300
+
+# Starbase combat constants
+# - BASE_SIZE_STARBASE: the "ship_size equivalent" for shield thickness calc
+# - BASE_HP_PER_MODULE: max_integrity = BASE_HP_PER_MODULE × module_count
+STARBASE_SHIELD_BASE_SIZE = 300
+STARBASE_HP_PER_MODULE = 50
+
 
 # ======================================================================
 # CONNECTION MANAGEMENT
@@ -910,6 +922,144 @@ def get_connection(state_db_path=None, universe_db_path=None):
                 )
     conn.commit()
 
+    # ======================================================================
+    # STARBASE COMBAT MIGRATIONS (Phase 1)
+    # ======================================================================
+
+    # Add combat-related columns to starbases
+    sb_cols = [r[1] for r in conn.execute("PRAGMA table_info(starbases)").fetchall()]
+    for col, typ_default in [
+        ('integrity',       'REAL DEFAULT 0'),
+        ('max_integrity',   'REAL DEFAULT 0'),
+        ('shield_sp',       'INTEGER DEFAULT 0'),
+        ('max_shield_sp',   'INTEGER DEFAULT 0'),
+        ('armour',          'INTEGER DEFAULT 0'),
+        ('status',          "TEXT DEFAULT 'active'"),
+    ]:
+        if col not in sb_cols:
+            conn.execute(f"ALTER TABLE starbases ADD COLUMN {col} {typ_default}")
+    conn.commit()
+
+    # Add combat-related columns to base_modules (weapon stats + shield/armour
+    # capacity, for modules that provide defensive or offensive capability).
+    bm_cols = [r[1] for r in conn.execute("PRAGMA universe.table_info(base_modules)").fetchall()]
+    for col, typ_default in [
+        ('weapon_damage',           'INTEGER DEFAULT 0'),
+        ('weapon_range',            'INTEGER DEFAULT 0'),
+        ('weapon_shots_per_round',  'INTEGER DEFAULT 0'),
+        ('weapon_accuracy',         'REAL DEFAULT 1.0'),
+        ('shield_sp_capacity',      'INTEGER DEFAULT 0'),
+        ('armour_value',            'INTEGER DEFAULT 0'),
+    ]:
+        if col not in bm_cols:
+            conn.execute(f"ALTER TABLE universe.base_modules ADD COLUMN {col} {typ_default}")
+    conn.commit()
+
+    # Upgrade Defence Turret (#580): now a proper weapon. Damage 10, range 2,
+    # 2 shots/round, accuracy 0.9. Old defence_rating column retained for
+    # backward compatibility (unused in combat engine going forward).
+    conn.execute(
+        """UPDATE universe.base_modules SET
+            weapon_damage = 10, weapon_range = 2,
+            weapon_shots_per_round = 2, weapon_accuracy = 0.9,
+            category = 'weapon',
+            description = 'Rapid-fire defensive turret. Damage 10, range 2, 2 shots/round, accuracy 0.9.'
+           WHERE module_id = 580
+                 AND (weapon_damage IS NULL OR weapon_damage = 0)"""
+    )
+    # Upgrade Shield Generator (#581): now provides 60 SP per unit.
+    conn.execute(
+        """UPDATE universe.base_modules SET
+            shield_sp_capacity = 60,
+            category = 'shield',
+            description = 'Provides 60 SP per unit. Thickness = floor(2 × total_SP / 300).'
+           WHERE module_id = 581
+                 AND (shield_sp_capacity IS NULL OR shield_sp_capacity = 0)"""
+    )
+    conn.commit()
+
+    # Seed Armour Plating (#582) and Base Point Defence (#583) if missing.
+    new_modules = [
+        {
+            'module_id': 582, 'name': 'Armour Plating', 'category': 'armour',
+            'employees_required': 0, 'location_restriction': None,
+            'docking_slots': 0, 'mining_capacity': 0, 'factory_capacity': 0,
+            'repair_capacity': 0, 'market_income': 0, 'storage_capacity': 0,
+            'habitat_capacity': 0, 'defence_rating': 0, 'base_price': 4000,
+            'sensor_rating': 0,
+            'weapon_damage': 0, 'weapon_range': 0, 'weapon_shots_per_round': 0,
+            'weapon_accuracy': 1.0, 'shield_sp_capacity': 0, 'armour_value': 2,
+            'description': 'Heavy armour plating. +2 armour per unit (non-ablative, stacks).',
+        },
+        {
+            'module_id': 583, 'name': 'Base Point Defence', 'category': 'pd',
+            'employees_required': 1, 'location_restriction': None,
+            'docking_slots': 0, 'mining_capacity': 0, 'factory_capacity': 0,
+            'repair_capacity': 0, 'market_income': 0, 'storage_capacity': 0,
+            'habitat_capacity': 0, 'defence_rating': 0, 'base_price': 2500,
+            'sensor_rating': 0,
+            'weapon_damage': 0, 'weapon_range': 0, 'weapon_shots_per_round': 6,
+            'weapon_accuracy': 0.7, 'shield_sp_capacity': 0, 'armour_value': 0,
+            'description': 'Rapid-fire laser turret for intercepting incoming missiles/torpedoes. 6 shots/round at 0.7 accuracy. Prioritises torpedoes first.',
+        },
+    ]
+    for m in new_modules:
+        cols = ', '.join(m.keys())
+        placeholders = ', '.join(['?'] * len(m))
+        conn.execute(
+            f"INSERT OR IGNORE INTO universe.base_modules ({cols}) "
+            f"VALUES ({placeholders})",
+            tuple(m.values())
+        )
+    conn.commit()
+
+    # Recompute max_integrity, max_shield_sp, armour for all existing starbases.
+    # Preserves current integrity percentage if set. Sets shield_sp = max
+    # for ports that had no prior shield tracking.
+    for sb in conn.execute("SELECT base_id FROM starbases").fetchall():
+        # Sum installed modules: count, shield_sp, armour
+        mods = conn.execute(
+            """SELECT COALESCE(SUM(im.quantity), 0) AS total_count,
+                      COALESCE(SUM(im.quantity * bm.shield_sp_capacity), 0) AS sp_cap,
+                      COALESCE(SUM(im.quantity * bm.armour_value), 0) AS armour_tot
+               FROM installed_modules im
+               JOIN universe.base_modules bm ON im.module_id = bm.module_id
+               WHERE im.starbase_id = ?""",
+            (sb['base_id'],)
+        ).fetchone()
+        module_count = mods['total_count'] or 0
+        max_sp = int(mods['sp_cap'] or 0)
+        armour_tot = int(mods['armour_tot'] or 0)
+        max_hp = BASE_HP_PER_MODULE * module_count
+        # If this starbase has no combat state yet, initialise to full
+        cur = conn.execute(
+            "SELECT integrity, max_integrity, shield_sp, max_shield_sp, armour FROM starbases WHERE base_id = ?",
+            (sb['base_id'],)
+        ).fetchone()
+        old_max = cur['max_integrity'] or 0
+        # Determine new integrity: preserve percentage if there was one, else full
+        if old_max > 0 and cur['integrity'] is not None:
+            pct = (cur['integrity'] / old_max) if old_max else 1.0
+            new_integ = max_hp * pct
+        else:
+            new_integ = max_hp  # fresh base: full HP
+        # Shield SP: preserve ratio to old max if available, else full
+        old_sp_max = cur['max_shield_sp'] or 0
+        if old_sp_max > 0 and cur['shield_sp'] is not None:
+            sp_pct = (cur['shield_sp'] / old_sp_max) if old_sp_max else 1.0
+            new_sp = int(max_sp * sp_pct)
+        else:
+            new_sp = max_sp
+        conn.execute(
+            """UPDATE starbases SET
+                max_integrity = ?, integrity = ?,
+                max_shield_sp = ?, shield_sp = ?,
+                armour = ?
+               WHERE base_id = ?""",
+            (max_hp, new_integ, max_sp, new_sp, armour_tot, sb['base_id'])
+        )
+    conn.commit()
+
     # Migrate: add detection detail columns to known_contacts
     kc_cols = [r[1] for r in conn.execute("PRAGMA table_info(known_contacts)").fetchall()]
     for col, ddl in [
@@ -1403,6 +1553,12 @@ CREATE TABLE IF NOT EXISTS starbases (
     employee_capacity INTEGER DEFAULT 0,
     sensor_profile REAL DEFAULT 1.0,
     sensor_rating INTEGER DEFAULT 0,
+    integrity INTEGER DEFAULT 0,
+    max_integrity INTEGER DEFAULT 0,
+    shield_sp INTEGER DEFAULT 0,
+    max_shield_sp INTEGER DEFAULT 0,
+    armour INTEGER DEFAULT 0,
+    status TEXT DEFAULT 'active',
     FOREIGN KEY (game_id) REFERENCES games(game_id),
     FOREIGN KEY (surface_port_id) REFERENCES surface_ports(port_id)
 );
@@ -2020,7 +2176,9 @@ def get_installed_modules(conn, starbase_id=None, port_id=None, outpost_id=None)
                bm.location_restriction, bm.docking_slots, bm.mining_capacity,
                bm.factory_capacity, bm.repair_capacity, bm.market_income,
                bm.storage_capacity, bm.habitat_capacity, bm.defence_rating,
-               bm.sensor_rating
+               bm.sensor_rating,
+               bm.weapon_damage, bm.weapon_range, bm.weapon_shots_per_round,
+               bm.weapon_accuracy, bm.shield_sp_capacity, bm.armour_value
         FROM installed_modules im
         JOIN base_modules bm ON im.module_id = bm.module_id
         WHERE {where}
@@ -2118,6 +2276,52 @@ def recalculate_base_stats(conn, starbase_id=None, port_id=None, outpost_id=None
                    sensor_profile = ?, sensor_rating = ?
             WHERE base_id = ?
         """, (total_docking, total_habitat, sensor_profile, total_sensor_rating, starbase_id))
+
+        # Combat stat recalculation for starbases (v1: starbases only, not
+        # ports/outposts). Preserves current integrity/SP percentage where
+        # possible when max values change due to module additions/removals.
+        def _row_get(row, key, default=0):
+            """Safe accessor for sqlite3.Row (which has no .get())."""
+            try:
+                return row[key] if key in row.keys() else default
+            except (KeyError, IndexError):
+                return default
+        total_shield_sp = sum(
+            (_row_get(m, 'shield_sp_capacity', 0) or 0) * m['quantity']
+            for m in modules
+        )
+        total_armour = sum(
+            (_row_get(m, 'armour_value', 0) or 0) * m['quantity']
+            for m in modules
+        )
+        max_hp = BASE_HP_PER_MODULE * total_modules
+        cur = conn.execute(
+            """SELECT integrity, max_integrity, shield_sp, max_shield_sp
+               FROM starbases WHERE base_id = ?""",
+            (starbase_id,)
+        ).fetchone()
+        # Preserve integrity as a percentage of old max (clamped to new max).
+        old_max_hp = cur['max_integrity'] or 0
+        if old_max_hp > 0 and cur['integrity'] is not None:
+            pct = (cur['integrity'] / old_max_hp) if old_max_hp > 0 else 1.0
+            new_integ = min(max_hp, max_hp * pct)
+        else:
+            new_integ = max_hp
+        # Preserve shield SP as a ratio to old max (clamped).
+        old_max_sp = cur['max_shield_sp'] or 0
+        if old_max_sp > 0 and cur['shield_sp'] is not None:
+            sp_pct = (cur['shield_sp'] / old_max_sp) if old_max_sp > 0 else 1.0
+            new_sp = min(total_shield_sp, int(total_shield_sp * sp_pct))
+        else:
+            new_sp = total_shield_sp
+        conn.execute(
+            """UPDATE starbases SET
+                max_integrity = ?, integrity = ?,
+                max_shield_sp = ?, shield_sp = ?,
+                armour = ?
+               WHERE base_id = ?""",
+            (max_hp, new_integ, total_shield_sp, new_sp, total_armour, starbase_id)
+        )
     elif port_id:
         conn.execute("""
             UPDATE surface_ports SET employee_capacity = ?,
