@@ -91,28 +91,65 @@ def get_ship_ammo(conn, ship_id):
 
 
 def get_base_weapons(conn, base_kind, base_id):
-    """
-    Return total damage-per-round and effective range for a base's weapons,
-    derived from its installed defence modules. We treat each Defence Turret
-    as: damage_per_round = defence_rating, range = 2.
+    """Return a list of weapon dicts for a base's installed weapon modules.
+    Parallels get_ship_weapons. Each dict: name, damage, range, shots_per_round,
+    qty, accuracy, ammo_type (None for beams — bases have no missiles in v1),
+    flight_rounds (0 always — bases are beam-only in v1).
+
+    Returns [] for ports/outposts (no combat in v1).
     """
     if base_kind == 'starbase':
-        where = "starbase_id = ?"
+        where = "im.starbase_id = ?"
     elif base_kind == 'port':
-        where = "port_id = ?"
+        where = "im.port_id = ?"
     elif base_kind == 'outpost':
-        where = "outpost_id = ?"
+        where = "im.outpost_id = ?"
     else:
-        return 0, 0
+        return []
     rows = conn.execute(
-        f"""SELECT bm.defence_rating, im.quantity
+        f"""SELECT bm.name, bm.weapon_damage, bm.weapon_range,
+                   bm.weapon_shots_per_round, bm.weapon_accuracy,
+                   im.quantity
             FROM installed_modules im
             JOIN base_modules bm ON im.module_id = bm.module_id
-            WHERE {where} AND bm.defence_rating > 0""",
+            WHERE {where} AND bm.category = 'weapon'""",
         (base_id,)
     ).fetchall()
-    total = sum((r['defence_rating'] or 0) * (r['quantity'] or 1) for r in rows)
-    return total, 2  # range 2 always for base weapons in v1
+    return [{
+        'name': r['name'],
+        'damage': r['weapon_damage'] or 0,
+        'range': r['weapon_range'] or 2,
+        'shots_per_round': r['weapon_shots_per_round'] or 0,
+        'qty': r['quantity'],
+        'accuracy': r['weapon_accuracy'] if r['weapon_accuracy'] is not None else 1.0,
+        'ammo_type': None,         # bases have no missiles in v1
+        'flight_rounds': 0,
+    } for r in rows]
+
+
+def get_base_pd(conn, base_kind, base_id):
+    """Return a list of (name, shots_per_round, qty, accuracy) tuples for
+    PD modules installed on a base. Parallels get_ship_pd.
+    """
+    if base_kind == 'starbase':
+        where = "im.starbase_id = ?"
+    elif base_kind == 'port':
+        where = "im.port_id = ?"
+    elif base_kind == 'outpost':
+        where = "im.outpost_id = ?"
+    else:
+        return []
+    rows = conn.execute(
+        f"""SELECT bm.name, bm.weapon_shots_per_round, bm.weapon_accuracy,
+                   im.quantity
+            FROM installed_modules im
+            JOIN base_modules bm ON im.module_id = bm.module_id
+            WHERE {where} AND bm.category = 'pd'""",
+        (base_id,)
+    ).fetchall()
+    return [(r['name'], r['weapon_shots_per_round'] or 0, r['quantity'],
+             r['weapon_accuracy'] if r['weapon_accuracy'] is not None else 1.0)
+            for r in rows]
 
 
 def ship_movement_per_round(gravity_rating):
@@ -344,26 +381,54 @@ def get_participant_state(conn, game_id, kind, entity_id):
             ).fetchone()
             if f:
                 owner_faction = f['faction_id']
-        wdmg, wrange = get_base_weapons(conn, kind, entity_id)
+        weapons = get_base_weapons(conn, kind, entity_id)
+        pd_list = get_base_pd(conn, kind, entity_id)
+
+        # Starbases track real combat state (Phase 2). Ports/outposts still
+        # use the legacy fixed 100% integrity until they get combat mechanics.
+        def _rg(key, default=0):
+            try:
+                return row[key] if key in row.keys() else default
+            except (KeyError, IndexError):
+                return default
+        if kind == 'starbase':
+            integrity = _rg('integrity', 0) or 0
+            max_integrity = _rg('max_integrity', 0) or 0
+            shield_sp = _rg('shield_sp', 0) or 0
+            max_shield_sp = _rg('max_shield_sp', 0) or 0
+            armour = _rg('armour', 0) or 0
+            status = _rg('status', 'active') or 'active'
+        else:
+            # Ports/outposts: invulnerable placeholders for now
+            integrity = 100.0
+            max_integrity = 100.0
+            shield_sp = 0
+            max_shield_sp = 0
+            armour = 0
+            status = 'active'
+
         return {
             'kind': kind, 'id': entity_id,
             'name': row['name'], 'faction_id': owner_faction,
             'col': row['grid_col'] if 'grid_col' in row.keys() else None,
             'row': row['grid_row'] if 'grid_row' in row.keys() else None,
             'system_id': row['system_id'] if 'system_id' in row.keys() else None,
-            'integrity': 100.0,  # bases don't track integrity in v1
-            'max_integrity': 100.0,
-            'doctrine': None,
+            'integrity': integrity,
+            'max_integrity': max_integrity,
+            'shield_sp': shield_sp,
+            'max_shield_sp': max_shield_sp,
+            'armour': armour,
+            'status': status,
+            'doctrine': 'aggressive',  # bases always fight, never flee
             'gravity_rating': 0,
             'sensor_rating': row['sensor_rating'] or 0,
             'sensor_profile': row['sensor_profile'] or 1.0,
             'ship_size': None,
             'hull_type': kind.title(),
             'owner_prefect_id': owner_prefect_id,
-            'base_weapon_damage': wdmg,
-            'base_weapon_range': wrange,
+            'weapons': weapons,
+            'pd': pd_list,
             'movement': 0,
-            'weapons': [],
         }
 
 
@@ -479,10 +544,7 @@ def decide_action(conn, game_id, actor, target, all_participants_state):
     dist = grid_distance(actor['col'], actor['row'], target['col'], target['row'])
 
     # Determine effective max weapon range
-    if actor['kind'] == 'ship':
-        max_wrange = max((w['range'] for w in actor.get('weapons', [])), default=0)
-    else:
-        max_wrange = actor.get('base_weapon_range', 0)
+    max_wrange = max((w['range'] for w in actor.get('weapons', [])), default=0)
 
     if max_wrange <= 0:
         # No weapons — can only move/evade
@@ -710,6 +772,180 @@ def update_ship_position(conn, ship_id, col, row):
     conn.commit()
 
 
+def apply_damage_to_base(conn, base_kind, base_id, damage,
+                          attacker_kind=None, attacker_id=None,
+                          attacker_name=None, attacker_faction_id=None,
+                          attacker_hull_type=None, attacker_size=None,
+                          attacker_col=None, attacker_row=None,
+                          system_id=None, turn_year=None, turn_week=None,
+                          tick=None):
+    """Apply damage to a starbase (v1 supports starbases only; ports/outposts
+    are invulnerable placeholders). Pipeline mirrors apply_damage_to_ship:
+    shields → armour → integrity, using BASE_SHIELD_SIZE as the thickness
+    denominator.
+
+    Returns the same dict shape as apply_damage_to_ship for drop-in use:
+      {'new_integrity', 'absorbed_by_shields', 'absorbed_by_armour',
+       'damage_through', 'shield_sp_after', 'shield_thickness_after'}
+
+    For ports/outposts returns a "fully absorbed" result without touching
+    their rows — they remain invulnerable until dedicated mechanics land.
+    """
+    from db.database import BASE_SHIELD_SIZE, SHIELD_THICKNESS_FACTOR
+
+    if base_kind != 'starbase':
+        # Ports/outposts: invulnerable placeholder behaviour
+        return {
+            'new_integrity': 100.0,
+            'absorbed_by_shields': int(damage),
+            'absorbed_by_armour': 0,
+            'damage_through': 0,
+            'shield_sp_after': 0,
+            'shield_thickness_after': 0,
+        }
+
+    row = conn.execute(
+        """SELECT integrity, max_integrity, shield_sp, max_shield_sp,
+                  armour, status, owner_prefect_id
+           FROM starbases WHERE base_id = ?""",
+        (base_id,)
+    ).fetchone()
+    if not row:
+        return {
+            'new_integrity': 0, 'absorbed_by_shields': 0,
+            'absorbed_by_armour': 0, 'damage_through': 0,
+            'shield_sp_after': 0, 'shield_thickness_after': 0,
+        }
+
+    # Already destroyed — no further damage
+    if (row['status'] or 'active') == 'destroyed':
+        return {
+            'new_integrity': 0, 'absorbed_by_shields': 0,
+            'absorbed_by_armour': 0, 'damage_through': 0,
+            'shield_sp_after': row['shield_sp'] or 0,
+            'shield_thickness_after': 0,
+        }
+
+    raw = max(0, int(damage))
+    remaining = raw
+    current_sp = row['shield_sp'] or 0
+    armour = row['armour'] or 0
+
+    # --- 1. Shields (ablative, recompute thickness per hit) ---
+    absorbed_by_shields = 0
+    if current_sp > 0 and BASE_SHIELD_SIZE > 0:
+        thickness = (SHIELD_THICKNESS_FACTOR * current_sp) // BASE_SHIELD_SIZE
+        if thickness > 0:
+            absorbed_by_shields = min(thickness, remaining)
+            remaining -= absorbed_by_shields
+            current_sp = max(0, current_sp - absorbed_by_shields)
+
+    # --- 2. Armour (flat, non-ablative) ---
+    absorbed_by_armour = 0
+    if armour > 0 and remaining > 0:
+        absorbed_by_armour = min(armour, remaining)
+        remaining -= absorbed_by_armour
+
+    # --- 3. Integrity takes the rest ---
+    damage_through = remaining
+    new_integrity = max(0, (row['integrity'] or 0) - damage_through)
+
+    # Write back shield_sp and integrity
+    conn.execute(
+        "UPDATE starbases SET integrity = ?, shield_sp = ? WHERE base_id = ?",
+        (new_integrity, current_sp, base_id)
+    )
+    conn.commit()
+
+    new_thickness = ((SHIELD_THICKNESS_FACTOR * current_sp) // BASE_SHIELD_SIZE
+                      if current_sp > 0 else 0)
+
+    # Record attacker as known contact for base owner
+    victim_prefect = row['owner_prefect_id']
+    if (victim_prefect and attacker_kind and attacker_id
+            and attacker_kind in ('ship', 'starbase', 'port', 'outpost')):
+        existing = conn.execute(
+            """SELECT contact_id FROM known_contacts
+               WHERE prefect_id = ? AND object_type = ? AND object_id = ?""",
+            (victim_prefect, attacker_kind, attacker_id)
+        ).fetchone()
+        if existing:
+            conn.execute(
+                """UPDATE known_contacts SET
+                    location_col = ?, location_row = ?, location_system = ?,
+                    discovered_turn_year = ?, discovered_turn_week = ?,
+                    target_faction_id = ?, target_hull_type = ?,
+                    target_ship_size = ?, detection_range = 0,
+                    detected_on_tick = ?, detection_source = 'damage'
+                   WHERE contact_id = ?""",
+                (attacker_col, attacker_row, system_id,
+                 turn_year, turn_week,
+                 attacker_faction_id, attacker_hull_type, attacker_size,
+                 tick, existing['contact_id'])
+            )
+        else:
+            conn.execute(
+                """INSERT INTO known_contacts
+                   (prefect_id, object_type, object_id, object_name,
+                    location_system, location_col, location_row,
+                    discovered_turn_year, discovered_turn_week,
+                    target_faction_id, target_hull_type,
+                    target_ship_size, detection_range,
+                    detected_on_tick, detection_source)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 'damage')""",
+                (victim_prefect, attacker_kind, attacker_id, attacker_name,
+                 system_id, attacker_col, attacker_row,
+                 turn_year, turn_week,
+                 attacker_faction_id, attacker_hull_type, attacker_size,
+                 tick)
+            )
+        conn.commit()
+
+    return {
+        'new_integrity': new_integrity,
+        'absorbed_by_shields': absorbed_by_shields,
+        'absorbed_by_armour': absorbed_by_armour,
+        'damage_through': damage_through,
+        'shield_sp_after': current_sp,
+        'shield_thickness_after': new_thickness,
+    }
+
+
+def destroy_starbase(conn, base_id, turn_year, turn_week, round_number,
+                      engagement_id, destroyer_name="combat"):
+    """Mark a starbase as destroyed and cascade-destroy all docked ships.
+    Logs combat events for each. Returns list of destroyed ship IDs."""
+    # Mark the base destroyed
+    conn.execute(
+        "UPDATE starbases SET status = 'destroyed', integrity = 0, shield_sp = 0 "
+        "WHERE base_id = ?",
+        (base_id,)
+    )
+
+    # Find and destroy all docked ships
+    docked = conn.execute(
+        """SELECT ship_id, name, owner_prefect_id FROM ships
+           WHERE docked_at_base_id = ? AND integrity > 0""",
+        (base_id,)
+    ).fetchall()
+    destroyed_ship_ids = []
+    for s in docked:
+        conn.execute(
+            "UPDATE ships SET integrity = 0, docked_at_base_id = NULL "
+            "WHERE ship_id = ?",
+            (s['ship_id'],)
+        )
+        destroyed_ship_ids.append(s['ship_id'])
+        log_combat_event(
+            conn, engagement_id, turn_year, turn_week, round_number,
+            'ship', s['ship_id'], 'destroyed',
+            detail=(f"{s['name']} destroyed with starbase "
+                     f"(docked ships cannot escape)")
+        )
+    conn.commit()
+    return destroyed_ship_ids
+
+
 def end_engagement(conn, engagement_id, resolution_text, status='resolved'):
     """End an engagement and update all still-active participants' end integrity."""
     # First, snapshot end-of-engagement integrity for any still-active participants
@@ -920,9 +1156,10 @@ def resolve_arriving_projectiles(conn, game_id, engagement_id, round_number,
         targets.setdefault(tgt_key, []).append(p)
 
     for (tgt_kind, tgt_id), incoming in targets.items():
-        # PD only defends ships (bases don't take damage in v1 either way)
-        if tgt_kind != 'ship':
-            # Resolve directly: no PD, just accuracy check, but bases take no damage
+        # Ports and outposts: no combat mechanics yet — projectiles are noted
+        # as struck/missed but deal no damage. Starbases and ships follow the
+        # full PD + damage pipeline below.
+        if tgt_kind not in ('ship', 'starbase'):
             for p in incoming:
                 status = 'hit' if random.random() <= p['accuracy'] else 'missed'
                 conn.execute(
@@ -935,11 +1172,11 @@ def resolve_arriving_projectiles(conn, game_id, engagement_id, round_number,
                     target_kind=tgt_kind, target_id=tgt_id,
                     detail=(f"{p['ammo_type']} from {p['attacker_name']} "
                              f"{'struck' if status == 'hit' else 'missed'} "
-                             f"{tgt_kind} (bases invulnerable)")
+                             f"{tgt_kind} (no combat mechanics for {tgt_kind} yet)")
                 )
             continue
 
-        # Target is a ship — fetch its PD loadout and current state
+        # Target is a ship or starbase — fetch state (which now includes PD)
         target_state = get_participant_state(conn, game_id, tgt_kind, tgt_id)
         if not target_state or target_state['integrity'] <= 0:
             # Target is already destroyed — remaining projectiles wasted
@@ -1043,16 +1280,27 @@ def resolve_arriving_projectiles(conn, game_id, engagement_id, round_number,
                 target_summary['misses'] += 1
                 continue
 
-            # Hit! Apply damage through the normal pipeline
-            dmg_result = apply_damage_to_ship(
-                conn, tgt_id, p['damage'],
-                attacker_kind=p['attacker_kind'],
-                attacker_id=p['attacker_id'],
-                attacker_name=p['attacker_name'],
-                attacker_col=None, attacker_row=None,
-                turn_year=turn_year, turn_week=turn_week,
-                tick=round_number,
-            )
+            # Hit! Apply damage through the normal pipeline (ship or starbase).
+            if tgt_kind == 'ship':
+                dmg_result = apply_damage_to_ship(
+                    conn, tgt_id, p['damage'],
+                    attacker_kind=p['attacker_kind'],
+                    attacker_id=p['attacker_id'],
+                    attacker_name=p['attacker_name'],
+                    attacker_col=None, attacker_row=None,
+                    turn_year=turn_year, turn_week=turn_week,
+                    tick=round_number,
+                )
+            else:  # starbase
+                dmg_result = apply_damage_to_base(
+                    conn, 'starbase', tgt_id, p['damage'],
+                    attacker_kind=p['attacker_kind'],
+                    attacker_id=p['attacker_id'],
+                    attacker_name=p['attacker_name'],
+                    attacker_col=None, attacker_row=None,
+                    turn_year=turn_year, turn_week=turn_week,
+                    tick=round_number,
+                )
             conn.execute(
                 "UPDATE combat_projectiles SET status = 'hit' "
                 "WHERE projectile_id = ?",
@@ -1076,6 +1324,13 @@ def resolve_arriving_projectiles(conn, game_id, engagement_id, round_number,
                     tgt_kind, tgt_id, 'destroyed',
                     detail=f"{target_state['name']} destroyed by incoming {p['ammo_type']} from {p['attacker_name']}"
                 )
+                if tgt_kind == 'starbase':
+                    # Cascade: destroy docked ships
+                    destroy_starbase(
+                        conn, tgt_id, turn_year, turn_week,
+                        round_number, engagement_id,
+                        destroyer_name=p['attacker_name'] or 'projectile'
+                    )
                 pid = p_record_map.get((tgt_kind, tgt_id))
                 if pid:
                     mark_participant_left(conn, pid, turn_year, turn_week,
@@ -1272,12 +1527,25 @@ def resolve_engagement_round(conn, game_id, engagement, round_number):
 
                 weapon_summary = ', '.join(weapon_label_bits) if weapon_label_bits else 'no weapons'
             else:
-                # Base: one "shot" per round using base_weapon_damage.
-                # Bases don't track per-weapon accuracy in v1; assume 1.0.
-                bwd = actor.get('base_weapon_damage', 0)
-                weapon_summary = 'turrets'
-                if bwd > 0:
-                    beam_shots.append(('turrets', bwd, 1.0))
+                # Base: expand installed weapon modules into per-shot entries
+                # mirroring the ship pattern. Bases in v1 are beam-only.
+                base_label_bits = []
+                for w in actor.get('weapons', []):
+                    wname = w['name']
+                    wdmg = w['damage']
+                    wrange = w['range']
+                    wshots = w['shots_per_round']
+                    wqty = w['qty']
+                    wacc = w['accuracy']
+                    if wdmg <= 0 or wshots <= 0:
+                        continue
+                    if dist > wrange:
+                        continue
+                    total_shots = wshots * wqty
+                    base_label_bits.append(f"{wname}x{wqty}")
+                    for _ in range(total_shots):
+                        beam_shots.append((wname, wdmg, wacc))
+                weapon_summary = ', '.join(base_label_bits) if base_label_bits else 'turrets'
 
             if not beam_shots and not launch_groups:
                 # Nothing to fire. If it's because ammo is out, note that.
@@ -1296,7 +1564,8 @@ def resolve_engagement_round(conn, game_id, engagement, round_number):
             # --- Launch projectiles (missiles/torpedoes) ---
             # These create combat_projectiles rows and deplete ammo. They do
             # NOT deal damage this round — they resolve on the arrival round.
-            if launch_groups and tgt['kind'] == 'ship':
+            # Targets: ships or starbases (ports/outposts not yet combatant).
+            if launch_groups and tgt['kind'] in ('ship', 'starbase'):
                 # Summarize: total missiles and torpedoes launched
                 total_missiles_launched = 0
                 total_torpedoes_launched = 0
@@ -1459,12 +1728,104 @@ def resolve_engagement_round(conn, game_id, engagement, round_number):
                         mark_participant_left(conn, pid, turn_year, turn_week,
                                                 round_number, 'destroyed', 0)
             else:
-                # Bases don't take damage in v1
-                log_combat_event(conn, engagement_id, turn_year, turn_week,
-                                  round_number, actor['kind'], actor['id'], 'fire',
-                                  target_kind=tgt['kind'], target_id=tgt['id'],
-                                  damage=0, integrity_after=100,
-                                  detail=f"fired at {tgt['name']} (bases invulnerable in v1)")
+                # Beam weapons firing at a base (starbase). Ports/outposts
+                # remain invulnerable placeholders until their mechanics land.
+                if tgt['kind'] == 'starbase':
+                    total_fired = len(beam_shots)
+                    hits = 0
+                    misses = 0
+                    total_shield_absorbed = 0
+                    total_armour_absorbed = 0
+                    total_hull_damage = 0
+                    final_integ = tgt['integrity']
+                    tgt_max_int = int(tgt.get('max_integrity', 0) or 0)
+                    final_sp = tgt.get('shield_sp', 0) or 0
+                    final_thk = 0
+                    target_destroyed = False
+
+                    for wname, wdmg, wacc in beam_shots:
+                        if target_destroyed:
+                            break
+                        if random.random() > wacc:
+                            misses += 1
+                            continue
+                        hits += 1
+                        dmg_result = apply_damage_to_base(
+                            conn, 'starbase', tgt['id'], wdmg,
+                            attacker_kind=actor['kind'],
+                            attacker_id=actor['id'],
+                            attacker_name=actor.get('name'),
+                            attacker_faction_id=actor.get('faction_id'),
+                            attacker_hull_type=actor.get('hull_type'),
+                            attacker_size=actor.get('ship_size'),
+                            attacker_col=actor['col'],
+                            attacker_row=actor['row'],
+                            system_id=actor.get('system_id'),
+                            turn_year=turn_year,
+                            turn_week=turn_week,
+                            tick=round_number,
+                        )
+                        total_shield_absorbed += dmg_result['absorbed_by_shields']
+                        total_armour_absorbed += dmg_result['absorbed_by_armour']
+                        total_hull_damage += dmg_result['damage_through']
+                        final_integ = dmg_result['new_integrity']
+                        final_sp = dmg_result['shield_sp_after']
+                        final_thk = dmg_result['shield_thickness_after']
+                        if final_integ <= 0:
+                            target_destroyed = True
+
+                    wasted = total_fired - hits - misses
+                    hit_bits = [f"{hits} hit{'s' if hits != 1 else ''}"]
+                    if misses:
+                        hit_bits.append(f"{misses} miss{'es' if misses != 1 else ''}")
+                    if wasted:
+                        hit_bits.append(f"{wasted} wasted")
+                    summary_parts = [
+                        f"{total_fired} shot{'s' if total_fired != 1 else ''} "
+                        f"[{weapon_summary}] @ {tgt['name']} ({', '.join(hit_bits)})"
+                    ]
+                    defence_bits = []
+                    if total_shield_absorbed > 0:
+                        defence_bits.append(
+                            f"shields absorbed {total_shield_absorbed} "
+                            f"(SP now {final_sp}, thk {final_thk})")
+                    if total_armour_absorbed > 0:
+                        defence_bits.append(
+                            f"armour absorbed {total_armour_absorbed}")
+                    if defence_bits:
+                        summary_parts.append("[" + ", ".join(defence_bits) + "]")
+                    summary_parts.append(
+                        f"hull -{total_hull_damage}, hull {int(final_integ)}/{tgt_max_int}"
+                    )
+                    detail_str = " — ".join(summary_parts)
+                    log_combat_event(conn, engagement_id, turn_year, turn_week,
+                                      round_number, actor['kind'], actor['id'], 'fire',
+                                      target_kind=tgt['kind'], target_id=tgt['id'],
+                                      damage=total_hull_damage,
+                                      integrity_after=final_integ,
+                                      detail=detail_str)
+                    if target_destroyed:
+                        log_combat_event(conn, engagement_id, turn_year, turn_week,
+                                          round_number, tgt['kind'], tgt['id'],
+                                          'destroyed',
+                                          detail=f"{tgt['name']} destroyed by {actor['name']}")
+                        # Cascade: destroy all docked ships
+                        destroy_starbase(
+                            conn, tgt['id'], turn_year, turn_week,
+                            round_number, engagement_id,
+                            destroyer_name=actor.get('name', 'combat')
+                        )
+                        pid = p_record_map.get((tgt['kind'], tgt['id']))
+                        if pid:
+                            mark_participant_left(conn, pid, turn_year, turn_week,
+                                                    round_number, 'destroyed', 0)
+                else:
+                    # Ports/outposts: still invulnerable (no mechanics yet)
+                    log_combat_event(conn, engagement_id, turn_year, turn_week,
+                                      round_number, actor['kind'], actor['id'], 'fire',
+                                      target_kind=tgt['kind'], target_id=tgt['id'],
+                                      damage=0, integrity_after=100,
+                                      detail=f"fired at {tgt['name']} (no combat mechanics for {tgt['kind']} yet)")
 
         elif action == 'move':
             dest_col, dest_row = payload
