@@ -395,6 +395,31 @@ Projectiles that survive PD still roll their own accuracy, then resolve damage t
 
 **A ship whose magazine is empty at the moment of destruction loses its ammo** — the magazine goes up with the ship.
 
+### Starbase Combat
+
+Starbases are now combat-capable structures. They can attack ships, be attacked, and destroyed.
+
+**Starbase defences:**
+- **Integrity (HP)** — 50 HP per installed module. A 30-module starbase has 1500 HP.
+- **Shields** — Shield Generator modules provide 60 SP per unit. Thickness uses a fixed base_size of 300, so `thickness = floor(2 × current_SP / 300)`.
+- **Armour** — new Armour Plating module: +2 armour per unit, non-ablative.
+- **Point Defence** — new Base Point Defence module: 6 intercepts/round at 0.7 accuracy; prioritises torpedoes first.
+
+**Starbase weapons:**
+- **Defence Turret** (upgraded) — damage 10, range 2, 2 shots/round, accuracy 0.9 per turret. Bases are beam-only in v1 (no missiles/torpedoes).
+
+**Starbase doctrine:** bases are always implicitly AGGRESSIVE — they fire on anything on their target list and cannot retreat.
+
+**Engagement:** ships must be within range 2 (one cell away) to engage a starbase. Starbases are always known to everyone in the same system via system scan.
+
+**Destruction:** when starbase integrity hits 0, the station is destroyed:
+- Status is set to `destroyed`; the database row is preserved for historical record.
+- **All docked ships are destroyed** — they cannot escape. Undock before combat if you want to live.
+- The market, modules, and all base functionality are lost.
+- Destroyed bases stop appearing in new scans (but old contacts remain flagged `[DESTROYED]`).
+
+**Building base defences:** same `BUILD` order as other modules. No restrictions; build as many turrets, shields, armour plates, and PD as your station can hold.
+
 ### Combat Reports
 
 When your ship participates in combat, your ship report includes a Combat section showing:

@@ -1013,6 +1013,117 @@ def generate_base_report(base_type, base_id, db_path=None, game_id="OMICRON101",
     lines.append(section_line())
 
     # ==========================================
+    # SPACE COMBAT SUMMARY (starbases only — ports/outposts have no combat yet)
+    # ==========================================
+    if base_type == 'starbase':
+        from db.database import SHIELD_THICKNESS_FACTOR, BASE_SHIELD_SIZE
+
+        # Helper for smart salvo formatting (same as ship report)
+        def _fmt_num(val):
+            if val == int(val):
+                return f"{int(val)}"
+            s = f"{val:.2f}".rstrip('0').rstrip('.')
+            return s
+
+        armour_val = base['armour'] if 'armour' in base.keys() and base['armour'] else 0
+        shield_sp = base['shield_sp'] if 'shield_sp' in base.keys() and base['shield_sp'] is not None else 0
+        max_shield = base['max_shield_sp'] if 'max_shield_sp' in base.keys() and base['max_shield_sp'] else 0
+        integ = base['integrity'] if 'integrity' in base.keys() and base['integrity'] is not None else 0
+        max_integ = base['max_integrity'] if 'max_integrity' in base.keys() and base['max_integrity'] else 0
+        status = base['status'] if 'status' in base.keys() else 'active'
+
+        # Pull weapons and PD from the already-fetched modules list
+        weapon_entries = [m for m in modules if m['category'] == 'weapon']
+        pd_entries = [m for m in modules if m['category'] == 'pd']
+
+        lines.append(section_header("Space Combat Summary"))
+        lines.append(section_line())
+
+        # Status banner at top
+        if status == 'destroyed':
+            lines.append(section_line(f"STATUS: DESTROYED — no combat capability"))
+        else:
+            lines.append(section_line(f"STATUS: {status.upper()}"))
+        lines.append(section_line())
+
+        # Structural integrity (always show for starbases)
+        integ_pct = int((integ / max_integ) * 100) if max_integ > 0 else 0
+        lines.append(section_line("STRUCTURAL"))
+        lines.append(section_line(
+            f"  Integrity: {int(integ)}/{int(max_integ)} HP ({integ_pct}%)"
+        ))
+        if armour_val > 0 or max_shield > 0:
+            thickness = ((SHIELD_THICKNESS_FACTOR * shield_sp) // BASE_SHIELD_SIZE
+                          if shield_sp > 0 else 0)
+            if armour_val > 0:
+                lines.append(section_line(
+                    f"  Armour: {armour_val} (non-ablative, flat reduction per hit)"
+                ))
+            if max_shield > 0:
+                lines.append(section_line(
+                    f"  Shields: {shield_sp}/{max_shield} SP, thickness {thickness} "
+                    f"(absorbs up to {thickness} dmg/hit, ablates SP)"
+                ))
+        lines.append(section_line())
+
+        # Weapons
+        if weapon_entries:
+            lines.append(section_line("WEAPONS"))
+            comp_fmt = "  {:<26s} {:>3s} {:>4s} {:>4s} {:>4s} {:>4s}"
+            lines.append(section_line(comp_fmt.format(
+                "Weapon Module", "Qty", "Dmg", "Rng", "Acc", "Shot")))
+            lines.append(section_line(comp_fmt.format(
+                "-"*26, "-"*3, "-"*4, "-"*4, "-"*4, "-"*4)))
+            for w in weapon_entries:
+                qty = w['quantity']
+                wdmg = w['weapon_damage'] if 'weapon_damage' in w.keys() else 0
+                wrange = w['weapon_range'] if 'weapon_range' in w.keys() else 0
+                wshots = w['weapon_shots_per_round'] if 'weapon_shots_per_round' in w.keys() else 0
+                wacc = w['weapon_accuracy'] if 'weapon_accuracy' in w.keys() else 1.0
+                lines.append(section_line(comp_fmt.format(
+                    w['name'][:26], str(qty),
+                    str(wdmg or 0), str(wrange or 0),
+                    f"{wacc:.2f}" if wacc is not None else "1.00",
+                    str((wshots or 0) * qty)
+                )))
+            lines.append(section_line())
+
+        # Point Defence
+        if pd_entries:
+            lines.append(section_line("POINT DEFENCE"))
+            pd_fmt = "  {:<26s} {:>3s} {:>4s} {:>4s} {}"
+            lines.append(section_line(pd_fmt.format(
+                "Turret", "Qty", "Acc", "Shot", "Notes")))
+            lines.append(section_line(pd_fmt.format(
+                "-"*26, "-"*3, "-"*4, "-"*4, "-"*30)))
+            total_pd_shots = 0
+            for p in pd_entries:
+                qty = p['quantity']
+                pshots = p['weapon_shots_per_round'] if 'weapon_shots_per_round' in p.keys() else 0
+                pacc = p['weapon_accuracy'] if 'weapon_accuracy' in p.keys() else 1.0
+                shots = (pshots or 0) * qty
+                total_pd_shots += shots
+                lines.append(section_line(pd_fmt.format(
+                    p['name'][:26], str(qty),
+                    f"{pacc:.2f}" if pacc is not None else "1.00",
+                    str(shots),
+                    "intercepts missiles/torpedoes"
+                )))
+            lines.append(section_line(
+                f"  Total: {total_pd_shots} intercept shot"
+                f"{'s' if total_pd_shots != 1 else ''}/round"
+                " (torpedoes prioritised first)"
+            ))
+            lines.append(section_line())
+
+        # Doctrine note (bases always aggressive, never flee)
+        lines.append(section_line(
+            "COMBAT DOCTRINE: AGGRESSIVE (fires on anything on TARGET list; "
+            "cannot retreat)"
+        ))
+        lines.append(section_line())
+
+    # ==========================================
     # COMBAT LISTS (target + defend; no avoid for bases)
     # ==========================================
     base_kind = base_type  # 'starbase' | 'port' | 'outpost'

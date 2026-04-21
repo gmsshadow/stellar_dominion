@@ -2842,6 +2842,67 @@ class StellarDominionGUI:
         ttk.Button(icr, text="Remove Selected", width=16,
                    command=self._base_ed_remove_inv).pack(side=tk.LEFT, padx=2)
 
+        # ----- Combat State (starbases only) -----
+        bcstate = ttk.LabelFrame(inner,
+                                  text="Combat State (starbases only — direct DB edit)",
+                                  padding=6)
+        bcstate.pack(fill=tk.X, padx=5, pady=4)
+
+        # Status row
+        st_row = ttk.Frame(bcstate)
+        st_row.pack(fill=tk.X, pady=2)
+        ttk.Label(st_row, text="Status:", width=12).pack(side=tk.LEFT)
+        self.base_ed_status_combo = ttk.Combobox(
+            st_row, state='readonly', width=12,
+            values=['active', 'destroyed'])
+        self.base_ed_status_combo.set('active')
+        self.base_ed_status_combo.pack(side=tk.LEFT, padx=(2, 10))
+        ttk.Label(st_row, text="(setting 'destroyed' wipes docked ships!)",
+                   foreground="#c87000", font=("", 8, "italic")).pack(side=tk.LEFT)
+
+        # Integrity row
+        bi_row = ttk.Frame(bcstate)
+        bi_row.pack(fill=tk.X, pady=2)
+        ttk.Label(bi_row, text="Integrity:", width=12).pack(side=tk.LEFT)
+        self.base_ed_integrity_entry = ttk.Entry(bi_row, width=8)
+        self.base_ed_integrity_entry.pack(side=tk.LEFT, padx=(2, 4))
+        ttk.Label(bi_row, text="/").pack(side=tk.LEFT)
+        self.base_ed_max_integrity_label = ttk.Label(
+            bi_row, text="-", width=10, foreground="#555")
+        self.base_ed_max_integrity_label.pack(side=tk.LEFT, padx=(4, 10))
+        ttk.Label(bi_row, text="(max = 50 × module count)",
+                   foreground="#888", font=("", 8, "italic")).pack(side=tk.LEFT)
+
+        # Shield SP row
+        bsp_row = ttk.Frame(bcstate)
+        bsp_row.pack(fill=tk.X, pady=2)
+        ttk.Label(bsp_row, text="Shield SP:", width=12).pack(side=tk.LEFT)
+        self.base_ed_shield_entry = ttk.Entry(bsp_row, width=8)
+        self.base_ed_shield_entry.pack(side=tk.LEFT, padx=(2, 4))
+        ttk.Label(bsp_row, text="/").pack(side=tk.LEFT)
+        self.base_ed_max_shield_label = ttk.Label(
+            bsp_row, text="-", width=10, foreground="#555")
+        self.base_ed_max_shield_label.pack(side=tk.LEFT, padx=(4, 10))
+        ttk.Label(bsp_row, text="(max = 60 × Shield Generator count)",
+                   foreground="#888", font=("", 8, "italic")).pack(side=tk.LEFT)
+
+        # Armour row
+        ba_row = ttk.Frame(bcstate)
+        ba_row.pack(fill=tk.X, pady=2)
+        ttk.Label(ba_row, text="Armour:", width=12).pack(side=tk.LEFT)
+        self.base_ed_armour_label = ttk.Label(
+            ba_row, text="-", width=10, foreground="#555")
+        self.base_ed_armour_label.pack(side=tk.LEFT, padx=(2, 10))
+        ttk.Label(ba_row, text="(auto from Armour Plating; read-only)",
+                   foreground="#888", font=("", 8, "italic")).pack(side=tk.LEFT)
+
+        bbtn_row = ttk.Frame(bcstate)
+        bbtn_row.pack(fill=tk.X, pady=(4, 0))
+        ttk.Button(bbtn_row, text="Save Combat State", width=20,
+                   command=self._base_ed_save_combat_state).pack(side=tk.LEFT, padx=2)
+        ttk.Button(bbtn_row, text="Repair to Full", width=14,
+                   command=self._base_ed_repair_full).pack(side=tk.LEFT, padx=2)
+
         # ----- Combat -----
         b_combat = ttk.LabelFrame(inner, text="Combat (Bases: target + defend, no avoid)",
                                     padding=6)
@@ -3349,15 +3410,22 @@ class StellarDominionGUI:
     # ----- Base editor: combat -----
 
     def _base_ed_refresh_combat(self):
-        """Load combat lists for the currently loaded base."""
+        """Load combat lists AND combat state for the currently loaded base."""
         for lt in ('target', 'defend'):
             tv = self.base_ed_list_trees[lt]
             for row_id in tv.get_children():
                 tv.delete(row_id)
+        # Clear combat state fields regardless
+        self.base_ed_integrity_entry.delete(0, tk.END)
+        self.base_ed_max_integrity_label.config(text="-")
+        self.base_ed_shield_entry.delete(0, tk.END)
+        self.base_ed_max_shield_label.config(text="-")
+        self.base_ed_armour_label.config(text="-")
+        self.base_ed_status_combo.set('active')
+
         if not self.base_ed_current:
             return
         kind, bid = self.base_ed_current
-        # Translate kind to canonical base_kind used by base_combat_lists
         try:
             conn = self._base_ed_rw_conn()
             lists = conn.execute(
@@ -3366,14 +3434,153 @@ class StellarDominionGUI:
                 "ORDER BY list_type, entry_type, entry_id",
                 (self.config_data['game_id'], kind, bid)
             ).fetchall()
-            conn.close()
             for r in lists:
                 tv = self.base_ed_list_trees.get(r['list_type'])
                 if tv is not None:
                     tv.insert('', tk.END,
                                values=(r['entry_type'], r['entry_id']))
+
+            # Populate combat state — starbases only
+            if kind == 'starbase':
+                sb = conn.execute(
+                    """SELECT integrity, max_integrity, shield_sp, max_shield_sp,
+                              armour, status FROM starbases WHERE base_id = ?""",
+                    (bid,)
+                ).fetchone()
+                if sb:
+                    integ = sb['integrity'] if sb['integrity'] is not None else 0
+                    max_integ = sb['max_integrity'] if sb['max_integrity'] is not None else 0
+                    sp = sb['shield_sp'] if sb['shield_sp'] is not None else 0
+                    max_sp = sb['max_shield_sp'] if sb['max_shield_sp'] is not None else 0
+                    armour = sb['armour'] if sb['armour'] is not None else 0
+                    status = sb['status'] if sb['status'] else 'active'
+                    self.base_ed_integrity_entry.insert(0, f"{int(integ)}")
+                    self.base_ed_max_integrity_label.config(text=f"{int(max_integ)}")
+                    self.base_ed_shield_entry.insert(0, f"{int(sp)}")
+                    self.base_ed_max_shield_label.config(text=f"{int(max_sp)}")
+                    self.base_ed_armour_label.config(text=f"{int(armour)}")
+                    self.base_ed_status_combo.set(status)
+            conn.close()
         except Exception as ex:
             self._base_ed_msg(f"Refresh combat failed: {ex}", ok=False)
+
+    def _base_ed_save_combat_state(self):
+        """Save integrity, shield_sp, and status. Starbases only."""
+        if not self.base_ed_current:
+            self._base_ed_msg("Load a base first.", ok=False)
+            return
+        kind, bid = self.base_ed_current
+        if kind != 'starbase':
+            self._base_ed_msg("Combat state only applies to starbases.", ok=False)
+            return
+        try:
+            integ_str = self.base_ed_integrity_entry.get().strip()
+            sp_str = self.base_ed_shield_entry.get().strip()
+            new_status = self.base_ed_status_combo.get()
+            if not integ_str.isdigit() or not sp_str.isdigit():
+                messagebox.showerror("Input error",
+                                      "Integrity and Shield SP must be non-negative integers.")
+                return
+            integ = int(integ_str)
+            sp = int(sp_str)
+            if new_status not in ('active', 'destroyed'):
+                messagebox.showerror("Input error",
+                                      "Status must be 'active' or 'destroyed'.")
+                return
+
+            # Warn before setting destroyed (cascades to docked ships)
+            if new_status == 'destroyed':
+                # Check for docked ships
+                conn = self._base_ed_rw_conn()
+                docked = conn.execute(
+                    "SELECT COUNT(*) FROM ships WHERE docked_at_base_id = ? AND integrity > 0",
+                    (bid,)
+                ).fetchone()[0]
+                conn.close()
+                confirm_msg = (f"Setting status to 'destroyed' will wipe "
+                                 f"{docked} docked ship{'s' if docked != 1 else ''}. "
+                                 f"Proceed?")
+                if not messagebox.askyesno("Confirm destruction", confirm_msg):
+                    return
+
+            conn = self._base_ed_rw_conn()
+            sb = conn.execute(
+                "SELECT max_integrity, max_shield_sp, status FROM starbases WHERE base_id = ?",
+                (bid,)
+            ).fetchone()
+            max_integ = int(sb['max_integrity'] or 0)
+            max_sp = int(sb['max_shield_sp'] or 0)
+            clamped_integ = min(integ, max_integ) if max_integ > 0 else integ
+            clamped_sp = min(sp, max_sp)
+            old_status = sb['status'] or 'active'
+
+            conn.execute(
+                """UPDATE starbases SET integrity = ?, shield_sp = ?, status = ?
+                   WHERE base_id = ?""",
+                (clamped_integ, clamped_sp, new_status, bid)
+            )
+
+            # If transitioning to destroyed, cascade-destroy docked ships
+            if new_status == 'destroyed' and old_status != 'destroyed':
+                conn.execute(
+                    """UPDATE ships SET integrity = 0, docked_at_base_id = NULL
+                       WHERE docked_at_base_id = ? AND integrity > 0""",
+                    (bid,)
+                )
+                # Also force integrity to 0 on the base itself when destroyed
+                conn.execute(
+                    "UPDATE starbases SET integrity = 0 WHERE base_id = ?",
+                    (bid,)
+                )
+            # If transitioning FROM destroyed back to active, leave docked ships alone
+            # (they're already wrecked — GM can repair them in the ship editor)
+
+            conn.commit()
+            conn.close()
+
+            msg_bits = []
+            if clamped_integ != integ:
+                msg_bits.append(f"integrity clamped to {clamped_integ} (max {max_integ})")
+            if clamped_sp != sp:
+                msg_bits.append(f"shield SP clamped to {clamped_sp} (max {max_sp})")
+            if new_status != old_status:
+                msg_bits.append(f"status {old_status} → {new_status}")
+            note = " — " + "; ".join(msg_bits) if msg_bits else ""
+            self._base_ed_msg(f"Combat state saved{note}")
+            self._base_ed_refresh_combat()
+        except Exception as ex:
+            self._base_ed_msg(f"Save combat state failed: {ex}", ok=False)
+
+    def _base_ed_repair_full(self):
+        """Set starbase to active, full integrity, full shields."""
+        if not self.base_ed_current:
+            self._base_ed_msg("Load a base first.", ok=False)
+            return
+        kind, bid = self.base_ed_current
+        if kind != 'starbase':
+            self._base_ed_msg("Repair only applies to starbases.", ok=False)
+            return
+        if not messagebox.askyesno(
+                "Confirm",
+                "Restore this starbase to ACTIVE status with full integrity "
+                "and shields? (Does not repair previously-wiped docked ships.)"):
+            return
+        try:
+            conn = self._base_ed_rw_conn()
+            conn.execute(
+                """UPDATE starbases SET
+                       integrity = max_integrity,
+                       shield_sp = max_shield_sp,
+                       status = 'active'
+                   WHERE base_id = ?""",
+                (bid,)
+            )
+            conn.commit()
+            conn.close()
+            self._base_ed_msg("Starbase repaired and set to active.")
+            self._base_ed_refresh_combat()
+        except Exception as ex:
+            self._base_ed_msg(f"Repair failed: {ex}", ok=False)
 
     def _base_ed_list_add(self):
         if not self.base_ed_current:
