@@ -192,7 +192,9 @@ Active scanning **cannot be combined with movement** — you are sitting still, 
 
 **SCANSYSTEM** — Produces a full 25×25 system map showing all celestial bodies. Non-probabilistic: if your ship has at least one sensor component, it sees everything. Celestial bodies are too large to hide from a working scanner at system ranges. Does not reveal ships or bases.
 
-**SCANSURFACE** — Scans the terrain of a planet you are landed on or orbiting.
+**SCANSURFACE** — Scans the terrain of a planet you are landed on or orbiting. Sets the surface_scanned flag on your prefect's knowledge entry for that body.
+
+**SURVEY** — 5 OC. Scans for jump routes leaving the current system. Reveals the IDs of neighbouring systems so you can `JUMP` to them. See the **Knowledge System** section for how this fits into exploration.
 
 ### Orbital & Docking
 
@@ -256,6 +258,10 @@ BUY 45687590 120 4 INSTALL   # Buy + install 4 more engines (240 ST, 4800 cr)
 ### Faction Changes
 
 **CHANGEFACTION** `<faction_id> [reason]` — Request to join a different faction (GM-moderated). This is a **prefect-scoped order** — file it in a `prefect:` block, not a `ship:` block. The turn auto-holds when you submit this so the GM can review; once approved your faction updates immediately and all your ships fly the new banner.
+
+### Sharing Knowledge
+
+**SHARE** `<type> <id> FACTION` · **SHARE** `<type> <id> PREFECT <prefect_id>` — **Prefect-scoped order** (file in a `prefect:` block, not a `ship:` block). Free. Shares knowledge of an object with your faction or a specific prefect. See the **Knowledge System** section for full details and restrictions.
 
 ## Trading Economy
 
@@ -435,6 +441,69 @@ When your ship participates in combat, your ship report includes a Combat sectio
 | 13 | IMP | Imperial Navy |
 | 14 | FRN | Frontier Coalition |
 | 15 | SYN | Syndicate |
+
+## Knowledge System
+
+The game tracks what each prefect personally knows. You don't automatically know about every system, base, or planet in the galaxy — you have to discover or share information about them.
+
+### Three layers of knowledge
+
+1. **Public Knowledge** — Things every player knows from the start. The 3 starter systems, their celestial bodies, the public starbases in them, and the standard items/components catalogue. The GM can mark new things as public over time, but most discoveries start private.
+
+2. **Prefect Knowledge** — Things you've personally learned through your ships' actions. Once you visit a system, scan a base, or survey a route, your prefect remembers it forever. This is your private intel — it travels with you between factions.
+
+3. **Faction Knowledge** — Things that members of your faction have shared with the group. While you're a member of a faction, you have read access to the faction's full knowledge pool. **If you leave the faction, you immediately lose this access** — but anything you personally knew before joining still belongs to your prefect.
+
+When the game checks "do you know X?", it accepts a yes from any of the three layers (public OR personal OR faction).
+
+### How to discover things
+
+- **Visit a system** (JUMP to it) — grants knowledge of the system and all its celestial bodies.
+- **SURVEY** the current system (5 OC) — reveals the IDs of neighbouring systems via jump routes. You don't know what's *in* those neighbours, just that they exist and you could JUMP there.
+- **SCANSYSTEM** (20 OC) — detects ships and bases within scanner range. Detected starbases are added to your permanent knowledge.
+- **SCANLOCATION** (20 OC) — local sweep, similar effect for nearby objects.
+- **SCANSURFACE** (20 OC) — flips a "surface scanned" flag on the celestial body you're orbiting/landed on. Required for some future surface ops.
+- **DOCK** at a base — auto-grants knowledge of that base if you didn't already know it (you're docking at it, after all).
+
+### What this means in practice
+
+- You can't `JUMP` to a system you've never heard of. Use `SURVEY` to discover routes from systems you can already reach, then `JUMP` to one of the newly-discovered destinations.
+- You can't `DOCK` at a starbase you don't know about, unless you happen to be at its grid square (in which case the dock attempt grants knowledge automatically).
+- Your contacts list in reports only shows things your prefect personally knows — never information from other prefects.
+
+### Sharing knowledge
+
+The `SHARE` order is **prefect-scoped** (file it in a `PREFECT` block, not against a ship). It costs nothing.
+
+```
+SHARE <type> <id> FACTION
+SHARE <type> <id> PREFECT <prefect_id>
+```
+
+Examples:
+```
+SHARE SYSTEM 472 FACTION
+SHARE STARBASE 12340001 PREFECT 88005432
+```
+
+Valid object types: `system` (or `star_system`), `body` (or `celestial_body`), `starbase` (or `base`), `port` (or `surface_port`), `outpost`.
+
+Restrictions:
+- You must personally know the object you're sharing.
+- You can't share public objects (everyone already knows them).
+- Sharing with a specific prefect requires you to know that prefect — either through known_contacts or by being in the same faction.
+- You can't share with yourself.
+- One object per SHARE order — sharing a system does not auto-share its bodies.
+
+What happens:
+- **`SHARE … FACTION`** — adds the object to the faction's pool. All current and future members can access it.
+- **`SHARE … PREFECT <id>`** — writes a personal knowledge row for the recipient. They keep it even if they later leave their faction.
+- Re-sharing the same object is a silent no-op with attribution to the original contributor.
+
+### Faction membership transitions
+
+- **Joining a faction**: you instantly have read access to the faction's entire knowledge pool. No new rows are created — `prefect_knows` checks faction membership at query time.
+- **Leaving a faction**: you immediately lose read access to the faction's pool. Your personal knowledge is unchanged. Anything you contributed to that faction's pool stays with the faction (a one-way gift).
 
 ## Reading Your Reports
 

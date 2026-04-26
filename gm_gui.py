@@ -120,6 +120,7 @@ class StellarDominionGUI:
         self._build_dbbrowser_tab()
         self._build_ship_editor_tab()
         self._build_base_editor_tab()
+        self._build_knowledge_tab()
         self._build_settings_tab()
 
         # Right: console output
@@ -3702,6 +3703,544 @@ class StellarDominionGUI:
             self._base_ed_msg(f"{lt.upper()} list cleared.")
         except Exception as ex:
             self._base_ed_msg(f"Clear failed: {ex}", ok=False)
+
+    # ========================================================================
+    # Tab: Knowledge (Phase 4 — view/edit prefect & faction knowledge,
+    #                 toggle is_public flags on objects)
+    # ========================================================================
+
+    def _build_knowledge_tab(self):
+        import tkinter as tk
+        from tkinter import ttk, messagebox
+        tab = ttk.Frame(self.notebook, padding=8)
+        self.notebook.add(tab, text="Knowledge")
+
+        # ---- Top row: prefect picker + status ----
+        top = ttk.Frame(tab)
+        top.pack(fill=tk.X, pady=(0, 6))
+        ttk.Label(top, text="Prefect:", width=10).pack(side=tk.LEFT)
+        self.k_prefect_combo = ttk.Combobox(top, width=42, state='readonly')
+        self.k_prefect_combo.pack(side=tk.LEFT, padx=(2, 8))
+        self.k_prefect_combo.bind('<<ComboboxSelected>>',
+                                    lambda e: self._knowledge_refresh())
+        ttk.Button(top, text="Refresh", width=10,
+                   command=self._knowledge_load_prefects).pack(side=tk.LEFT, padx=2)
+        self.k_status = ttk.Label(top, text="", foreground="#888")
+        self.k_status.pack(side=tk.LEFT, padx=(12, 0))
+
+        # ---- Two side-by-side panes: Personal | Faction ----
+        panes = ttk.Frame(tab)
+        panes.pack(fill=tk.BOTH, expand=True, pady=2)
+
+        # Personal pane (left)
+        left = ttk.LabelFrame(panes, text="Personal Knowledge (prefect_knowledge)",
+                                padding=4)
+        left.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 4))
+        cols_p = ('object_type', 'object_id', 'name', 'discovered', 'flags')
+        self.k_personal_tree = ttk.Treeview(left, columns=cols_p, show='headings', height=14)
+        for c, w in [('object_type', 110), ('object_id', 80),
+                       ('name', 180), ('discovered', 90), ('flags', 100)]:
+            self.k_personal_tree.heading(c, text=c.replace('_', ' ').title())
+            self.k_personal_tree.column(c, width=w, anchor=tk.W)
+        self.k_personal_tree.pack(fill=tk.BOTH, expand=True)
+        pbtn = ttk.Frame(left)
+        pbtn.pack(fill=tk.X, pady=(4, 0))
+        ttk.Button(pbtn, text="GM Grant…", width=12,
+                   command=self._knowledge_gm_grant_personal).pack(side=tk.LEFT, padx=2)
+        ttk.Button(pbtn, text="Revoke selected", width=14,
+                   command=self._knowledge_revoke_personal).pack(side=tk.LEFT, padx=2)
+        ttk.Button(pbtn, text="Toggle surface_scanned", width=20,
+                   command=self._knowledge_toggle_surface_scanned).pack(side=tk.LEFT, padx=2)
+
+        # Faction pane (right)
+        right = ttk.LabelFrame(panes, text="Faction Knowledge (faction_knowledge)",
+                                 padding=4)
+        right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(4, 0))
+        cols_f = ('object_type', 'object_id', 'name', 'shared_by', 'shared_turn')
+        self.k_faction_tree = ttk.Treeview(right, columns=cols_f, show='headings', height=14)
+        for c, w in [('object_type', 110), ('object_id', 80),
+                       ('name', 180), ('shared_by', 130), ('shared_turn', 80)]:
+            self.k_faction_tree.heading(c, text=c.replace('_', ' ').title())
+            self.k_faction_tree.column(c, width=w, anchor=tk.W)
+        self.k_faction_tree.pack(fill=tk.BOTH, expand=True)
+        fbtn = ttk.Frame(right)
+        fbtn.pack(fill=tk.X, pady=(4, 0))
+        ttk.Button(fbtn, text="GM Grant to faction…", width=20,
+                   command=self._knowledge_gm_grant_faction).pack(side=tk.LEFT, padx=2)
+        ttk.Button(fbtn, text="Revoke selected", width=14,
+                   command=self._knowledge_revoke_faction).pack(side=tk.LEFT, padx=2)
+
+        # ---- Public flags subsection ----
+        pub_frame = ttk.LabelFrame(tab, text="Public Flags (is_public)", padding=6)
+        pub_frame.pack(fill=tk.X, pady=(8, 0))
+        pub_top = ttk.Frame(pub_frame)
+        pub_top.pack(fill=tk.X)
+        ttk.Label(pub_top, text="Object type:").pack(side=tk.LEFT, padx=(0, 4))
+        self.k_pub_type = ttk.Combobox(pub_top, width=18, state='readonly',
+                                          values=['star_system', 'celestial_body',
+                                                  'starbase', 'surface_port', 'outpost'])
+        self.k_pub_type.set('star_system')
+        self.k_pub_type.pack(side=tk.LEFT)
+        self.k_pub_type.bind('<<ComboboxSelected>>',
+                              lambda e: self._knowledge_load_pub_objects())
+        ttk.Button(pub_top, text="Load", width=8,
+                   command=self._knowledge_load_pub_objects).pack(side=tk.LEFT, padx=4)
+        self.k_pub_status = ttk.Label(pub_top, text="", foreground="#888")
+        self.k_pub_status.pack(side=tk.LEFT, padx=(12, 0))
+
+        cols_pub = ('id', 'name', 'is_public', 'extra')
+        self.k_pub_tree = ttk.Treeview(pub_frame, columns=cols_pub, show='headings', height=8)
+        for c, w in [('id', 90), ('name', 220),
+                       ('is_public', 80), ('extra', 250)]:
+            self.k_pub_tree.heading(c, text=c.replace('_', ' ').title())
+            self.k_pub_tree.column(c, width=w, anchor=tk.W)
+        self.k_pub_tree.pack(fill=tk.BOTH, expand=True, pady=(4, 0))
+        pub_btn = ttk.Frame(pub_frame)
+        pub_btn.pack(fill=tk.X, pady=(4, 0))
+        ttk.Button(pub_btn, text="Toggle is_public on selected", width=26,
+                   command=self._knowledge_toggle_public).pack(side=tk.LEFT, padx=2)
+
+        # Initial load
+        self._knowledge_load_prefects()
+        self._knowledge_load_pub_objects()
+
+    def _knowledge_msg(self, text, ok=True):
+        self.k_status.config(text=text, foreground=("#080" if ok else "#a00"))
+
+    def _knowledge_rw_conn(self):
+        """Open a read-write DB connection (with universe attached)."""
+        import sys
+        if self.config_data['project_dir'] not in sys.path:
+            sys.path.insert(0, self.config_data['project_dir'])
+        from db.database import get_connection
+        return get_connection()
+
+    def _knowledge_load_prefects(self):
+        try:
+            conn = self._knowledge_rw_conn()
+            rows = conn.execute(
+                """SELECT pr.prefect_id, pr.name, pr.faction_id, f.name AS fname
+                   FROM prefects pr
+                   LEFT JOIN universe.factions f ON pr.faction_id = f.faction_id
+                   ORDER BY pr.name"""
+            ).fetchall()
+            conn.close()
+            labels = []
+            self.k_prefect_map = {}
+            for r in rows:
+                fac = (f" [{r['fname']}]" if r['fname']
+                       else (f" [faction {r['faction_id']}]"
+                             if r['faction_id'] else " [no faction]"))
+                lbl = f"{r['name']} ({r['prefect_id']}){fac}"
+                labels.append(lbl)
+                self.k_prefect_map[lbl] = (r['prefect_id'], r['faction_id'])
+            self.k_prefect_combo['values'] = labels
+            if labels and not self.k_prefect_combo.get():
+                self.k_prefect_combo.set(labels[0])
+            self._knowledge_refresh()
+        except Exception as ex:
+            self._knowledge_msg(f"Load prefects failed: {ex}", ok=False)
+
+    def _knowledge_current_prefect(self):
+        sel = self.k_prefect_combo.get()
+        return self.k_prefect_map.get(sel)
+
+    def _knowledge_object_name(self, conn, otype, oid):
+        try:
+            if otype == 'star_system':
+                r = conn.execute("SELECT name FROM star_systems WHERE system_id = ?", (oid,)).fetchone()
+            elif otype == 'celestial_body':
+                r = conn.execute("SELECT name FROM celestial_bodies WHERE body_id = ?", (oid,)).fetchone()
+            elif otype == 'starbase':
+                r = conn.execute("SELECT name FROM starbases WHERE base_id = ?", (oid,)).fetchone()
+            elif otype == 'surface_port':
+                r = conn.execute("SELECT name FROM surface_ports WHERE port_id = ?", (oid,)).fetchone()
+            elif otype == 'outpost':
+                r = conn.execute("SELECT name FROM outposts WHERE outpost_id = ?", (oid,)).fetchone()
+            else:
+                return None
+            return r['name'] if r else None
+        except Exception:
+            return None
+
+    def _knowledge_refresh(self):
+        # Clear trees
+        for tv in (self.k_personal_tree, self.k_faction_tree):
+            for row_id in tv.get_children():
+                tv.delete(row_id)
+        info = self._knowledge_current_prefect()
+        if not info:
+            return
+        prefect_id, faction_id = info
+        gid = self.config_data['game_id']
+        try:
+            conn = self._knowledge_rw_conn()
+            # Personal
+            for r in conn.execute(
+                """SELECT object_type, object_id,
+                          discovered_turn_year AS ty, discovered_turn_week AS tw,
+                          surface_scanned AS ss
+                   FROM prefect_knowledge
+                   WHERE prefect_id = ? AND game_id = ?
+                   ORDER BY object_type, object_id""",
+                (prefect_id, gid)
+            ).fetchall():
+                disc = (f"Y{r['ty']:03d}.W{r['tw']:02d}"
+                        if r['ty'] is not None and r['tw'] is not None else "")
+                flags = "surface_scanned" if r['ss'] else ""
+                name = self._knowledge_object_name(conn, r['object_type'], r['object_id']) or ""
+                self.k_personal_tree.insert('', tk.END, values=(
+                    r['object_type'], r['object_id'], name, disc, flags))
+            # Faction
+            faction_count = 0
+            if faction_id:
+                for r in conn.execute(
+                    """SELECT object_type, object_id, contributed_by_prefect AS cb,
+                              shared_turn_year AS ty, shared_turn_week AS tw
+                       FROM faction_knowledge
+                       WHERE faction_id = ? AND game_id = ?
+                       ORDER BY object_type, object_id""",
+                    (faction_id, gid)
+                ).fetchall():
+                    contrib = ""
+                    if r['cb']:
+                        cb_row = conn.execute(
+                            "SELECT name FROM prefects WHERE prefect_id = ?",
+                            (r['cb'],)
+                        ).fetchone()
+                        contrib = (f"{cb_row['name']} ({r['cb']})"
+                                   if cb_row else f"prefect {r['cb']}")
+                    when = (f"Y{r['ty']:03d}.W{r['tw']:02d}"
+                            if r['ty'] is not None and r['tw'] is not None else "")
+                    name = self._knowledge_object_name(conn, r['object_type'], r['object_id']) or ""
+                    self.k_faction_tree.insert('', tk.END, values=(
+                        r['object_type'], r['object_id'], name, contrib, when))
+                    faction_count += 1
+            conn.close()
+            personal_n = len(self.k_personal_tree.get_children())
+            self._knowledge_msg(
+                f"{personal_n} personal row(s); "
+                f"{faction_count} faction row(s)" + (
+                    "" if faction_id else " (prefect has no faction)"))
+        except Exception as ex:
+            self._knowledge_msg(f"Refresh failed: {ex}", ok=False)
+
+    def _knowledge_gm_grant_personal(self):
+        info = self._knowledge_current_prefect()
+        if not info:
+            self._knowledge_msg("Select a prefect first.", ok=False)
+            return
+        otype, oid = self._knowledge_grant_dialog()
+        if not otype:
+            return
+        try:
+            conn = self._knowledge_rw_conn()
+            from db.database import grant_knowledge, is_object_public
+            if is_object_public(conn, otype, oid):
+                conn.close()
+                self._knowledge_msg(
+                    f"{otype} {oid} is already public — no row needed.", ok=False)
+                return
+            inserted = grant_knowledge(conn, info[0],
+                                          self.config_data['game_id'],
+                                          otype, oid)
+            conn.commit()
+            conn.close()
+            if inserted:
+                self._knowledge_msg(f"Granted {otype} {oid} to prefect.")
+            else:
+                self._knowledge_msg(f"{otype} {oid} was already granted.", ok=False)
+            self._knowledge_refresh()
+        except Exception as ex:
+            self._knowledge_msg(f"Grant failed: {ex}", ok=False)
+
+    def _knowledge_revoke_personal(self):
+        info = self._knowledge_current_prefect()
+        if not info:
+            self._knowledge_msg("Select a prefect first.", ok=False)
+            return
+        sel = self.k_personal_tree.selection()
+        if not sel:
+            self._knowledge_msg("Select a row to revoke.", ok=False)
+            return
+        from tkinter import messagebox
+        if not messagebox.askyesno("Confirm",
+                                      "Revoke this knowledge from the prefect? "
+                                      "(Their faction's row, if any, is untouched.)"):
+            return
+        try:
+            conn = self._knowledge_rw_conn()
+            for item_id in sel:
+                vals = self.k_personal_tree.item(item_id)['values']
+                otype, oid = str(vals[0]), int(vals[1])
+                conn.execute(
+                    """DELETE FROM prefect_knowledge
+                       WHERE prefect_id = ? AND game_id = ?
+                             AND object_type = ? AND object_id = ?""",
+                    (info[0], self.config_data['game_id'], otype, oid)
+                )
+            conn.commit()
+            conn.close()
+            self._knowledge_msg(f"Revoked {len(sel)} row(s).")
+            self._knowledge_refresh()
+        except Exception as ex:
+            self._knowledge_msg(f"Revoke failed: {ex}", ok=False)
+
+    def _knowledge_toggle_surface_scanned(self):
+        info = self._knowledge_current_prefect()
+        if not info:
+            self._knowledge_msg("Select a prefect first.", ok=False)
+            return
+        sel = self.k_personal_tree.selection()
+        if not sel:
+            self._knowledge_msg("Select a row.", ok=False)
+            return
+        try:
+            conn = self._knowledge_rw_conn()
+            for item_id in sel:
+                vals = self.k_personal_tree.item(item_id)['values']
+                otype, oid = str(vals[0]), int(vals[1])
+                if otype != 'celestial_body':
+                    continue
+                cur = conn.execute(
+                    """SELECT surface_scanned FROM prefect_knowledge
+                       WHERE prefect_id = ? AND game_id = ?
+                             AND object_type = 'celestial_body' AND object_id = ?""",
+                    (info[0], self.config_data['game_id'], oid)
+                ).fetchone()
+                new_val = 0 if (cur and cur['surface_scanned']) else 1
+                conn.execute(
+                    """UPDATE prefect_knowledge SET surface_scanned = ?
+                       WHERE prefect_id = ? AND game_id = ?
+                             AND object_type = 'celestial_body' AND object_id = ?""",
+                    (new_val, info[0], self.config_data['game_id'], oid)
+                )
+            conn.commit()
+            conn.close()
+            self._knowledge_msg("Toggled surface_scanned on selected celestial bodies.")
+            self._knowledge_refresh()
+        except Exception as ex:
+            self._knowledge_msg(f"Toggle failed: {ex}", ok=False)
+
+    def _knowledge_gm_grant_faction(self):
+        info = self._knowledge_current_prefect()
+        if not info:
+            self._knowledge_msg("Select a prefect first.", ok=False)
+            return
+        if not info[1]:
+            self._knowledge_msg("Selected prefect is not in a faction.", ok=False)
+            return
+        otype, oid = self._knowledge_grant_dialog()
+        if not otype:
+            return
+        try:
+            conn = self._knowledge_rw_conn()
+            from db.database import grant_faction_knowledge, is_object_public
+            if is_object_public(conn, otype, oid):
+                conn.close()
+                self._knowledge_msg(
+                    f"{otype} {oid} is already public — no need to share.", ok=False)
+                return
+            game = conn.execute(
+                "SELECT current_year, current_week FROM games WHERE game_id = ?",
+                (self.config_data['game_id'],)
+            ).fetchone()
+            ty = game['current_year'] if game else None
+            tw = game['current_week'] if game else None
+            inserted = grant_faction_knowledge(
+                conn, info[1], self.config_data['game_id'], otype, oid,
+                contributor_prefect_id=info[0], turn_year=ty, turn_week=tw
+            )
+            conn.commit()
+            conn.close()
+            if inserted:
+                self._knowledge_msg(f"Granted {otype} {oid} to faction.")
+            else:
+                self._knowledge_msg(
+                    f"{otype} {oid} was already in faction knowledge.", ok=False)
+            self._knowledge_refresh()
+        except Exception as ex:
+            self._knowledge_msg(f"Grant failed: {ex}", ok=False)
+
+    def _knowledge_revoke_faction(self):
+        info = self._knowledge_current_prefect()
+        if not info or not info[1]:
+            self._knowledge_msg("Select a prefect with a faction.", ok=False)
+            return
+        sel = self.k_faction_tree.selection()
+        if not sel:
+            self._knowledge_msg("Select a row to revoke.", ok=False)
+            return
+        from tkinter import messagebox
+        if not messagebox.askyesno("Confirm",
+                                      "Remove this knowledge from the faction's pool? "
+                                      "All members lose access to this object via the "
+                                      "faction layer (personal records untouched)."):
+            return
+        try:
+            conn = self._knowledge_rw_conn()
+            for item_id in sel:
+                vals = self.k_faction_tree.item(item_id)['values']
+                otype, oid = str(vals[0]), int(vals[1])
+                conn.execute(
+                    """DELETE FROM faction_knowledge
+                       WHERE faction_id = ? AND game_id = ?
+                             AND object_type = ? AND object_id = ?""",
+                    (info[1], self.config_data['game_id'], otype, oid)
+                )
+            conn.commit()
+            conn.close()
+            self._knowledge_msg(f"Revoked {len(sel)} faction row(s).")
+            self._knowledge_refresh()
+        except Exception as ex:
+            self._knowledge_msg(f"Revoke failed: {ex}", ok=False)
+
+    def _knowledge_grant_dialog(self):
+        """Modal: pick object type + id. Returns (type, id) or (None, None)."""
+        import tkinter as tk
+        from tkinter import ttk
+        win = tk.Toplevel(self.root)
+        win.title("GM Grant Knowledge")
+        win.geometry("360x180")
+        win.transient(self.root)
+        win.grab_set()
+        ttk.Label(win, text="Object type:").grid(row=0, column=0, sticky=tk.W,
+                                                    padx=8, pady=8)
+        type_combo = ttk.Combobox(win, width=22, state='readonly',
+                                    values=['star_system', 'celestial_body',
+                                              'starbase', 'surface_port', 'outpost'])
+        type_combo.set('star_system')
+        type_combo.grid(row=0, column=1, padx=8, pady=8, sticky=tk.W)
+        ttk.Label(win, text="Object ID:").grid(row=1, column=0, sticky=tk.W,
+                                                  padx=8, pady=8)
+        id_entry = ttk.Entry(win, width=16)
+        id_entry.grid(row=1, column=1, padx=8, pady=8, sticky=tk.W)
+        result = [None, None]
+        def ok():
+            from tkinter import messagebox
+            try:
+                oid_val = int(id_entry.get().strip())
+                if oid_val <= 0:
+                    raise ValueError
+            except Exception:
+                messagebox.showerror("Input error", "Object ID must be a positive integer.")
+                return
+            result[0] = type_combo.get()
+            result[1] = oid_val
+            win.destroy()
+        def cancel():
+            win.destroy()
+        btns = ttk.Frame(win)
+        btns.grid(row=2, column=0, columnspan=2, pady=12)
+        ttk.Button(btns, text="Grant", width=10, command=ok).pack(side=tk.LEFT, padx=4)
+        ttk.Button(btns, text="Cancel", width=10, command=cancel).pack(side=tk.LEFT, padx=4)
+        win.wait_window()
+        return tuple(result)
+
+    def _knowledge_load_pub_objects(self):
+        for row_id in self.k_pub_tree.get_children():
+            self.k_pub_tree.delete(row_id)
+        otype = self.k_pub_type.get()
+        try:
+            conn = self._knowledge_rw_conn()
+            if otype == 'star_system':
+                rows = conn.execute(
+                    "SELECT system_id AS id, name, is_public FROM star_systems "
+                    "ORDER BY system_id"
+                ).fetchall()
+                extra_fn = lambda r: ""
+            elif otype == 'celestial_body':
+                rows = conn.execute(
+                    """SELECT cb.body_id AS id, cb.name,
+                              cb.is_public, cb.body_type, ss.name AS sys_name
+                       FROM celestial_bodies cb
+                       JOIN star_systems ss ON cb.system_id = ss.system_id
+                       ORDER BY cb.system_id, cb.body_id"""
+                ).fetchall()
+                extra_fn = lambda r: f"{r['body_type']} in {r['sys_name']}"
+            elif otype == 'starbase':
+                rows = conn.execute(
+                    """SELECT sb.base_id AS id, sb.name, sb.is_public,
+                              ss.name AS sys_name
+                       FROM starbases sb
+                       LEFT JOIN star_systems ss ON sb.system_id = ss.system_id
+                       ORDER BY sb.base_id"""
+                ).fetchall()
+                extra_fn = lambda r: f"in {r['sys_name']}" if r['sys_name'] else ""
+            elif otype == 'surface_port':
+                try:
+                    rows = conn.execute(
+                        "SELECT port_id AS id, name, is_public FROM surface_ports "
+                        "ORDER BY port_id"
+                    ).fetchall()
+                except Exception:
+                    rows = []
+                extra_fn = lambda r: ""
+            elif otype == 'outpost':
+                try:
+                    rows = conn.execute(
+                        "SELECT outpost_id AS id, name, is_public FROM outposts "
+                        "ORDER BY outpost_id"
+                    ).fetchall()
+                except Exception:
+                    rows = []
+                extra_fn = lambda r: ""
+            else:
+                rows = []
+                extra_fn = lambda r: ""
+            for r in rows:
+                extra = ""
+                try:
+                    extra = extra_fn(r)
+                except Exception:
+                    pass
+                pub = "yes" if r['is_public'] else "no"
+                self.k_pub_tree.insert('', tk.END, values=(
+                    r['id'], r['name'], pub, extra))
+            conn.close()
+            n_pub = sum(1 for r in rows if r['is_public'])
+            self.k_pub_status.config(
+                text=f"{len(rows)} object(s); {n_pub} public",
+                foreground="#888")
+        except Exception as ex:
+            self.k_pub_status.config(text=f"Load failed: {ex}", foreground="#a00")
+
+    def _knowledge_toggle_public(self):
+        sel = self.k_pub_tree.selection()
+        if not sel:
+            self.k_pub_status.config(text="Select rows to toggle.", foreground="#a00")
+            return
+        otype = self.k_pub_type.get()
+        try:
+            conn = self._knowledge_rw_conn()
+            tables = {
+                'star_system':    ('star_systems', 'system_id'),
+                'celestial_body': ('celestial_bodies', 'body_id'),
+                'starbase':       ('starbases', 'base_id'),
+                'surface_port':   ('surface_ports', 'port_id'),
+                'outpost':        ('outposts', 'outpost_id'),
+            }
+            tbl, idcol = tables[otype]
+            for item_id in sel:
+                vals = self.k_pub_tree.item(item_id)['values']
+                oid = int(vals[0])
+                cur = conn.execute(
+                    f"SELECT is_public FROM {tbl} WHERE {idcol} = ?", (oid,)
+                ).fetchone()
+                if cur is None:
+                    continue
+                new_val = 0 if cur['is_public'] else 1
+                conn.execute(
+                    f"UPDATE {tbl} SET is_public = ? WHERE {idcol} = ?",
+                    (new_val, oid)
+                )
+            conn.commit()
+            conn.close()
+            self.k_pub_status.config(
+                text=f"Toggled {len(sel)} {otype} row(s).", foreground="#080")
+            self._knowledge_load_pub_objects()
+        except Exception as ex:
+            self.k_pub_status.config(text=f"Toggle failed: {ex}", foreground="#a00")
 
     # ========================================================================
     # Tab: Settings
