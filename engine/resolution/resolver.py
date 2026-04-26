@@ -4138,6 +4138,8 @@ class TurnResolver:
                 params = order['params']
                 if cmd == 'CHANGEFACTION':
                     results.append(self._resolve_prefect_changefaction(prefect_id, params))
+                elif cmd == 'SHARE':
+                    results.append(self._resolve_prefect_share(prefect_id, params))
                 else:
                     results.append({
                         'command': cmd, 'params': params,
@@ -4692,6 +4694,231 @@ class TurnResolver:
             generate_market_prices(self.conn, self.game_id, year, week)
 
         return year, week
+
+    def _resolve_prefect_share(self, prefect_id, params):
+        """SHARE <type> <id> [FACTION | PREFECT <id>] — share knowledge of an
+        object with the prefect's own faction or with another specific prefect.
+
+        Validation:
+        - The sharing prefect must personally know the object (public OR
+          personal OR via faction). Unknown objects → reject.
+        - For PREFECT target: the sharing prefect must know of the recipient
+          (via known_contacts) — prevents random ID guessing.
+        - For FACTION target: the sharing prefect must be in a faction.
+        - Public objects can't be shared (no-op — already known to all).
+
+        Side effects:
+        - FACTION: writes a faction_knowledge row (silent no-op if already
+          present from another contributor).
+        - PREFECT: writes a prefect_knowledge row for the recipient (silent
+          no-op if recipient already knows via any layer).
+
+        v1 cost: 0 (orders are prefect-scoped; ship OC doesn't apply).
+        """
+        from db.database import (prefect_knows, is_object_public,
+                                   grant_faction_knowledge, grant_knowledge,
+                                   get_faction_knowledge_attribution)
+        otype = params.get('object_type')
+        oid = params.get('object_id')
+        target_kind = params.get('target_kind')
+        target_pid = params.get('target_prefect_id')
+
+        params_str = (
+            f"{otype} {oid} "
+            f"{'FACTION' if target_kind == 'faction' else f'PREFECT {target_pid}'}"
+        )
+
+        # Resolve the sharing prefect's faction
+        prefect = self.conn.execute(
+            "SELECT prefect_id, name, faction_id FROM prefects WHERE prefect_id = ?",
+            (prefect_id,)
+        ).fetchone()
+        if not prefect:
+            return {
+                'command': 'SHARE', 'params': params_str,
+                'success': False,
+                'message': f"Prefect {prefect_id} not found."
+            }
+
+        # Reject if the prefect doesn't know the object
+        if not prefect_knows(self.conn, prefect_id, self.game_id, otype, oid):
+            return {
+                'command': 'SHARE', 'params': params_str,
+                'success': False,
+                'message': (f"Cannot SHARE {otype} {oid}: you don't have "
+                            f"knowledge of this object.")
+            }
+
+        # Reject if object is public (no point sharing what everyone knows)
+        if is_object_public(self.conn, otype, oid):
+            return {
+                'command': 'SHARE', 'params': params_str,
+                'success': False,
+                'message': (f"Cannot SHARE {otype} {oid}: this object is "
+                            f"already publicly known to all players.")
+            }
+
+        # Get current turn for attribution
+        game = self.conn.execute(
+            "SELECT current_year, current_week FROM games WHERE game_id = ?",
+            (self.game_id,)
+        ).fetchone()
+        ty = game['current_year'] if game else None
+        tw = game['current_week'] if game else None
+
+        # Display name for the object (best-effort lookup)
+        obj_name = self._lookup_object_name(otype, oid) or f"{otype} {oid}"
+
+        if target_kind == 'faction':
+            if not prefect['faction_id']:
+                return {
+                    'command': 'SHARE', 'params': params_str,
+                    'success': False,
+                    'message': (f"Cannot SHARE to FACTION: you are not "
+                                f"currently a member of any faction.")
+                }
+            faction_id = prefect['faction_id']
+            faction = self.conn.execute(
+                "SELECT name FROM universe.factions WHERE faction_id = ?",
+                (faction_id,)
+            ).fetchone()
+            faction_name = faction['name'] if faction else f"faction {faction_id}"
+
+            inserted = grant_faction_knowledge(
+                self.conn, faction_id, self.game_id, otype, oid,
+                contributor_prefect_id=prefect_id,
+                turn_year=ty, turn_week=tw
+            )
+            self.conn.commit()
+            if inserted:
+                return {
+                    'command': 'SHARE', 'params': params_str,
+                    'success': True,
+                    'message': (f"Shared {obj_name} with {faction_name}. "
+                                f"All current and future faction members can "
+                                f"now access this knowledge.")
+                }
+            else:
+                # Silent dedupe — show who shared it first
+                attr = get_faction_knowledge_attribution(
+                    self.conn, faction_id, self.game_id, otype, oid)
+                if attr and attr[0]:
+                    contrib_row = self.conn.execute(
+                        "SELECT name FROM prefects WHERE prefect_id = ?",
+                        (attr[0],)
+                    ).fetchone()
+                    contrib_name = (contrib_row['name'] if contrib_row
+                                     else f"prefect {attr[0]}")
+                    when = (f" on Y{attr[1]:03d}.W{attr[2]:02d}"
+                            if attr[1] is not None and attr[2] is not None else "")
+                    return {
+                        'command': 'SHARE', 'params': params_str,
+                        'success': True,
+                        'message': (f"{obj_name} was already in {faction_name}'s "
+                                    f"shared knowledge "
+                                    f"(contributed by {contrib_name}{when}).")
+                    }
+                return {
+                    'command': 'SHARE', 'params': params_str,
+                    'success': True,
+                    'message': f"{obj_name} was already in {faction_name}'s shared knowledge."
+                }
+
+        else:  # target_kind == 'prefect'
+            # Self-share check
+            if target_pid == prefect_id:
+                return {
+                    'command': 'SHARE', 'params': params_str,
+                    'success': False,
+                    'message': "Cannot SHARE with yourself."
+                }
+            # Recipient must exist
+            recipient = self.conn.execute(
+                "SELECT prefect_id, name FROM prefects WHERE prefect_id = ?",
+                (target_pid,)
+            ).fetchone()
+            if not recipient:
+                return {
+                    'command': 'SHARE', 'params': params_str,
+                    'success': False,
+                    'message': f"Cannot SHARE: prefect {target_pid} not found."
+                }
+            # Sharer must know the recipient (via known_contacts)
+            knows_recipient = self.conn.execute(
+                """SELECT 1 FROM known_contacts
+                   WHERE prefect_id = ? AND object_type = 'prefect'
+                         AND object_id = ?""",
+                (prefect_id, target_pid)
+            ).fetchone()
+            # Also accept: prefects in the same faction know each other
+            same_faction = (prefect['faction_id'] is not None and
+                              prefect['faction_id'] == self.conn.execute(
+                "SELECT faction_id FROM prefects WHERE prefect_id = ?",
+                (target_pid,)
+            ).fetchone()['faction_id'])
+            if not knows_recipient and not same_faction:
+                return {
+                    'command': 'SHARE', 'params': params_str,
+                    'success': False,
+                    'message': (f"Cannot SHARE with {recipient['name']} "
+                                f"({target_pid}): you have no record of this "
+                                f"prefect (no known_contacts or shared faction).")
+                }
+            recipient_name = recipient['name']
+
+            # Recipient may already know via public/personal/their own faction
+            if prefect_knows(self.conn, target_pid, self.game_id, otype, oid):
+                return {
+                    'command': 'SHARE', 'params': params_str,
+                    'success': True,
+                    'message': (f"{recipient_name} already has knowledge of "
+                                f"{obj_name}. No share needed.")
+                }
+            # Write a personal knowledge row for the recipient
+            inserted = grant_knowledge(
+                self.conn, target_pid, self.game_id, otype, oid,
+                turn_year=ty, turn_week=tw
+            )
+            self.conn.commit()
+            return {
+                'command': 'SHARE', 'params': params_str,
+                'success': True,
+                'message': (f"Shared {obj_name} with {recipient_name} "
+                            f"({target_pid}). They now have personal knowledge "
+                            f"of this object.")
+            }
+
+    def _lookup_object_name(self, object_type, object_id):
+        """Best-effort lookup of an object's display name for share messages."""
+        try:
+            if object_type == 'star_system':
+                r = self.conn.execute(
+                    "SELECT name FROM star_systems WHERE system_id = ?", (object_id,)
+                ).fetchone()
+                return r['name'] if r else None
+            if object_type == 'celestial_body':
+                r = self.conn.execute(
+                    "SELECT name FROM celestial_bodies WHERE body_id = ?", (object_id,)
+                ).fetchone()
+                return r['name'] if r else None
+            if object_type == 'starbase':
+                r = self.conn.execute(
+                    "SELECT name FROM starbases WHERE base_id = ?", (object_id,)
+                ).fetchone()
+                return r['name'] if r else None
+            if object_type == 'surface_port':
+                r = self.conn.execute(
+                    "SELECT name FROM surface_ports WHERE port_id = ?", (object_id,)
+                ).fetchone()
+                return r['name'] if r else None
+            if object_type == 'outpost':
+                r = self.conn.execute(
+                    "SELECT name FROM outposts WHERE outpost_id = ?", (object_id,)
+                ).fetchone()
+                return r['name'] if r else None
+        except Exception:
+            return None
+        return None
 
     def close(self):
         """Close database connection."""

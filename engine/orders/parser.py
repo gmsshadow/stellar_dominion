@@ -39,6 +39,7 @@ VALID_COMMANDS = {
     'RENAMEPREFECT': {'params': 'rename_id_name', 'subject': 'both', 'description': 'Rename a prefect'},
     'RENAMEOFFICER': {'params': 'rename_officer', 'description': 'Rename an officer'},
     'CHANGEFACTION': {'params': 'changefaction_order', 'subject': 'prefect', 'description': 'Request to change faction (GM-moderated, prefect-scoped)'},
+    'SHARE': {'params': 'share_order', 'subject': 'prefect', 'description': 'Share knowledge: SHARE <type> <id> [FACTION | PREFECT <id>]'},
     'MODERATOR': {'params': 'moderator_order', 'description': 'Submit a free-text request to the GM'},
     'CLEAR': {'params': 'none', 'description': 'Clear all pending overflow orders from previous turns'},
     # Combat list management (per-ship; ships and bases have their own lists)
@@ -613,6 +614,84 @@ def parse_order(command_str, params):
             except ValueError:
                 return command, params, f"{command}: expected numeric faction_id"
         return command, params, f"{command}: expected parameters (faction_id [reason])"
+
+    elif spec['params'] == 'share_order':
+        # SHARE <type> <id> [FACTION | PREFECT <prefect_id>]
+        # Text: "SHARE SYSTEM 472 FACTION"
+        #       "SHARE STARBASE 12340001 PREFECT 88005432"
+        # YAML: {type: 'system', id: 472, target: 'faction'}
+        #       {type: 'starbase', id: 12340001, target: 'prefect', prefect_id: 88005432}
+        VALID_TYPES = {
+            'system':       'star_system',
+            'star_system':  'star_system',
+            'body':         'celestial_body',
+            'celestial':    'celestial_body',
+            'celestial_body': 'celestial_body',
+            'starbase':     'starbase',
+            'base':         'starbase',
+            'port':         'surface_port',
+            'surface_port': 'surface_port',
+            'outpost':      'outpost',
+        }
+
+        def _normalise(otype, oid, target_kind, target_pid):
+            otype_norm = VALID_TYPES.get(otype.lower())
+            if otype_norm is None:
+                return None, None, None, None, (
+                    f"{command}: unknown type '{otype}'. Valid: "
+                    f"{sorted(set(VALID_TYPES.keys()))}"
+                )
+            try:
+                oid_int = int(oid)
+            except (ValueError, TypeError):
+                return None, None, None, None, f"{command}: object id must be an integer"
+            if oid_int <= 0:
+                return None, None, None, None, f"{command}: object id must be positive"
+            tk = target_kind.lower() if target_kind else ''
+            if tk not in ('faction', 'prefect'):
+                return None, None, None, None, (
+                    f"{command}: target must be 'FACTION' or 'PREFECT <id>'"
+                )
+            if tk == 'prefect':
+                try:
+                    target_pid_int = int(target_pid)
+                except (ValueError, TypeError):
+                    return None, None, None, None, (
+                        f"{command}: PREFECT target requires a prefect id"
+                    )
+                if target_pid_int <= 0:
+                    return None, None, None, None, (
+                        f"{command}: prefect id must be positive"
+                    )
+                return otype_norm, oid_int, 'prefect', target_pid_int, None
+            return otype_norm, oid_int, 'faction', None, None
+
+        if isinstance(params, dict):
+            otype = str(params.get('type', '')).strip()
+            oid = params.get('id', params.get('object_id', None))
+            target = str(params.get('target', '')).strip().lower()
+            target_pid = params.get('prefect_id', params.get('target_prefect_id', None))
+            otype_n, oid_n, tk, tp, err = _normalise(otype, oid, target, target_pid)
+            if err:
+                return command, params, err
+            return command, {'object_type': otype_n, 'object_id': oid_n,
+                              'target_kind': tk, 'target_prefect_id': tp}, None
+        elif isinstance(params, str):
+            parts = params.strip().split()
+            if len(parts) < 3:
+                return command, params, (
+                    f"{command}: expected 'TYPE ID FACTION' or 'TYPE ID PREFECT <id>'"
+                )
+            otype = parts[0]
+            oid = parts[1]
+            target = parts[2]
+            target_pid = parts[3] if len(parts) >= 4 else None
+            otype_n, oid_n, tk, tp, err = _normalise(otype, oid, target, target_pid)
+            if err:
+                return command, params, err
+            return command, {'object_type': otype_n, 'object_id': oid_n,
+                              'target_kind': tk, 'target_prefect_id': tp}, None
+        return command, params, f"{command}: expected 'TYPE ID FACTION|PREFECT <id>'"
 
     elif spec['params'] == 'moderator_order':
         # MODERATOR: free-text request to GM

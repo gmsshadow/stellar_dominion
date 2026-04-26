@@ -1308,6 +1308,32 @@ def get_connection(state_db_path=None, universe_db_path=None):
         )
         conn.commit()
 
+    # ======================================================================
+    # FACTION KNOWLEDGE (Phase 3)
+    # ======================================================================
+    # Knowledge contributed to a faction by its members. Members of the
+    # faction read from this in addition to their personal prefect_knowledge.
+    # When a member leaves, their contributions stay (faction retains the
+    # gift); their access to OTHER members' contributions ceases.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS faction_knowledge (
+            knowledge_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            faction_id   INTEGER NOT NULL,
+            game_id      TEXT NOT NULL,
+            object_type  TEXT NOT NULL,
+            object_id    INTEGER NOT NULL,
+            contributed_by_prefect INTEGER,
+            shared_turn_year INTEGER,
+            shared_turn_week INTEGER,
+            UNIQUE (faction_id, game_id, object_type, object_id)
+        )
+    """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_faction_knowledge_lookup "
+        "ON faction_knowledge (faction_id, object_type)"
+    )
+    conn.commit()
+
 
     # Migrate: add detection detail columns to known_contacts
     kc_cols = [r[1] for r in conn.execute("PRAGMA table_info(known_contacts)").fetchall()]
@@ -2490,24 +2516,96 @@ def is_object_public(conn, object_type, object_id):
 
 
 def prefect_knows(conn, prefect_id, game_id, object_type, object_id):
-    """Check whether a prefect has knowledge (public OR personal OR — later —
-    via their faction) of the given object. Returns True/False.
+    """Check whether a prefect has knowledge of the given object via any
+    of three layers: public, personal, or their current faction's pool.
+    Returns True/False.
 
-    Current implementation: public ∨ personal. Faction layer lands in Phase 3.
+    Faction membership is checked at query time — leaving a faction
+    immediately revokes the read access (the row stays for other members).
     """
     if prefect_id is None or object_id is None:
         return False
-    # Public knowledge always accessible
+    # 1. Public knowledge always accessible
     if is_object_public(conn, object_type, object_id):
         return True
-    # Personal prefect_knowledge row
+    # 2. Personal prefect_knowledge row
     r = conn.execute(
         """SELECT 1 FROM prefect_knowledge
            WHERE prefect_id = ? AND game_id = ?
                  AND object_type = ? AND object_id = ?""",
         (prefect_id, game_id, object_type, object_id)
     ).fetchone()
-    return r is not None
+    if r is not None:
+        return True
+    # 3. Faction layer: if prefect is in a faction, check faction_knowledge
+    pf = conn.execute(
+        "SELECT faction_id FROM prefects WHERE prefect_id = ?",
+        (prefect_id,)
+    ).fetchone()
+    if pf and pf['faction_id']:
+        r = conn.execute(
+            """SELECT 1 FROM faction_knowledge
+               WHERE faction_id = ? AND game_id = ?
+                     AND object_type = ? AND object_id = ?""",
+            (pf['faction_id'], game_id, object_type, object_id)
+        ).fetchone()
+        if r is not None:
+            return True
+    return False
+
+
+def grant_faction_knowledge(conn, faction_id, game_id, object_type, object_id,
+                              contributor_prefect_id=None,
+                              turn_year=None, turn_week=None):
+    """Write a faction_knowledge row if not already present. Idempotent.
+    Returns True if a new row was inserted, False if it already existed
+    (faction already had this knowledge).
+    """
+    if faction_id is None or object_id is None:
+        return False
+    # No-op for public objects (faction would never need them anyway)
+    if is_object_public(conn, object_type, object_id):
+        return False
+    cur = conn.execute(
+        """INSERT OR IGNORE INTO faction_knowledge
+           (faction_id, game_id, object_type, object_id,
+            contributed_by_prefect, shared_turn_year, shared_turn_week)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (faction_id, game_id, object_type, object_id,
+         contributor_prefect_id, turn_year, turn_week)
+    )
+    return cur.rowcount > 0
+
+
+def faction_knowledge_set(conn, faction_id, game_id, object_type):
+    """Return the set of object_ids of the given type known to the faction
+    (faction-level rows only — does not include public objects)."""
+    ids = set()
+    if faction_id is None:
+        return ids
+    for r in conn.execute(
+        """SELECT object_id FROM faction_knowledge
+           WHERE faction_id = ? AND game_id = ? AND object_type = ?""",
+        (faction_id, game_id, object_type)
+    ).fetchall():
+        ids.add(r['object_id'])
+    return ids
+
+
+def get_faction_knowledge_attribution(conn, faction_id, game_id,
+                                         object_type, object_id):
+    """Return (contributor_prefect_id, turn_year, turn_week) for a
+    faction_knowledge row, or None if not in the faction's pool."""
+    r = conn.execute(
+        """SELECT contributed_by_prefect, shared_turn_year, shared_turn_week
+           FROM faction_knowledge
+           WHERE faction_id = ? AND game_id = ?
+                 AND object_type = ? AND object_id = ?""",
+        (faction_id, game_id, object_type, object_id)
+    ).fetchone()
+    if not r:
+        return None
+    return (r['contributed_by_prefect'], r['shared_turn_year'], r['shared_turn_week'])
 
 
 def grant_knowledge(conn, prefect_id, game_id, object_type, object_id,
@@ -2552,7 +2650,8 @@ def grant_system_knowledge(conn, prefect_id, game_id, system_id,
 
 def prefect_knowledge_set(conn, prefect_id, game_id, object_type):
     """Return a set of object_ids of the given type known to the prefect
-    (either publicly OR personally). Useful for filtering query results."""
+    (public OR personal OR via current faction). Useful for filtering
+    query results."""
     ids = set()
     # Public
     if object_type in _KNOWLEDGE_TABLES:
@@ -2577,6 +2676,18 @@ def prefect_knowledge_set(conn, prefect_id, game_id, object_type):
         (prefect_id, game_id, object_type)
     ).fetchall():
         ids.add(r['object_id'])
+    # Faction (if member of one)
+    pf = conn.execute(
+        "SELECT faction_id FROM prefects WHERE prefect_id = ?",
+        (prefect_id,)
+    ).fetchone()
+    if pf and pf['faction_id']:
+        for r in conn.execute(
+            """SELECT object_id FROM faction_knowledge
+               WHERE faction_id = ? AND game_id = ? AND object_type = ?""",
+            (pf['faction_id'], game_id, object_type)
+        ).fetchall():
+            ids.add(r['object_id'])
     return ids
 
 
