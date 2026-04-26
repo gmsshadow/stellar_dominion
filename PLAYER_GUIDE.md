@@ -426,7 +426,32 @@ Starbases are now combat-capable structures. They can attack ships, be attacked,
 
 **Building base defences:** same `BUILD` order as other modules. No restrictions; build as many turrets, shields, armour plates, and PD as your station can hold.
 
-### Combat Reports
+### Surface Combat (Ports & Outposts)
+
+Surface ports and outposts use a different combat model from starbases. They are collections of buildings on a planet's surface, not unified hulls — so the **siege model** applies.
+
+**Each module has its own HP.** Damage doesn't deplete a single integrity pool; instead it lands on a random surviving module (weighted by the number of units in that module type). When a module's HP runs out, that unit dies and quantity decrements. The base is destroyed when **all modules are gone**.
+
+**Surface defences:**
+- **Life Domes** (#571): pooled flat armour reduction per hit. Domes also serve atmospheric purposes — they shelter the population. As domes are destroyed, your armour stat drops.
+- **Shield Generators**: same as starbases — pooled SP across surviving generators. SP drains under fire; max SP shrinks if you lose a generator. Generators don't take damage from absorbing hits — only from direct module hits.
+- **Base Point Defence**: works the same as starbase PD — intercepts incoming missiles and torpedoes.
+- **Defence Turrets**: beam weapons — but **see atmosphere note below**.
+
+**Armour Plating cannot be installed on surface bases.** That's a starbase-only module. Surface bases rely on Life Domes for armour.
+
+**Atmosphere blocks beam weapons in BOTH directions.** If you're attacking a surface installation on a body with any atmosphere (anything other than `None` — Thin / Standard / Dense / Corrosive / Hydrogen), beams can't cross the atmosphere boundary. This works both ways:
+- Ships in orbit can't shoot beams down at surface bases on atmospheric bodies
+- Surface bases on atmospheric bodies can't shoot beams up at orbiting ships
+- Vacuum bodies (atmosphere = `None`) — beams operate normally
+
+**Missiles work through atmosphere.** Surface bases can have **Surface Missile Silo** modules (#585) that fire missiles at orbiting ships, fed by **Surface Missile Magazine** modules (#586) that hold 20 missiles each. Ships' missile launchers also work fine attacking surface bases, regardless of atmosphere.
+
+**Outposts vs surface ports:** mechanically the same combat model, but outposts are physically smaller (fewer workers, no troops). Both can install the full surface module catalogue including silos.
+
+**Engagement geometry:** a ship orbiting the body that hosts a surface base is at range 0 from the base. Range 2 engagement bubble extends to ships within 2 grid squares of the body's grid position.
+
+**Destruction:** when all modules of a surface base are destroyed, status is set to `destroyed`. There are no docked ships to cascade-destroy (ships land on surface squares, not at the installation itself). The base disappears from scans and surface maps.
 
 When your ship participates in combat, your ship report includes a Combat section showing:
 - Engagement ID, location, status, resolution

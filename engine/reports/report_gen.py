@@ -701,7 +701,7 @@ def generate_ship_report(turn_result, db_path=None, game_id="OMICRON101",
                 return "- " + " ".join(parts)
             else:
                 kind = ctype.title() if ctype else "Object"
-                # Flag destroyed starbases
+                # Flag destroyed bases (starbase, port, outpost)
                 destroyed_flag = ""
                 if ctype == 'starbase':
                     sb_row = conn.execute(
@@ -709,6 +709,20 @@ def generate_ship_report(turn_result, db_path=None, game_id="OMICRON101",
                         (c['object_id'],)
                     ).fetchone()
                     if sb_row and sb_row['status'] == 'destroyed':
+                        destroyed_flag = " [DESTROYED]"
+                elif ctype == 'port' or ctype == 'surface_port':
+                    sp_row = conn.execute(
+                        "SELECT status FROM surface_ports WHERE port_id = ?",
+                        (c['object_id'],)
+                    ).fetchone()
+                    if sp_row and sp_row['status'] == 'destroyed':
+                        destroyed_flag = " [DESTROYED]"
+                elif ctype == 'outpost':
+                    op_row = conn.execute(
+                        "SELECT status FROM outposts WHERE outpost_id = ?",
+                        (c['object_id'],)
+                    ).fetchone()
+                    if op_row and op_row['status'] == 'destroyed':
                         destroyed_flag = " [DESTROYED]"
                 return f"- {kind} {c['object_name']} ({c['object_id']}) at {loc}{destroyed_flag}"
 
@@ -922,13 +936,17 @@ def generate_base_report(base_type, base_id, db_path=None, game_id="OMICRON101",
     lines.append("")
     lines.append(center_text(f"{display_name} ({id_field})"))
     lines.append("")
-    # Destruction banner (starbases only; ports/outposts invulnerable in v1)
+    # Destruction banner (any base type)
     base_destroyed = False
-    if base_type == 'starbase' and 'status' in base.keys():
-        if base['status'] == 'destroyed':
-            base_destroyed = True
+    if 'status' in base.keys() and base['status'] == 'destroyed':
+        base_destroyed = True
+        if base_type == 'starbase':
             lines.append(center_text("*** DESTROYED — STATION WRECKAGE ***"))
-            lines.append("")
+        elif base_type == 'port':
+            lines.append(center_text("*** DESTROYED — SURFACE PORT IN RUINS ***"))
+        else:  # outpost
+            lines.append(center_text("*** DESTROYED — OUTPOST DESTROYED ***"))
+        lines.append("")
     lines.append(f"Printed on {now_str}, Star Date {turn_year}.{turn_week}")
     lines.append("")
 
@@ -998,14 +1016,30 @@ def generate_base_report(base_type, base_id, db_path=None, game_id="OMICRON101",
     # ==========================================
     lines.append(section_header("Installed Modules"))
     lines.append(section_line())
+    is_surface_siege = base_type in ('port', 'outpost')
     if modules:
-        mod_fmt = "{:<28s} {:>5s} {:>3s} {:>5s}"
-        lines.append(section_line(mod_fmt.format("Module", "ID", "Qty", "Emp")))
-        lines.append(section_line(mod_fmt.format("-"*28, "-"*5, "-"*3, "-"*5)))
-        for m in modules:
+        if is_surface_siege:
+            # Siege model: show per-module HP and status
+            mod_fmt = "{:<24s} {:>3s} {:>3s} {:>3s} {:<14s}"
             lines.append(section_line(mod_fmt.format(
-                m['name'][:28], str(m['module_id']), str(m['quantity']),
-                str(m['employees_required'] * m['quantity']))))
+                "Module", "ID", "Qty", "Emp", "HP/Max")))
+            lines.append(section_line(mod_fmt.format(
+                "-"*24, "-"*3, "-"*3, "-"*3, "-"*14)))
+            for m in modules:
+                cur_hp = m['current_hp'] if 'current_hp' in m.keys() else 0
+                max_hp = m['max_hp_per_unit'] if 'max_hp_per_unit' in m.keys() else 0
+                hp_str = f"{int(cur_hp or 0)}/{int(max_hp or 0)}"
+                lines.append(section_line(mod_fmt.format(
+                    m['name'][:24], str(m['module_id']), str(m['quantity']),
+                    str(m['employees_required'] * m['quantity']), hp_str)))
+        else:
+            mod_fmt = "{:<28s} {:>5s} {:>3s} {:>5s}"
+            lines.append(section_line(mod_fmt.format("Module", "ID", "Qty", "Emp")))
+            lines.append(section_line(mod_fmt.format("-"*28, "-"*5, "-"*3, "-"*5)))
+            for m in modules:
+                lines.append(section_line(mod_fmt.format(
+                    m['name'][:28], str(m['module_id']), str(m['quantity']),
+                    str(m['employees_required'] * m['quantity']))))
         lines.append(section_line())
         lines.append(section_line(f"Total Modules: {stats['total_modules']}"))
     else:
@@ -1117,6 +1151,138 @@ def generate_base_report(base_type, base_id, db_path=None, game_id="OMICRON101",
             lines.append(section_line())
 
         # Doctrine note (bases always aggressive, never flee)
+        lines.append(section_line(
+            "COMBAT DOCTRINE: AGGRESSIVE (fires on anything on TARGET list; "
+            "cannot retreat)"
+        ))
+        lines.append(section_line())
+
+    # ==========================================
+    # SURFACE COMBAT SUMMARY (ports + outposts — siege model)
+    # ==========================================
+    if base_type in ('port', 'outpost'):
+        from db.database import SHIELD_THICKNESS_FACTOR, BASE_SHIELD_SIZE
+
+        armour_val = base['armour'] if 'armour' in base.keys() and base['armour'] else 0
+        shield_sp = base['shield_sp'] if 'shield_sp' in base.keys() and base['shield_sp'] is not None else 0
+        max_shield = base['max_shield_sp'] if 'max_shield_sp' in base.keys() and base['max_shield_sp'] else 0
+        missiles_loaded = base['missiles_loaded'] if 'missiles_loaded' in base.keys() and base['missiles_loaded'] is not None else 0
+        max_missiles = base['max_missiles'] if 'max_missiles' in base.keys() and base['max_missiles'] else 0
+        status = base['status'] if 'status' in base.keys() else 'active'
+
+        # Atmospheric quirks: read body atmosphere
+        body_id = base['body_id'] if 'body_id' in base.keys() else None
+        atmosphere = None
+        if body_id:
+            ar = conn.execute(
+                "SELECT atmosphere FROM celestial_bodies WHERE body_id = ?",
+                (body_id,)
+            ).fetchone()
+            atmosphere = ar['atmosphere'] if ar else None
+        beam_blocked = atmosphere is not None and atmosphere != 'None'
+
+        # Modules sub-categorisation (use already-fetched list)
+        weapon_entries = [m for m in modules if m['category'] == 'weapon']
+        pd_entries = [m for m in modules if m['category'] == 'pd']
+        magazine_entries = [m for m in modules if m['category'] == 'magazine']
+        modules_alive = sum(m['quantity'] for m in modules)
+
+        lines.append(section_header("Surface Combat Summary"))
+        lines.append(section_line())
+        if status == 'destroyed' or modules_alive == 0:
+            lines.append(section_line("STATUS: DESTROYED — installation lost"))
+        else:
+            lines.append(section_line(f"STATUS: {status.upper()}"))
+        lines.append(section_line())
+
+        # Atmosphere / environment
+        atm_label = atmosphere if atmosphere else 'unknown'
+        if beam_blocked:
+            lines.append(section_line(
+                f"ATMOSPHERE: {atm_label} (blocks beam weapons in BOTH directions)"))
+        else:
+            lines.append(section_line(
+                f"ATMOSPHERE: {atm_label} (vacuum — beams operate normally)"))
+        lines.append(section_line())
+
+        # Structural: this is siege model so total HP doesn't apply, but armour/shields do
+        lines.append(section_line("STRUCTURAL"))
+        lines.append(section_line(
+            f"  Modules surviving: {modules_alive} "
+            f"(installation destroyed when all modules gone)"
+        ))
+        if max_shield > 0:
+            thickness = ((SHIELD_THICKNESS_FACTOR * shield_sp) // BASE_SHIELD_SIZE
+                          if shield_sp > 0 else 0)
+            lines.append(section_line(
+                f"  Shields: {shield_sp}/{max_shield} SP, thickness {thickness} "
+                f"(pooled across surviving Shield Generators)"))
+        if armour_val > 0:
+            lines.append(section_line(
+                f"  Armour: {armour_val} (pooled from surviving Life Domes; "
+                f"flat reduction per hit)"))
+        lines.append(section_line())
+
+        # Weapons
+        if weapon_entries:
+            lines.append(section_line("WEAPONS"))
+            comp_fmt = "  {:<24s} {:>3s} {:>4s} {:>4s} {:>4s} {:>5s} {}"
+            lines.append(section_line(comp_fmt.format(
+                "Weapon Module", "Qty", "Dmg", "Rng", "Acc", "Shot", "Type")))
+            lines.append(section_line(comp_fmt.format(
+                "-"*24, "-"*3, "-"*4, "-"*4, "-"*4, "-"*5, "----")))
+            for w in weapon_entries:
+                qty = w['quantity']
+                wdmg = w['weapon_damage'] if 'weapon_damage' in w.keys() else 0
+                wrange = w['weapon_range'] if 'weapon_range' in w.keys() else 0
+                wshots = w['weapon_shots_per_round'] if 'weapon_shots_per_round' in w.keys() else 0
+                wacc = w['weapon_accuracy'] if 'weapon_accuracy' in w.keys() else 1.0
+                ammo_t = w['ammo_type'] if 'ammo_type' in w.keys() else None
+                weapon_type = ammo_t if ammo_t else "beam"
+                if weapon_type == "beam" and beam_blocked:
+                    weapon_type = "beam (blocked)"
+                lines.append(section_line(comp_fmt.format(
+                    w['name'][:24], str(qty), str(wdmg or 0), str(wrange or 0),
+                    f"{wacc:.2f}" if wacc is not None else "1.00",
+                    str((wshots or 0) * qty), weapon_type
+                )))
+            lines.append(section_line())
+
+        # Ammunition
+        if max_missiles > 0:
+            lines.append(section_line("AMMUNITION"))
+            lines.append(section_line(
+                f"  Missiles: {missiles_loaded}/{max_missiles} "
+                f"(pooled across {len(magazine_entries)} magazine row(s))"))
+            lines.append(section_line())
+
+        # Point Defence
+        if pd_entries:
+            lines.append(section_line("POINT DEFENCE"))
+            pd_fmt = "  {:<24s} {:>3s} {:>4s} {:>5s} {}"
+            lines.append(section_line(pd_fmt.format(
+                "Turret", "Qty", "Acc", "Shot", "Notes")))
+            lines.append(section_line(pd_fmt.format(
+                "-"*24, "-"*3, "-"*4, "-"*5, "-"*30)))
+            total_pd_shots = 0
+            for p in pd_entries:
+                qty = p['quantity']
+                pshots = p['weapon_shots_per_round'] if 'weapon_shots_per_round' in p.keys() else 0
+                pacc = p['weapon_accuracy'] if 'weapon_accuracy' in p.keys() else 1.0
+                shots = (pshots or 0) * qty
+                total_pd_shots += shots
+                lines.append(section_line(pd_fmt.format(
+                    p['name'][:24], str(qty),
+                    f"{pacc:.2f}" if pacc is not None else "1.00",
+                    str(shots),
+                    "intercepts missiles/torpedoes")))
+            lines.append(section_line(
+                f"  Total: {total_pd_shots} intercept shot"
+                f"{'s' if total_pd_shots != 1 else ''}/round"
+                " (torpedoes prioritised first)"))
+            lines.append(section_line())
+
+        # Doctrine note
         lines.append(section_line(
             "COMBAT DOCTRINE: AGGRESSIVE (fires on anything on TARGET list; "
             "cannot retreat)"

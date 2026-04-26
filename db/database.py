@@ -1334,6 +1334,209 @@ def get_connection(state_db_path=None, universe_db_path=None):
     )
     conn.commit()
 
+    # ======================================================================
+    # SIEGE COMBAT FOR SURFACE INSTALLATIONS (Phase 1)
+    # ======================================================================
+    # Surface ports and outposts use siege combat: each module instance has
+    # its own HP. Random damage allocation among surviving modules per shot.
+    # Base destroyed when ALL modules destroyed.
+    #
+    # Schema additions:
+    #  - installed_modules.current_hp     (partial HP of topmost active unit)
+    #  - installed_modules.max_hp_per_unit (HP each unit starts with)
+    #  - base_modules.module_hp           (lookup table for default per-unit HP)
+    #
+    # Module catalog updates:
+    #  - Armour Plating (#582) restricted to starbase only
+    #  - Life Dome (#571) gains armour_value=3 (acts as armour on surface)
+    #  - Surface Missile Silo (#585) NEW
+    #  - Surface Missile Magazine (#586) NEW
+    #  - Per-module-type HP defaults in base_modules.module_hp
+
+    im_cols = [r[1] for r in conn.execute("PRAGMA table_info(installed_modules)").fetchall()]
+    if 'current_hp' not in im_cols:
+        conn.execute("ALTER TABLE installed_modules ADD COLUMN current_hp REAL DEFAULT 0")
+    if 'max_hp_per_unit' not in im_cols:
+        conn.execute("ALTER TABLE installed_modules ADD COLUMN max_hp_per_unit REAL DEFAULT 0")
+    conn.commit()
+
+    bm_cols = [r[1] for r in conn.execute("PRAGMA universe.table_info(base_modules)").fetchall()]
+    if 'module_hp' not in bm_cols:
+        conn.execute("ALTER TABLE universe.base_modules ADD COLUMN module_hp INTEGER DEFAULT 50")
+    conn.commit()
+
+    # Per-module-type HP defaults
+    module_hp_table = {
+        500: 100,  # Command Module
+        510: 80,   # Docking Bay
+        511: 100,  # Heavy Docking Bay
+        520: 60,   # Mining Rig
+        521: 80,   # Deep Core Drill
+        530: 70,   # Assembly Plant
+        531: 90,   # Advanced Fabricator
+        540: 70,   # Repair Bay
+        541: 100,  # Shipyard
+        550: 50,   # Trade Market
+        551: 70,   # Commerce Hub
+        560: 50,   # Storage Warehouse
+        561: 70,   # Secure Vault
+        570: 60,   # Habitat Block
+        571: 80,   # Life Dome (the surface "dome")
+        580: 60,   # Defence Turret
+        581: 50,   # Shield Generator
+        582: 70,   # Armour Plating
+        583: 50,   # Base Point Defence
+        585: 100,  # Surface Missile Silo (NEW — hardened)
+        586: 80,   # Surface Missile Magazine (NEW — hardened)
+        590: 40,   # Sensor Suite
+        591: 60,   # Deep Scan Array
+    }
+    for mid, hp in module_hp_table.items():
+        conn.execute(
+            "UPDATE universe.base_modules SET module_hp = ? WHERE module_id = ?",
+            (hp, mid)
+        )
+
+    # Restrict Armour Plating to starbases only
+    conn.execute(
+        "UPDATE universe.base_modules SET location_restriction = 'starbase' "
+        "WHERE module_id = 582"
+    )
+
+    # Life Dome (#571) gains armour_value = 3 (and stays in habitat category;
+    # combat code looks at armour_value, not category, when summing armour).
+    conn.execute(
+        "UPDATE universe.base_modules SET armour_value = 3 "
+        "WHERE module_id = 571 AND (armour_value IS NULL OR armour_value = 0)"
+    )
+    conn.commit()
+
+    # New modules: Surface Missile Silo (585), Surface Missile Magazine (586).
+    # Both restricted to surface installations (port + outpost).
+    new_surface_modules = [
+        {
+            'module_id': 585, 'name': 'Surface Missile Silo', 'category': 'weapon',
+            'employees_required': 2,
+            'location_restriction': 'surface',
+            'docking_slots': 0, 'mining_capacity': 0, 'factory_capacity': 0,
+            'repair_capacity': 0, 'market_income': 0, 'storage_capacity': 0,
+            'habitat_capacity': 0, 'defence_rating': 0, 'base_price': 5000,
+            'sensor_rating': 0,
+            'weapon_damage': 30, 'weapon_range': 2, 'weapon_shots_per_round': 1,
+            'weapon_accuracy': 0.9, 'shield_sp_capacity': 0, 'armour_value': 0,
+            'module_hp': 100,
+            'description': 'Hardened underground silo for missile launch. Damage 30, range 2, 1 shot/round, accuracy 0.9, flight 1 round. Can fire through atmosphere. Surface installations only.',
+        },
+        {
+            'module_id': 586, 'name': 'Surface Missile Magazine', 'category': 'magazine',
+            'employees_required': 1,
+            'location_restriction': 'surface',
+            'docking_slots': 0, 'mining_capacity': 0, 'factory_capacity': 0,
+            'repair_capacity': 0, 'market_income': 0, 'storage_capacity': 0,
+            'habitat_capacity': 0, 'defence_rating': 0, 'base_price': 500,
+            'sensor_rating': 0,
+            'weapon_damage': 0, 'weapon_range': 0, 'weapon_shots_per_round': 0,
+            'weapon_accuracy': 1.0, 'shield_sp_capacity': 0, 'armour_value': 0,
+            'module_hp': 80,
+            'description': 'Hardened underground magazine storing missiles for surface silos. Holds 20 missiles per unit.',
+        },
+    ]
+    # Add ammo-related columns if they don't exist on base_modules (parallel
+    # to ship_components ammo handling)
+    if 'ammo_type' not in bm_cols:
+        conn.execute("ALTER TABLE universe.base_modules ADD COLUMN ammo_type TEXT")
+    if 'flight_rounds' not in bm_cols:
+        conn.execute("ALTER TABLE universe.base_modules ADD COLUMN flight_rounds INTEGER DEFAULT 0")
+    if 'magazine_missile_capacity' not in bm_cols:
+        conn.execute("ALTER TABLE universe.base_modules ADD COLUMN magazine_missile_capacity INTEGER DEFAULT 0")
+    conn.commit()
+
+    for m in new_surface_modules:
+        cols = ', '.join(m.keys())
+        placeholders = ', '.join(['?'] * len(m))
+        conn.execute(
+            f"INSERT OR IGNORE INTO universe.base_modules ({cols}) "
+            f"VALUES ({placeholders})",
+            tuple(m.values())
+        )
+    # Set ammo_type and flight_rounds on Silo (idempotent — only if zero)
+    conn.execute(
+        "UPDATE universe.base_modules SET ammo_type = 'missile', flight_rounds = 1 "
+        "WHERE module_id = 585 AND (ammo_type IS NULL)"
+    )
+    conn.execute(
+        "UPDATE universe.base_modules SET magazine_missile_capacity = 20 "
+        "WHERE module_id = 586 AND (magazine_missile_capacity IS NULL OR magazine_missile_capacity = 0)"
+    )
+    conn.commit()
+
+    # Backfill installed_modules.current_hp / max_hp_per_unit for existing rows.
+    # If max_hp_per_unit is 0, set it from base_modules.module_hp; set current_hp
+    # to that same value (full HP for the topmost unit).
+    conn.execute("""
+        UPDATE installed_modules
+           SET max_hp_per_unit = (
+                   SELECT COALESCE(bm.module_hp, 50)
+                   FROM base_modules bm
+                   WHERE bm.module_id = installed_modules.module_id
+               )
+         WHERE max_hp_per_unit IS NULL OR max_hp_per_unit = 0
+    """)
+    conn.execute("""
+        UPDATE installed_modules
+           SET current_hp = max_hp_per_unit
+         WHERE current_hp IS NULL OR current_hp = 0
+    """)
+    conn.commit()
+
+    # Add silo magazine columns to surface installations (parallel to ships)
+    sp_cols = [r[1] for r in conn.execute("PRAGMA table_info(surface_ports)").fetchall()]
+    if sp_cols:
+        for col, ddl_type in [
+            ('missiles_loaded',  'INTEGER DEFAULT 0'),
+            ('max_missiles',     'INTEGER DEFAULT 0'),
+        ]:
+            if col not in sp_cols:
+                conn.execute(f"ALTER TABLE surface_ports ADD COLUMN {col} {ddl_type}")
+    op_cols = [r[1] for r in conn.execute("PRAGMA table_info(outposts)").fetchall()]
+    if op_cols:
+        for col, ddl_type in [
+            ('missiles_loaded',  'INTEGER DEFAULT 0'),
+            ('max_missiles',     'INTEGER DEFAULT 0'),
+        ]:
+            if col not in op_cols:
+                conn.execute(f"ALTER TABLE outposts ADD COLUMN {col} {ddl_type}")
+    # Surface installations also need a status column for destruction tracking
+    if sp_cols and 'status' not in sp_cols:
+        conn.execute("ALTER TABLE surface_ports ADD COLUMN status TEXT DEFAULT 'active'")
+    if op_cols and 'status' not in op_cols:
+        conn.execute("ALTER TABLE outposts ADD COLUMN status TEXT DEFAULT 'active'")
+    # Pooled combat stats: shield SP and armour are recomputed from surviving
+    # modules whenever damage lands, but the columns must exist on both tables.
+    # Re-read columns after the previous alters.
+    sp_cols = [r[1] for r in conn.execute("PRAGMA table_info(surface_ports)").fetchall()]
+    op_cols = [r[1] for r in conn.execute("PRAGMA table_info(outposts)").fetchall()]
+    for tbl, cols in (('surface_ports', sp_cols), ('outposts', op_cols)):
+        for col, ddl in [
+            ('max_shield_sp', 'INTEGER DEFAULT 0'),
+            ('shield_sp',     'INTEGER DEFAULT 0'),
+            ('armour',        'INTEGER DEFAULT 0'),
+        ]:
+            if col not in cols:
+                conn.execute(f"ALTER TABLE {tbl} ADD COLUMN {col} {ddl}")
+    conn.commit()
+
+    # End siege combat migration: stamp it so re-runs are no-ops.
+    siege_applied = conn.execute(
+        "SELECT 1 FROM schema_migrations WHERE migration_name = ?",
+        ('siege_combat_v1',)
+    ).fetchone()
+    if not siege_applied:
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations (migration_name) VALUES (?)",
+            ('siege_combat_v1',)
+        )
+        conn.commit()
 
     # Migrate: add detection detail columns to known_contacts
     kc_cols = [r[1] for r in conn.execute("PRAGMA table_info(known_contacts)").fetchall()]
@@ -2447,13 +2650,16 @@ def get_installed_modules(conn, starbase_id=None, port_id=None, outpost_id=None)
         return []
     return conn.execute(f"""
         SELECT im.install_id, im.module_id, im.quantity,
+               im.current_hp, im.max_hp_per_unit,
                bm.name, bm.category, bm.employees_required,
                bm.location_restriction, bm.docking_slots, bm.mining_capacity,
                bm.factory_capacity, bm.repair_capacity, bm.market_income,
                bm.storage_capacity, bm.habitat_capacity, bm.defence_rating,
                bm.sensor_rating,
                bm.weapon_damage, bm.weapon_range, bm.weapon_shots_per_round,
-               bm.weapon_accuracy, bm.shield_sp_capacity, bm.armour_value
+               bm.weapon_accuracy, bm.shield_sp_capacity, bm.armour_value,
+               bm.module_hp, bm.ammo_type, bm.flight_rounds,
+               bm.magazine_missile_capacity
         FROM installed_modules im
         JOIN base_modules bm ON im.module_id = bm.module_id
         WHERE {where}
@@ -2691,6 +2897,102 @@ def prefect_knowledge_set(conn, prefect_id, game_id, object_type):
     return ids
 
 
+def recalculate_surface_base_combat_stats(conn, port_id=None, outpost_id=None):
+    """Recompute siege-model combat stats for a surface_port or outpost:
+    - max_shield_sp = sum of shield_sp_capacity across surviving Shield Generator units
+    - shield_sp     = clamped to new max (preserving ratio if max shrunk)
+    - armour        = sum of armour_value across all surviving units (domes etc.)
+    - max_missiles  = sum of magazine_missile_capacity across surviving silo magazines
+    - missiles_loaded clamped to new max
+    No max_integrity — each module instance has its own current_hp. The base
+    is destroyed when no modules remain.
+    """
+    if port_id:
+        modules = get_installed_modules(conn, port_id=port_id)
+        tbl = 'surface_ports'; idcol = 'port_id'; oid = port_id
+    elif outpost_id:
+        modules = get_installed_modules(conn, outpost_id=outpost_id)
+        tbl = 'outposts'; idcol = 'outpost_id'; oid = outpost_id
+    else:
+        return None
+
+    # Use installed_modules.quantity directly (each unit alive contributes).
+    # current_hp is a per-row number reflecting the topmost active unit's HP;
+    # quantity is the number of fully-functional units.
+    def _get(m, key, default=0):
+        try:
+            return m[key] if key in m.keys() else default
+        except (KeyError, IndexError):
+            return default
+
+    total_shield_sp = sum(
+        (_get(m, 'shield_sp_capacity', 0) or 0) * m['quantity']
+        for m in modules
+    )
+    total_armour = sum(
+        (_get(m, 'armour_value', 0) or 0) * m['quantity']
+        for m in modules
+    )
+
+    # Magazine total (look up magazine_missile_capacity from base_modules)
+    max_missiles = 0
+    for m in modules:
+        cap_row = conn.execute(
+            "SELECT magazine_missile_capacity FROM base_modules WHERE module_id = ?",
+            (m['module_id'],)
+        ).fetchone()
+        if cap_row:
+            cap = cap_row['magazine_missile_capacity'] or 0
+            max_missiles += cap * m['quantity']
+
+    # Add max_shield_sp / shield_sp / armour columns to surface tables if not present.
+    # (Migration should have done this for ports/outposts, but be defensive.)
+    cols = [r[1] for r in conn.execute(f"PRAGMA table_info({tbl})").fetchall()]
+    for col, ddl in [
+        ('max_shield_sp', 'INTEGER DEFAULT 0'),
+        ('shield_sp',     'INTEGER DEFAULT 0'),
+        ('armour',        'INTEGER DEFAULT 0'),
+    ]:
+        if col not in cols:
+            conn.execute(f"ALTER TABLE {tbl} ADD COLUMN {col} {ddl}")
+    conn.commit()
+
+    # Preserve current shield SP ratio if max shrunk
+    cur = conn.execute(
+        f"SELECT shield_sp, max_shield_sp, missiles_loaded, max_missiles "
+        f"FROM {tbl} WHERE {idcol} = ?", (oid,)
+    ).fetchone()
+    old_max_sp = cur['max_shield_sp'] or 0 if cur else 0
+    if old_max_sp > 0 and cur and cur['shield_sp'] is not None:
+        sp_pct = cur['shield_sp'] / old_max_sp
+        new_sp = min(total_shield_sp, int(total_shield_sp * sp_pct))
+    else:
+        new_sp = total_shield_sp
+
+    # Preserve missiles_loaded ratio
+    old_max_miss = cur['max_missiles'] or 0 if cur else 0
+    if old_max_miss > 0 and cur and cur['missiles_loaded'] is not None:
+        miss_pct = cur['missiles_loaded'] / old_max_miss
+        new_miss = min(max_missiles, int(max_missiles * miss_pct))
+    else:
+        new_miss = max_missiles
+
+    conn.execute(
+        f"UPDATE {tbl} SET max_shield_sp = ?, shield_sp = ?, "
+        f"armour = ?, max_missiles = ?, missiles_loaded = ? "
+        f"WHERE {idcol} = ?",
+        (total_shield_sp, new_sp, total_armour, max_missiles, new_miss, oid)
+    )
+    conn.commit()
+
+    return {
+        'max_shield_sp': total_shield_sp, 'shield_sp': new_sp,
+        'armour': total_armour,
+        'max_missiles': max_missiles, 'missiles_loaded': new_miss,
+        'modules_alive': len(modules),
+    }
+
+
 def recalculate_base_stats(conn, starbase_id=None, port_id=None, outpost_id=None):
     """
     Recalculate base stats from installed modules.
@@ -2819,12 +3121,16 @@ def recalculate_base_stats(conn, starbase_id=None, port_id=None, outpost_id=None
                    sensor_profile = ?, sensor_rating = ?
             WHERE port_id = ?
         """, (total_habitat, sensor_profile, total_sensor_rating, port_id))
+        # Siege combat stats
+        recalculate_surface_base_combat_stats(conn, port_id=port_id)
     elif outpost_id:
         conn.execute("""
             UPDATE outposts SET employee_capacity = ?,
                    sensor_profile = ?, sensor_rating = ?
             WHERE outpost_id = ?
         """, (total_habitat, sensor_profile, total_sensor_rating, outpost_id))
+        # Siege combat stats
+        recalculate_surface_base_combat_stats(conn, outpost_id=outpost_id)
     conn.commit()
 
     return {

@@ -1272,11 +1272,15 @@ class TurnResolver:
             # Surface installations only if orbiting/landed
             if orbit_body:
                 ports = self.conn.execute(
-                    "SELECT *, 'port' AS kind, port_id AS base_id FROM surface_ports WHERE body_id = ? AND game_id = ?",
+                    """SELECT *, 'port' AS kind, port_id AS base_id FROM surface_ports
+                       WHERE body_id = ? AND game_id = ?
+                         AND (status IS NULL OR status = 'active')""",
                     (orbit_body, self.game_id)
                 ).fetchall()
                 outposts = self.conn.execute(
-                    "SELECT *, 'outpost' AS kind, outpost_id AS base_id FROM outposts WHERE body_id = ? AND game_id = ?",
+                    """SELECT *, 'outpost' AS kind, outpost_id AS base_id FROM outposts
+                       WHERE body_id = ? AND game_id = ?
+                         AND (status IS NULL OR status = 'active')""",
                     (orbit_body, self.game_id)
                 ).fetchall()
                 for p in ports:
@@ -1993,19 +1997,21 @@ class TurnResolver:
         if state['landed']:
             ship_pos = (state.get('landed_x', 1), state.get('landed_y', 1))
 
-        # Query surface ports on this body
+        # Query surface ports on this body (active only)
         port_positions = []
         ports = self.conn.execute(
-            "SELECT port_id, name, surface_x, surface_y FROM surface_ports WHERE body_id = ?",
+            """SELECT port_id, name, surface_x, surface_y FROM surface_ports
+               WHERE body_id = ? AND (status IS NULL OR status = 'active')""",
             (body_id,)
         ).fetchall()
         for p in ports:
             port_positions.append((p['surface_x'], p['surface_y'], p['name']))
 
-        # Query outposts on this body (shown in data section, not on map)
+        # Query outposts on this body (active only — destroyed ones are rubble)
         outpost_list = []
         outposts = self.conn.execute(
-            "SELECT outpost_id, name, surface_x, surface_y, outpost_type FROM outposts WHERE body_id = ?",
+            """SELECT outpost_id, name, surface_x, surface_y, outpost_type FROM outposts
+               WHERE body_id = ? AND (status IS NULL OR status = 'active')""",
             (body_id,)
         ).fetchall()
         for o in outposts:
