@@ -22,6 +22,7 @@ VALID_COMMANDS = {
     'LAND': {'params': 'land_order', 'description': 'Land on a planet or moon at coordinates'},
     'TAKEOFF': {'params': 'none', 'description': 'Take off from planet surface to orbit'},
     'SCANSURFACE': {'params': 'none', 'description': 'Scan the surface of the planet you are orbiting or landed on'},
+    'SURVEY': {'params': 'none', 'description': 'Survey jump routes leaving the current system (reveals neighbour system IDs)'},
     'BUY': {'params': 'trade_order', 'description': 'Buy items from base market'},
     'SELL': {'params': 'trade_order', 'description': 'Sell items to base market'},
     'LOADMAGAZINE':   {'params': 'magazine_op', 'description': 'Move ammo from cargo to magazine: LOADMAGAZINE <missile|torpedo> <qty>'},

@@ -1061,6 +1061,254 @@ def get_connection(state_db_path=None, universe_db_path=None):
         )
     conn.commit()
 
+    # ======================================================================
+    # KNOWLEDGE SYSTEM MIGRATIONS (Phase 1)
+    # ======================================================================
+    # is_public flags on gated object types
+    for tbl, default in [
+        ('star_systems',      0),
+        ('starbases',         0),
+        ('celestial_bodies',  0),
+    ]:
+        cols = [r[1] for r in conn.execute(f"PRAGMA table_info({tbl})").fetchall()]
+        if 'is_public' not in cols:
+            conn.execute(f"ALTER TABLE {tbl} ADD COLUMN is_public INTEGER DEFAULT {default}")
+
+    # trade_goods lives in universe DB and defaults public (1)
+    cols = [r[1] for r in conn.execute("PRAGMA universe.table_info(trade_goods)").fetchall()]
+    if 'is_public' not in cols:
+        conn.execute("ALTER TABLE universe.trade_goods ADD COLUMN is_public INTEGER DEFAULT 1")
+
+    # Also add is_public to surface_ports and outposts (both private by default —
+    # you have to discover them). They don't need any combat columns but the
+    # knowledge flag applies.
+    for tbl in ('surface_ports', 'outposts'):
+        try:
+            cols = [r[1] for r in conn.execute(f"PRAGMA table_info({tbl})").fetchall()]
+            if cols and 'is_public' not in cols:
+                conn.execute(f"ALTER TABLE {tbl} ADD COLUMN is_public INTEGER DEFAULT 0")
+        except Exception:
+            pass
+    conn.commit()
+
+    # Generic prefect-knowledge table. One row per (prefect, object_type,
+    # object_id). Existence knowledge is recorded here; transient sightings
+    # (current location etc) remain in known_contacts. surface_scanned is
+    # meaningful only for celestial_body entries.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS prefect_knowledge (
+            knowledge_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            prefect_id   INTEGER NOT NULL,
+            game_id      TEXT NOT NULL,
+            object_type  TEXT NOT NULL,
+            object_id    INTEGER NOT NULL,
+            discovered_turn_year INTEGER,
+            discovered_turn_week INTEGER,
+            surface_scanned INTEGER DEFAULT 0,
+            UNIQUE (prefect_id, game_id, object_type, object_id)
+        )
+    """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_prefect_knowledge_lookup "
+        "ON prefect_knowledge (prefect_id, object_type)"
+    )
+    conn.commit()
+
+    # Seed public flags: mark the three starter systems (existing as of this
+    # migration) and all their contents as public. Newly-generated systems
+    # are private by default.
+    starter_ids = [row['system_id'] for row in conn.execute(
+        "SELECT system_id FROM star_systems ORDER BY system_id LIMIT 3"
+    ).fetchall()]
+    for sid in starter_ids:
+        conn.execute(
+            "UPDATE star_systems SET is_public = 1 WHERE system_id = ?",
+            (sid,)
+        )
+        conn.execute(
+            "UPDATE celestial_bodies SET is_public = 1 WHERE system_id = ?",
+            (sid,)
+        )
+        conn.execute(
+            "UPDATE starbases SET is_public = 1 WHERE system_id = ?",
+            (sid,)
+        )
+    conn.commit()
+
+    # Migration backfill (Option B with one-time grace): grant all existing
+    # prefects prefect_knowledge for:
+    #  (a) every system any of their ships is currently in
+    #  (b) every system referenced in their known_contacts
+    #  (c) every system where they own a starbase / port / outpost
+    #  (d) every system connected by a jump route to any of (a)(b)(c) — the
+    #      one-time SURVEY grace so existing saves don't break
+    #  (e) all celestial bodies in those systems (existence only)
+    #  (f) all starbases/ports/outposts in those systems
+    # RUNS ONCE PER GAME: guarded by a schema_migrations row. Otherwise
+    # moving a ship for testing would auto-re-grant neighbours via step (d).
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+            migration_name TEXT PRIMARY KEY,
+            applied_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    already_applied = conn.execute(
+        "SELECT 1 FROM schema_migrations WHERE migration_name = ?",
+        ('knowledge_backfill_v1',)
+    ).fetchone()
+
+    prefects = conn.execute("SELECT prefect_id, game_id FROM prefects").fetchall()
+    if prefects and not already_applied:
+        # Build system links adjacency once
+        links = conn.execute("SELECT system_a, system_b FROM system_links").fetchall()
+        adj = {}
+        for link in links:
+            a, b = link['system_a'], link['system_b']
+            adj.setdefault(a, set()).add(b)
+            adj.setdefault(b, set()).add(a)
+
+        for p in prefects:
+            pid = p['prefect_id']
+            gid = p['game_id']
+            visited = set()
+            # (a) ship positions
+            for r in conn.execute(
+                "SELECT DISTINCT system_id FROM ships "
+                "WHERE owner_prefect_id = ? AND system_id IS NOT NULL",
+                (pid,)
+            ).fetchall():
+                if r['system_id']:
+                    visited.add(r['system_id'])
+            # (b) known_contacts (systems referenced there)
+            for r in conn.execute(
+                "SELECT DISTINCT location_system FROM known_contacts "
+                "WHERE prefect_id = ? AND location_system IS NOT NULL",
+                (pid,)
+            ).fetchall():
+                if r['location_system']:
+                    visited.add(r['location_system'])
+            # (c) systems where prefect owns any base
+            for tbl, idcol in (('starbases', 'base_id'),
+                                 ('surface_ports', 'port_id'),
+                                 ('outposts', 'outpost_id')):
+                try:
+                    for r in conn.execute(
+                        f"SELECT DISTINCT system_id FROM {tbl} "
+                        f"WHERE owner_prefect_id = ? AND system_id IS NOT NULL",
+                        (pid,)
+                    ).fetchall():
+                        if r['system_id']:
+                            visited.add(r['system_id'])
+                except Exception:
+                    pass
+
+            # (d) one-hop neighbours of anything in `visited` (survey grace)
+            surveyed = set(visited)
+            for sid in list(visited):
+                for nbr in adj.get(sid, set()):
+                    surveyed.add(nbr)
+
+            # Write knowledge rows for genuinely private systems/bodies/bases
+            # only. Public ones are known by default — duplicating into
+            # prefect_knowledge would just be noise.
+            for sid in surveyed:
+                # Skip if system is already public
+                pub = conn.execute(
+                    "SELECT is_public FROM star_systems WHERE system_id = ?",
+                    (sid,)
+                ).fetchone()
+                if pub and pub['is_public']:
+                    continue
+                conn.execute(
+                    """INSERT OR IGNORE INTO prefect_knowledge
+                       (prefect_id, game_id, object_type, object_id,
+                        discovered_turn_year, discovered_turn_week)
+                       VALUES (?, ?, 'star_system', ?, NULL, NULL)""",
+                    (pid, gid, sid)
+                )
+
+            # Bodies and bases in fully-visited systems only
+            for sid in visited:
+                # Skip entire visited system if it's public — everything
+                # inside is public by extension
+                sys_pub = conn.execute(
+                    "SELECT is_public FROM star_systems WHERE system_id = ?",
+                    (sid,)
+                ).fetchone()
+                system_is_public = bool(sys_pub['is_public']) if sys_pub else False
+                for r in conn.execute(
+                    "SELECT body_id, is_public FROM celestial_bodies WHERE system_id = ?",
+                    (sid,)
+                ).fetchall():
+                    if (r['is_public'] or 0) and system_is_public:
+                        continue
+                    conn.execute(
+                        """INSERT OR IGNORE INTO prefect_knowledge
+                           (prefect_id, game_id, object_type, object_id,
+                            discovered_turn_year, discovered_turn_week)
+                           VALUES (?, ?, 'celestial_body', ?, NULL, NULL)""",
+                        (pid, gid, r['body_id'])
+                    )
+                for r in conn.execute(
+                    "SELECT base_id, is_public FROM starbases "
+                    "WHERE system_id = ? AND game_id = ?",
+                    (sid, gid)
+                ).fetchall():
+                    if r['is_public'] or 0:
+                        continue
+                    conn.execute(
+                        """INSERT OR IGNORE INTO prefect_knowledge
+                           (prefect_id, game_id, object_type, object_id,
+                            discovered_turn_year, discovered_turn_week)
+                           VALUES (?, ?, 'starbase', ?, NULL, NULL)""",
+                        (pid, gid, r['base_id'])
+                    )
+                try:
+                    for r in conn.execute(
+                        "SELECT port_id, is_public FROM surface_ports "
+                        "WHERE system_id = ? AND game_id = ?",
+                        (sid, gid)
+                    ).fetchall():
+                        if r['is_public'] or 0:
+                            continue
+                        conn.execute(
+                            """INSERT OR IGNORE INTO prefect_knowledge
+                               (prefect_id, game_id, object_type, object_id,
+                                discovered_turn_year, discovered_turn_week)
+                               VALUES (?, ?, 'surface_port', ?, NULL, NULL)""",
+                            (pid, gid, r['port_id'])
+                        )
+                except Exception:
+                    pass
+                try:
+                    for r in conn.execute(
+                        "SELECT outpost_id, is_public FROM outposts "
+                        "WHERE system_id = ? AND game_id = ?",
+                        (sid, gid)
+                    ).fetchall():
+                        if r['is_public'] or 0:
+                            continue
+                        conn.execute(
+                            """INSERT OR IGNORE INTO prefect_knowledge
+                               (prefect_id, game_id, object_type, object_id,
+                                discovered_turn_year, discovered_turn_week)
+                               VALUES (?, ?, 'outpost', ?, NULL, NULL)""",
+                            (pid, gid, r['outpost_id'])
+                        )
+                except Exception:
+                    pass
+    conn.commit()
+
+    # End of knowledge migrations: stamp the backfill as applied so it
+    # doesn't re-grant every time the DB reopens.
+    if prefects and not already_applied:
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations (migration_name) VALUES (?)",
+            ('knowledge_backfill_v1',)
+        )
+        conn.commit()
+
+
     # Migrate: add detection detail columns to known_contacts
     kc_cols = [r[1] for r in conn.execute("PRAGMA table_info(known_contacts)").fetchall()]
     for col, ddl in [
@@ -2199,6 +2447,137 @@ def check_module_location(module, location_type):
     if restriction == 'surface' and location_type in ('surface_port', 'outpost'):
         return True, None
     return False, f"{module['name']} requires {restriction} (this is a {location_type})."
+
+
+# ==========================================================================
+# KNOWLEDGE SYSTEM HELPERS (Phase 1)
+# ==========================================================================
+
+# Object types tracked by the knowledge system. Each has a corresponding
+# lookup table for "is_public" and an FK-like object_id in prefect_knowledge.
+_KNOWLEDGE_TABLES = {
+    'star_system':    ('star_systems',    'system_id',  True),   # global (no game_id)
+    'celestial_body': ('celestial_bodies', 'body_id',   True),   # global
+    'starbase':       ('starbases',       'base_id',    False),  # per-game
+    'surface_port':   ('surface_ports',   'port_id',    False),  # per-game
+    'outpost':        ('outposts',        'outpost_id', False),  # per-game
+    'trade_good':     ('trade_goods',     'item_id',    True),   # universe-wide
+    # Ships/prefects/factions have no is_public row (ships private; prefects
+    # semi-public via combat contacts; factions always public).
+}
+
+
+def is_object_public(conn, object_type, object_id):
+    """Return True if an object is marked is_public=1 in its source table.
+    For object types without an is_public column, return a sensible default:
+    ships/prefects = False; factions = True.
+    """
+    if object_type in _KNOWLEDGE_TABLES:
+        tbl, idcol, _ = _KNOWLEDGE_TABLES[object_type]
+        # trade_goods is in universe DB; all others are main
+        schema = "universe." if object_type == 'trade_good' else ""
+        try:
+            r = conn.execute(
+                f"SELECT is_public FROM {schema}{tbl} WHERE {idcol} = ?",
+                (object_id,)
+            ).fetchone()
+            return bool(r['is_public']) if r else False
+        except Exception:
+            return False
+    if object_type == 'faction':
+        return True
+    return False
+
+
+def prefect_knows(conn, prefect_id, game_id, object_type, object_id):
+    """Check whether a prefect has knowledge (public OR personal OR — later —
+    via their faction) of the given object. Returns True/False.
+
+    Current implementation: public ∨ personal. Faction layer lands in Phase 3.
+    """
+    if prefect_id is None or object_id is None:
+        return False
+    # Public knowledge always accessible
+    if is_object_public(conn, object_type, object_id):
+        return True
+    # Personal prefect_knowledge row
+    r = conn.execute(
+        """SELECT 1 FROM prefect_knowledge
+           WHERE prefect_id = ? AND game_id = ?
+                 AND object_type = ? AND object_id = ?""",
+        (prefect_id, game_id, object_type, object_id)
+    ).fetchone()
+    return r is not None
+
+
+def grant_knowledge(conn, prefect_id, game_id, object_type, object_id,
+                      turn_year=None, turn_week=None):
+    """Write a prefect_knowledge row if not already present. Idempotent.
+    Does nothing if the object is already publicly known.
+
+    Returns True if a new row was inserted, False if it already existed or
+    the object was public.
+    """
+    if prefect_id is None or object_id is None:
+        return False
+    # No-op for public objects — they don't need personal knowledge rows
+    if is_object_public(conn, object_type, object_id):
+        return False
+    cur = conn.execute(
+        """INSERT OR IGNORE INTO prefect_knowledge
+           (prefect_id, game_id, object_type, object_id,
+            discovered_turn_year, discovered_turn_week)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (prefect_id, game_id, object_type, object_id, turn_year, turn_week)
+    )
+    return cur.rowcount > 0
+
+
+def grant_system_knowledge(conn, prefect_id, game_id, system_id,
+                             turn_year=None, turn_week=None):
+    """Convenience: arriving in a system grants knowledge of the system and
+    all celestial bodies in it (existence-only). Bases and surface ports
+    within the system are NOT automatically revealed — those require
+    scan orders to detect.
+    """
+    grant_knowledge(conn, prefect_id, game_id, 'star_system', system_id,
+                     turn_year, turn_week)
+    for r in conn.execute(
+        "SELECT body_id FROM celestial_bodies WHERE system_id = ?",
+        (system_id,)
+    ).fetchall():
+        grant_knowledge(conn, prefect_id, game_id, 'celestial_body',
+                         r['body_id'], turn_year, turn_week)
+
+
+def prefect_knowledge_set(conn, prefect_id, game_id, object_type):
+    """Return a set of object_ids of the given type known to the prefect
+    (either publicly OR personally). Useful for filtering query results."""
+    ids = set()
+    # Public
+    if object_type in _KNOWLEDGE_TABLES:
+        tbl, idcol, is_global = _KNOWLEDGE_TABLES[object_type]
+        schema = "universe." if object_type == 'trade_good' else ""
+        where = "is_public = 1"
+        params = ()
+        if not is_global:
+            where += " AND game_id = ?"
+            params = (game_id,)
+        try:
+            for r in conn.execute(
+                f"SELECT {idcol} FROM {schema}{tbl} WHERE {where}", params
+            ).fetchall():
+                ids.add(r[idcol])
+        except Exception:
+            pass
+    # Personal
+    for r in conn.execute(
+        """SELECT object_id FROM prefect_knowledge
+           WHERE prefect_id = ? AND game_id = ? AND object_type = ?""",
+        (prefect_id, game_id, object_type)
+    ).fetchall():
+        ids.add(r['object_id'])
+    return ids
 
 
 def recalculate_base_stats(conn, starbase_id=None, port_id=None, outpost_id=None):

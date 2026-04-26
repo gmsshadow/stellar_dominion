@@ -27,6 +27,7 @@ TU_COSTS = {
     'LAND': 20,
     'TAKEOFF': 20,
     'SCANSURFACE': 20,
+    'SURVEY': 5,       # survey jump routes leaving current system
     'BUY': 0,          # trading while docked is free
     'SELL': 0,
     'LOAD': 1,         # load ammo from cargo to magazine
@@ -856,6 +857,8 @@ class TurnResolver:
             return self._cmd_takeoff(state)
         elif cmd == 'SCANSURFACE':
             return self._cmd_surfacescan(state)
+        elif cmd == 'SURVEY':
+            return self._cmd_survey(state)
         elif cmd == 'BUY':
             return self._cmd_buy(state, params)
         elif cmd == 'SELL':
@@ -1281,7 +1284,15 @@ class TurnResolver:
                 for o in outposts:
                     _try_base(o, 'outpost', tick, forced_dist=0)
 
-        # --- Persist detections to known_contacts ---
+        # --- Persist detections to known_contacts AND prefect_knowledge ---
+        from db.database import grant_knowledge
+        # Map detection 'type' (ship/starbase/port/outpost) to knowledge object_type
+        det_type_to_knowledge = {
+            'ship':     None,  # ships tracked via known_contacts only
+            'starbase': 'starbase',
+            'port':     'surface_port',
+            'outpost':  'outpost',
+        }
         for key, det in first_hits.items():
             existing = self.conn.execute("""
                 SELECT contact_id FROM known_contacts
@@ -1320,6 +1331,13 @@ class TurnResolver:
                       det.get('faction_id'), det.get('hull_type'),
                       det.get('ship_size'), det.get('range'),
                       det['tick'], ship_id))
+            # Also write a persistent prefect_knowledge row for bases/ports/outposts
+            # (existence knowledge — stays even after transient contact fades)
+            knowledge_type = det_type_to_knowledge.get(det['type'])
+            if knowledge_type:
+                grant_knowledge(self.conn, prefect_id, self.game_id,
+                                 knowledge_type, det['id'],
+                                 turn_year, turn_week)
         self.conn.commit()
 
         # --- Build result message ---
@@ -1576,6 +1594,40 @@ class TurnResolver:
                 'tu_cost': 0,
                 'success': False,
                 'message': f"Unable to dock: {base['name']} ({base_id}) has been destroyed."
+            }
+
+        # Knowledge gating: prefect must know this starbase (public OR
+        # personally discovered). If the ship is physically at the base's
+        # location, grant knowledge on the fly — you're docking at something
+        # you can see with your own sensors. This handles the case of
+        # JUMPing into a system containing a private starbase you haven't
+        # personally surveyed yet.
+        from db.database import prefect_knows, grant_knowledge
+        ship_prefect_row = self.conn.execute(
+            "SELECT owner_prefect_id FROM ships WHERE ship_id = ?",
+            (state['ship_id'],)
+        ).fetchone()
+        prefect_id = ship_prefect_row['owner_prefect_id'] if ship_prefect_row else None
+        if (base['grid_col'] == state['col']
+                and base['grid_row'] == state['row']
+                and base['system_id'] == state['system_id']):
+            # Ship is physically at the base — grant knowledge if missing
+            turn_info = self.conn.execute(
+                "SELECT current_year, current_week FROM games WHERE game_id = ?",
+                (self.game_id,)
+            ).fetchone()
+            ty = turn_info['current_year'] if turn_info else None
+            tw = turn_info['current_week'] if turn_info else None
+            grant_knowledge(self.conn, prefect_id, self.game_id,
+                             'starbase', base_id, ty, tw)
+            self.conn.commit()
+        elif not prefect_knows(self.conn, prefect_id, self.game_id,
+                                 'starbase', base_id):
+            return {
+                'command': 'DOCK', 'params': base_id,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': False,
+                'message': f"Unable to dock: starbase {base_id} unknown to your prefect."
             }
 
         # Check ship is at base location
@@ -1891,6 +1943,42 @@ class TurnResolver:
         state['tu'] -= cost
 
         tiles = get_or_generate_surface(self.conn, body)
+
+        # Mark surface_scanned = 1 on the prefect_knowledge row for this body.
+        # Also grant the body knowledge if it wasn't already known (should be,
+        # since you got there, but defensive).
+        from db.database import grant_knowledge, prefect_knows
+        ship_owner = self.conn.execute(
+            "SELECT owner_prefect_id FROM ships WHERE ship_id = ?",
+            (state['ship_id'],)
+        ).fetchone()
+        prefect_id = ship_owner['owner_prefect_id'] if ship_owner else None
+        if prefect_id:
+            turn_info = self.conn.execute(
+                "SELECT current_year, current_week FROM games WHERE game_id = ?",
+                (self.game_id,)
+            ).fetchone()
+            ty = turn_info['current_year'] if turn_info else None
+            tw = turn_info['current_week'] if turn_info else None
+            # Ensure knowledge row exists (for public bodies we still need a
+            # row to track the surface_scanned flag). Use raw INSERT OR IGNORE
+            # instead of grant_knowledge which skips public objects.
+            self.conn.execute(
+                """INSERT OR IGNORE INTO prefect_knowledge
+                   (prefect_id, game_id, object_type, object_id,
+                    discovered_turn_year, discovered_turn_week)
+                   VALUES (?, ?, 'celestial_body', ?, ?, ?)""",
+                (prefect_id, self.game_id, body_id, ty, tw)
+            )
+            # Flip surface_scanned flag
+            self.conn.execute(
+                """UPDATE prefect_knowledge
+                   SET surface_scanned = 1
+                   WHERE prefect_id = ? AND game_id = ?
+                         AND object_type = 'celestial_body' AND object_id = ?""",
+                (prefect_id, self.game_id, body_id)
+            )
+            self.conn.commit()
         planetary_data = {
             'gravity': body['gravity'],
             'temperature': body['temperature'],
@@ -1936,6 +2024,119 @@ class TurnResolver:
             'tu_before': tu_before, 'tu_after': state['tu'],
             'tu_cost': cost, 'success': True,
             'message': message,
+        }
+
+    def _cmd_survey(self, state):
+        """SURVEY - reveal jump routes leaving the current system. Writes
+        prefect_knowledge rows for all neighbouring systems (existence only).
+        Can be executed from anywhere in the system (docked, orbiting, etc).
+        """
+        tu_before = state['tu']
+        cost = self._effective_tu_cost(TU_COSTS['SURVEY'], state['efficiency'])
+
+        if state['tu'] < cost:
+            return {
+                'command': 'SURVEY', 'params': None,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': False, 'tu_exhausted': True,
+                'message': (f"Insufficient OC for survey ({state['tu']} < {cost}). "
+                            f"Order carries forward.")
+            }
+
+        sys_id = state['system_id']
+        if not sys_id:
+            return {
+                'command': 'SURVEY', 'params': None,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': False,
+                'message': "Cannot survey: ship not in a system."
+            }
+
+        # Find prefect owner
+        ship_owner = self.conn.execute(
+            "SELECT owner_prefect_id FROM ships WHERE ship_id = ?",
+            (state['ship_id'],)
+        ).fetchone()
+        prefect_id = ship_owner['owner_prefect_id'] if ship_owner else None
+        if not prefect_id:
+            return {
+                'command': 'SURVEY', 'params': None,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': False,
+                'message': "Cannot survey: ship has no owner."
+            }
+
+        # Charge the cost
+        state['tu'] -= cost
+
+        # Get turn for knowledge rows
+        turn_info = self.conn.execute(
+            "SELECT current_year, current_week FROM games WHERE game_id = ?",
+            (self.game_id,)
+        ).fetchone()
+        ty = turn_info['current_year'] if turn_info else None
+        tw = turn_info['current_week'] if turn_info else None
+
+        # Find all neighbours of current system
+        neighbours = set()
+        for r in self.conn.execute(
+            "SELECT system_a, system_b FROM system_links "
+            "WHERE system_a = ? OR system_b = ?",
+            (sys_id, sys_id)
+        ).fetchall():
+            other = r['system_b'] if r['system_a'] == sys_id else r['system_a']
+            neighbours.add(other)
+
+        # Categorise each neighbour: already known vs newly discovered
+        from db.database import prefect_knows, grant_knowledge
+        already_known = []
+        newly_discovered = []
+        for nsid in sorted(neighbours):
+            name_row = self.conn.execute(
+                "SELECT name FROM star_systems WHERE system_id = ?",
+                (nsid,)
+            ).fetchone()
+            name = name_row['name'] if name_row else f"system {nsid}"
+            was_known = prefect_knows(self.conn, prefect_id, self.game_id,
+                                        'star_system', nsid)
+            if was_known:
+                already_known.append((nsid, name))
+            else:
+                grant_knowledge(self.conn, prefect_id, self.game_id,
+                                  'star_system', nsid, ty, tw)
+                newly_discovered.append((nsid, name))
+        self.conn.commit()
+
+        # Also grant the current system (defensive — you're surveying it,
+        # you definitely know you're here)
+        grant_knowledge(self.conn, prefect_id, self.game_id,
+                         'star_system', sys_id, ty, tw)
+        self.conn.commit()
+
+        cur_sys = self.conn.execute(
+            "SELECT name FROM star_systems WHERE system_id = ?", (sys_id,)
+        ).fetchone()
+        cur_name = cur_sys['name'] if cur_sys else f"system {sys_id}"
+
+        if not neighbours:
+            msg = (f"Survey of {cur_name} ({sys_id}) complete. "
+                   f"No jump routes detected. [{cost} OC]")
+        else:
+            bits = [f"Survey of {cur_name} ({sys_id}) complete. "
+                    f"Found {len(neighbours)} jump route"
+                    f"{'s' if len(neighbours) != 1 else ''}:"]
+            for nsid, name in already_known:
+                bits.append(f"  -> {name} ({nsid}) [already known]")
+            for nsid, name in newly_discovered:
+                bits.append(f"  -> {name} ({nsid}) [NEW]")
+            bits.append(f"[{cost} OC]")
+            msg = '\n'.join(bits)
+
+        return {
+            'command': 'SURVEY', 'params': None,
+            'tu_before': tu_before, 'tu_after': state['tu'],
+            'tu_cost': cost, 'success': True,
+            'message': msg,
         }
 
     def _cmd_buy(self, state, params):
@@ -2374,7 +2575,8 @@ class TurnResolver:
 
         at_base = (state['docked_at'] == base_id)
         at_location = (state['col'] == base['grid_col'] and
-                       state['row'] == base['grid_row'])
+                       state['row'] == base['grid_row'] and
+                       state['system_id'] == base['system_id'])
         if not at_base and not at_location:
             return {
                 'command': 'GETMARKET', 'params': base_id,
@@ -2382,6 +2584,33 @@ class TurnResolver:
                 'tu_cost': 0, 'success': False,
                 'message': (f"Cannot view market: must be docked at or "
                             f"in orbit near {base['name']} ({base_id}).")
+            }
+
+        # Knowledge gating + grant: if you're physically at the base, grant
+        # knowledge of it. Otherwise require pre-existing knowledge.
+        from db.database import prefect_knows, grant_knowledge
+        ship_owner = self.conn.execute(
+            "SELECT owner_prefect_id FROM ships WHERE ship_id = ?",
+            (state['ship_id'],)
+        ).fetchone()
+        prefect_id = ship_owner['owner_prefect_id'] if ship_owner else None
+        if at_base or at_location:
+            turn_info = self.conn.execute(
+                "SELECT current_year, current_week FROM games WHERE game_id = ?",
+                (self.game_id,)
+            ).fetchone()
+            ty = turn_info['current_year'] if turn_info else None
+            tw = turn_info['current_week'] if turn_info else None
+            grant_knowledge(self.conn, prefect_id, self.game_id,
+                             'starbase', base_id, ty, tw)
+            self.conn.commit()
+        elif not prefect_knows(self.conn, prefect_id, self.game_id,
+                                 'starbase', base_id):
+            return {
+                'command': 'GETMARKET', 'params': base_id,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': False,
+                'message': f"Cannot view market: starbase {base_id} unknown to your prefect."
             }
 
         # Get current prices (keyed to market cycle start)
@@ -2569,6 +2798,27 @@ class TurnResolver:
                 'message': f"Cannot jump: system {target_system_id} not found."
             }
 
+        # Knowledge gating: the prefect must know the destination system
+        # (public OR personally discovered). Exploration into adjacent
+        # unknown systems is the job of the SURVEY order + then JUMP; raw
+        # jumps into unknown destinations are not allowed.
+        from db.database import prefect_knows
+        ship_prefect_id = self.conn.execute(
+            "SELECT owner_prefect_id FROM ships WHERE ship_id = ?",
+            (state['ship_id'],)
+        ).fetchone()
+        prefect_id = ship_prefect_id['owner_prefect_id'] if ship_prefect_id else None
+        if not prefect_knows(self.conn, prefect_id, self.game_id,
+                              'star_system', target_system_id):
+            return {
+                'command': 'JUMP', 'params': params_str,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': False,
+                'message': (f"Cannot jump: system {target_system_id} is unknown. "
+                            f"Use SURVEY to discover neighbouring systems, then "
+                            f"JUMP to a known destination.")
+            }
+
         # Find route: BFS across system_links up to max_jump_range hops
         jump_hops = self._find_jump_route(state['system_id'], target_system_id, max_range)
         if jump_hops is None:
@@ -2609,6 +2859,20 @@ class TurnResolver:
 
         # Commit position immediately so subsequent commands see the new system
         self._commit_ship_position(state)
+
+        # Arrival grants knowledge of destination system + all its bodies.
+        # Bases, ports and outposts inside are NOT auto-revealed — those
+        # require scan orders. Neighbour systems require SURVEY.
+        from db.database import grant_system_knowledge
+        turn_info = self.conn.execute(
+            "SELECT current_year, current_week FROM games WHERE game_id = ?",
+            (self.game_id,)
+        ).fetchone()
+        ty = turn_info['current_year'] if turn_info else None
+        tw = turn_info['current_week'] if turn_info else None
+        grant_system_knowledge(self.conn, prefect_id, self.game_id,
+                                 target_system_id, ty, tw)
+        self.conn.commit()
 
         arrival_loc = f"{state['col']}{state['row']:02d}"
         hop_str = f" ({jump_hops} hops, {activations}x drive)" if jump_hops > 1 else ""
