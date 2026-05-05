@@ -25,6 +25,7 @@ VALID_COMMANDS = {
     'SURVEY': {'params': 'none', 'description': 'Survey jump routes leaving the current system (reveals neighbour system IDs)'},
     'BUY': {'params': 'trade_order', 'description': 'Buy items from base market'},
     'SELL': {'params': 'trade_order', 'description': 'Sell items to base market'},
+    'REPAIR': {'params': 'repair_order', 'description': 'Repair hull at a docked base. REPAIR (max possible) or REPAIR <max_hp>. Cost: HP/2 OC + HP*5 credits.'},
     'LOADMAGAZINE':   {'params': 'magazine_op', 'description': 'Move ammo from cargo to magazine: LOADMAGAZINE <missile|torpedo> <qty>'},
     'UNLOADMAGAZINE': {'params': 'magazine_op', 'description': 'Move ammo from magazine to cargo: UNLOADMAGAZINE <missile|torpedo> <qty>'},
     'GETMARKET': {'params': 'base_id', 'description': 'View base market prices'},
@@ -133,6 +134,31 @@ def parse_order(command_str, params):
             return command, {'duration': value}, None
         except (ValueError, TypeError):
             return command, params, f"{command}: expected integer duration, got '{params}'"
+
+    elif spec['params'] == 'repair_order':
+        # REPAIR (no args) — repair as much as possible this turn
+        # REPAIR <amount> — repair up to <amount> HP this turn
+        # YAML form: {amount: 50} or {} for unlimited
+        if isinstance(params, dict):
+            amt_raw = params.get('amount', params.get('hp'))
+            if amt_raw is None or amt_raw == '':
+                return command, {'amount': None}, None
+            try:
+                amt = int(amt_raw)
+            except (ValueError, TypeError):
+                return command, params, f"{command}: amount must be an integer"
+            if amt < 1:
+                return command, params, f"{command}: amount must be >= 1"
+            return command, {'amount': amt}, None
+        if params is None or params == '':
+            return command, {'amount': None}, None
+        try:
+            amt = int(str(params).strip())
+        except (ValueError, TypeError):
+            return command, params, f"{command}: expected integer HP amount, got '{params}'"
+        if amt < 1:
+            return command, params, f"{command}: amount must be >= 1"
+        return command, {'amount': amt}, None
 
     elif spec['params'] == 'list_op':
         # TARGET/DEFEND/AVOID — supports forms:

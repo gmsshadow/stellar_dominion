@@ -206,6 +206,21 @@ Active scanning **cannot be combined with movement** — you are sitting still, 
 
 **GETMARKET** `<base_id>` — View prices. **BUY** `<base_id> <item_id> <quantity>` — Buy items (capped to available stock/cargo). **SELL** `<base_id> <item_id> <quantity>` — Sell items.
 
+### Maintenance
+
+**REPAIR** — Repair hull integrity at the docked base. Two forms:
+- `REPAIR` (no args) — repair as much as possible this turn
+- `REPAIR <max_hp>` — repair up to `<max_hp>` HP this turn
+
+Cost: ⌈HP × 0.5⌉ OC from the ship + (HP × 5) credits from the prefect. The actual amount repaired is capped by whichever bites first: the base's per-turn repair capacity, your ship's available OC, your prefect's credits, the requested amount, or the missing HP. The result message lists which caps applied.
+
+Requirements:
+- Ship must be docked at a base with a **Repair Bay** (#540) or **Shipyard** (#541) installed
+- Base capacity is shared by all ships docked there this turn — submit your REPAIR order early in the cycle if you're competing for capacity
+- Repair fails if the ship OR base is in active combat. Disengage first.
+
+Example: ship at 50/150 HP wants full repair. Missing 100 HP → cost would be 50 OC + 500 cr if base capacity allows. With a Repair Bay (5 HP/turn), you'd repair 5 HP this turn (3 OC + 25 cr) and need to resubmit REPAIR for ~20 more turns. With a Shipyard (15 HP/turn), it's faster.
+
 ### Crew & Officers
 
 **MAKEOFFICER** `<ship_id> <crew_type_id> [name]` — Promote one crew to officer.

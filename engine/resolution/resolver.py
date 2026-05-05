@@ -30,6 +30,7 @@ TU_COSTS = {
     'SURVEY': 5,       # survey jump routes leaving current system
     'BUY': 0,          # trading while docked is free
     'SELL': 0,
+    'REPAIR': 0,       # variable; OC cost computed in handler from HP repaired
     'LOAD': 1,         # load ammo from cargo to magazine
     'UNLOAD': 1,       # unload ammo from magazine to cargo
     'GETMARKET': 0,
@@ -81,6 +82,10 @@ class TurnResolver:
         self.log = []  # Turn execution log
         self.pending = []  # Legacy (unused) — overflow handled by caller
         self.contacts = []  # Contacts discovered during turn
+        # Per-turn repair capacity tracking. Keys are base IDs (starbases,
+        # ports, outposts share the int space). Values are HP repaired so far
+        # this turn at that base. Reset implicitly per-resolver-instance.
+        self.repair_used_this_turn = {}
 
     def _commit_ship_position(self, state):
         """Lightweight mid-turn position update so scans see current positions."""
@@ -863,10 +868,16 @@ class TurnResolver:
             return self._cmd_buy(state, params)
         elif cmd == 'SELL':
             return self._cmd_sell(state, params)
+        elif cmd == 'REPAIR':
+            return self._cmd_repair(state, params)
         elif cmd == 'LOADMAGAZINE':
-            return self._cmd_loadmagazine(state, params)
+            return self._cmd_magazine_transfer(state, cmd, params)
         elif cmd == 'UNLOADMAGAZINE':
-            return self._cmd_unloadmagazine(state, params)
+            return self._cmd_magazine_transfer(state, cmd, params)
+        elif cmd == 'LOAD':
+            return self._cmd_magazine_transfer(state, 'LOADMAGAZINE', params)
+        elif cmd == 'UNLOAD':
+            return self._cmd_magazine_transfer(state, 'UNLOADMAGAZINE', params)
         elif cmd == 'GETMARKET':
             return self._cmd_getmarket(state, params)
         elif cmd == 'JUMP':
@@ -2560,6 +2571,227 @@ class TurnResolver:
             'message': (f"Sold {actual_qty} {item['name']} ({item_id}) "
                         f"at {sell_price} cr each = {total_income:,} cr total "
                         f"to {base_name} ({base_id}). [{total_mass} ST freed]{capped_msg}{crew_warning}")
+        }
+
+    def _cmd_repair(self, state, params):
+        """REPAIR — repair hull integrity at a docked base.
+
+        Form 1: REPAIR (no args) — repair as much as possible this turn.
+        Form 2: REPAIR <amount> — repair up to <amount> HP this turn.
+
+        Cost: ceil(HP * 0.5) OC + (HP * 5) credits per HP repaired.
+        Throughput is capped by:
+          - Base repair_capacity (sum of Repair Bay/Shipyard contributions)
+          - Ship's available OC budget
+          - Prefect's credit balance
+          - HP missing from ship integrity
+
+        Cannot repair if ship or base is in active combat.
+        Multiple ships at the same base share the per-turn repair pool
+        (first-come-first-serve based on order processing order).
+        """
+        tu_before = state['tu']
+
+        # Parse params (expects {'amount': N or None})
+        if isinstance(params, dict):
+            requested_amount = params.get('amount')
+        else:
+            requested_amount = None
+
+        # 1. Must be docked
+        if not state.get('docked_at'):
+            return {
+                'command': 'REPAIR', 'params': params,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': False,
+                'message': "Cannot REPAIR: ship is not docked at a base.",
+            }
+        base_id = state['docked_at']
+
+        # 2. Look up base info (any base type)
+        base_row = None
+        base_kind = None
+        for kind, tbl, idcol in (
+            ('starbase', 'starbases', 'base_id'),
+            ('port', 'surface_ports', 'port_id'),
+            ('outpost', 'outposts', 'outpost_id'),
+        ):
+            row = self.conn.execute(
+                f"SELECT * FROM {tbl} WHERE {idcol} = ?", (base_id,)
+            ).fetchone()
+            if row:
+                base_row = row
+                base_kind = kind
+                break
+        if not base_row:
+            return {
+                'command': 'REPAIR', 'params': params,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': False,
+                'message': f"Cannot REPAIR: docked base {base_id} not found in any registry.",
+            }
+        base_name = base_row['name']
+
+        # 3. Compute base's total repair capacity (sum of Repair Bay + Shipyard
+        # repair_capacity values across all installed instances)
+        from db.database import get_installed_modules
+        kwargs = ({'starbase_id': base_id} if base_kind == 'starbase'
+                  else {'port_id': base_id} if base_kind == 'port'
+                  else {'outpost_id': base_id})
+        modules = get_installed_modules(self.conn, **kwargs)
+        total_capacity = 0
+        repair_modules_str = []
+        for m in modules:
+            cap = m['repair_capacity'] if 'repair_capacity' in m.keys() else 0
+            if cap and cap > 0:
+                total_capacity += cap * m['quantity']
+                repair_modules_str.append(f"{m['name']} x{m['quantity']}")
+
+        if total_capacity <= 0:
+            return {
+                'command': 'REPAIR', 'params': params,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': False,
+                'message': (f"Cannot REPAIR at {base_name} ({base_id}): "
+                            f"no Repair Bay or Shipyard installed."),
+            }
+
+        # 4. Combat check: refuse if ship OR base is in active combat this turn
+        ship_in_combat = self.conn.execute(
+            """SELECT 1 FROM combat_engagements ce
+               JOIN combat_participants cp ON ce.engagement_id = cp.engagement_id
+               WHERE cp.participant_kind = 'ship' AND cp.participant_id_value = ?
+                     AND ce.status = 'active'""",
+            (state['ship_id'],)
+        ).fetchone()
+        base_in_combat = self.conn.execute(
+            """SELECT 1 FROM combat_engagements ce
+               JOIN combat_participants cp ON ce.engagement_id = cp.engagement_id
+               WHERE cp.participant_kind = ? AND cp.participant_id_value = ?
+                     AND ce.status = 'active'""",
+            (base_kind, base_id)
+        ).fetchone()
+        if ship_in_combat or base_in_combat:
+            who = "ship" if ship_in_combat else "base"
+            return {
+                'command': 'REPAIR', 'params': params,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': False,
+                'message': (f"Cannot REPAIR while {who} is in active combat. "
+                            f"Disengage and try again next turn."),
+            }
+
+        # 5. Get ship state + prefect credits
+        ship = self.conn.execute(
+            """SELECT s.ship_id, s.name, s.integrity, s.max_integrity,
+                      s.owner_prefect_id, p.credits
+               FROM ships s LEFT JOIN prefects p ON s.owner_prefect_id = p.prefect_id
+               WHERE s.ship_id = ?""",
+            (state['ship_id'],)
+        ).fetchone()
+        ship_name = ship['name']
+        cur_hp = ship['integrity'] or 0
+        max_hp = ship['max_integrity'] or 0
+        missing_hp = int(max_hp) - int(cur_hp)
+        prefect_credits = ship['credits'] or 0
+
+        if missing_hp <= 0:
+            return {
+                'command': 'REPAIR', 'params': params,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': True,
+                'message': (f"{ship_name} is already at full integrity "
+                            f"({int(cur_hp)}/{int(max_hp)} HP). No repair needed."),
+            }
+
+        # 6. Determine how much HP can be repaired this turn
+        used_already = self.repair_used_this_turn.get(base_id, 0)
+        capacity_left = max(0, total_capacity - used_already)
+
+        # Available OC: OC cost is ceil(HP * 0.5), so HP_for_oc = floor(OC * 2)
+        hp_from_oc = (state['tu'] * 2)  # ceil(HP/2) <= state['tu'] -> HP <= 2*OC
+
+        # Available credits: HP * 5 cost
+        hp_from_credits = prefect_credits // 5
+
+        candidates = [missing_hp, capacity_left, hp_from_oc, hp_from_credits]
+        if requested_amount is not None:
+            candidates.append(requested_amount)
+
+        repair_amount = min(candidates) if candidates else 0
+        repair_amount = max(0, int(repair_amount))
+
+        # If nothing can be done, explain why
+        if repair_amount <= 0:
+            reasons = []
+            if capacity_left <= 0:
+                reasons.append(
+                    f"base capacity exhausted (used {used_already}/{total_capacity} HP this turn)"
+                )
+            if hp_from_oc <= 0:
+                reasons.append("ship out of OC")
+            if hp_from_credits <= 0:
+                reasons.append(f"prefect lacks credits (has {prefect_credits} cr)")
+            if requested_amount is not None and requested_amount <= 0:
+                reasons.append("requested amount is zero")
+            reason_str = "; ".join(reasons) if reasons else "no capacity available"
+            return {
+                'command': 'REPAIR', 'params': params,
+                'tu_before': tu_before, 'tu_after': state['tu'],
+                'tu_cost': 0, 'success': False,
+                'message': (f"Cannot REPAIR {ship_name} at {base_name} ({base_id}): "
+                            f"{reason_str}."),
+            }
+
+        # 7. Apply repair: deduct OC, deduct credits, increase integrity, track capacity
+        import math
+        oc_cost = math.ceil(repair_amount * 0.5)
+        cr_cost = repair_amount * 5
+
+        new_hp = int(cur_hp) + repair_amount
+        # Clamp defensively (shouldn't exceed max because repair_amount <= missing_hp)
+        if new_hp > int(max_hp):
+            new_hp = int(max_hp)
+
+        self.conn.execute(
+            "UPDATE ships SET integrity = ? WHERE ship_id = ?",
+            (new_hp, state['ship_id'])
+        )
+        self.conn.execute(
+            "UPDATE prefects SET credits = credits - ? WHERE prefect_id = ?",
+            (cr_cost, ship['owner_prefect_id'])
+        )
+        self.conn.commit()
+
+        # OC deduction is handled by the standard mechanism via tu_cost return value
+        state['tu'] -= oc_cost
+        self.repair_used_this_turn[base_id] = used_already + repair_amount
+
+        # Build informative message — note any caps that bit
+        cap_notes = []
+        if requested_amount is not None and repair_amount < requested_amount:
+            cap_notes.append(f"requested {requested_amount}")
+        if missing_hp == repair_amount:
+            cap_notes.append("ship now at full HP")
+        if capacity_left == repair_amount and capacity_left < missing_hp:
+            cap_notes.append(f"base capacity exhausted (used {self.repair_used_this_turn[base_id]}/{total_capacity})")
+        if hp_from_oc == repair_amount and hp_from_oc < missing_hp:
+            cap_notes.append("ship OC exhausted")
+        if hp_from_credits == repair_amount and hp_from_credits < missing_hp:
+            cap_notes.append("prefect credits exhausted")
+
+        msg = (f"Repaired {repair_amount} HP on {ship_name} at "
+               f"{base_name} ({base_id}). HP {int(cur_hp)} -> {new_hp}/{int(max_hp)}. "
+               f"Cost: {oc_cost} OC + {cr_cost} cr.")
+        if cap_notes:
+            msg += " [" + ", ".join(cap_notes) + "]"
+
+        return {
+            'command': 'REPAIR', 'params': params,
+            'tu_before': tu_before, 'tu_after': state['tu'],
+            'tu_cost': oc_cost, 'success': True,
+            'hp_repaired': repair_amount, 'credits_spent': cr_cost,
+            'message': msg,
         }
 
     def _cmd_getmarket(self, state, base_id):
